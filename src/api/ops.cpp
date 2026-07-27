@@ -7,14 +7,23 @@
 
 #include <algorithm>
 #include <format>
+#include <string_view>
 
 namespace vkml {
 namespace {
 
-void check_same_device(const Tensor& a, const Tensor& b, OpKind op) {
+/// Overloads taking a name exist for operators that are *compositions* and so
+/// have no OpKind of their own -- cross_entropy, mse_loss. Without them such an
+/// operator would have to borrow an unrelated enumerator purely to phrase its
+/// error, and the message would name the wrong thing.
+void check_same_device(const Tensor& a, const Tensor& b, std::string_view op) {
     VKML_CHECK(a.device() == b.device(), DeviceError,
-               "'{}' operands are on different devices: {} and {}", op_name(op), a.device().str(),
+               "'{}' operands are on different devices: {} and {}", op, a.device().str(),
                b.device().str());
+}
+
+void check_same_device(const Tensor& a, const Tensor& b, OpKind op) {
+    check_same_device(a, b, op_name(op));
 }
 
 /// M0 policy: no implicit type promotion between tensors.
@@ -25,11 +34,15 @@ void check_same_device(const Tensor& a, const Tensor& b, OpKind op) {
 /// PyTorch and therefore never *wrong* -- a program that works here works there.
 /// Python scalars are still converted to the tensor's dtype, so `x + 1` behaves
 /// as expected. Documented as a deliberate divergence.
-void check_same_dtype(const Tensor& a, const Tensor& b, OpKind op) {
+void check_same_dtype(const Tensor& a, const Tensor& b, std::string_view op) {
     VKML_CHECK(a.dtype() == b.dtype(), DTypeError,
                "'{}' operands have different dtypes ({} and {}); vkml does not promote "
                "implicitly -- cast one explicitly with .to()",
-               op_name(op), dtype_name(a.dtype()), dtype_name(b.dtype()));
+               op, dtype_name(a.dtype()), dtype_name(b.dtype()));
+}
+
+void check_same_dtype(const Tensor& a, const Tensor& b, OpKind op) {
+    check_same_dtype(a, b, op_name(op));
 }
 
 Tensor finish(NodePtr n) {
@@ -282,6 +295,66 @@ std::vector<int> trailing_axes(const Tensor& a, int count, const char* what) {
 }
 
 }  // namespace
+
+namespace {
+
+Tensor apply_reduction(const Tensor& per_sample, Reduction r) {
+    switch (r) {
+        case Reduction::Mean: return mean(per_sample);
+        case Reduction::Sum: return sum(per_sample);
+        case Reduction::None: return per_sample;
+    }
+    VKML_UNREACHABLE("unhandled Reduction");
+}
+
+/// One-hot mask over `classes`, as F32, from I64 labels.
+///
+/// Comparison kernels are F32-only on both backends, so the labels are cast
+/// rather than compared as integers. That is exact: every integer up to 2^24 is
+/// representable in F32, and a class count anywhere near that is far beyond
+/// what this library targets.
+Tensor one_hot_f32(const Tensor& target, int64_t classes) {
+    const Tensor indices =
+        Tensor::arange(0.0, static_cast<double>(classes), 1.0, DType::F32, target.device());
+    // (N, 1) against (C,) broadcasts to (N, C) with stride 0 on both stretched
+    // axes, so the mask is never materialised at full size by the comparison
+    // itself -- only its Bool result is.
+    return equal(target.to(DType::F32).unsqueeze(-1), indices).to(DType::F32);
+}
+
+}  // namespace
+
+Tensor mse_loss(const Tensor& input, const Tensor& target, Reduction reduction) {
+    check_same_dtype(input, target, "mse_loss");
+    check_same_device(input, target, "mse_loss");
+    return apply_reduction(square(sub(input, target)), reduction);
+}
+
+Tensor cross_entropy(const Tensor& logits, const Tensor& target, Reduction reduction) {
+    VKML_CHECK(target.dtype() == DType::I64, DTypeError,
+               "cross_entropy() target must hold I64 class indices, got {}",
+               dtype_name(target.dtype()));
+    VKML_CHECK(logits.ndim() == 1 || logits.ndim() == 2, ShapeError,
+               "cross_entropy() expects logits of rank 1 or 2, got rank {}", logits.ndim());
+    check_same_device(logits, target, "cross_entropy");
+
+    // Rank 1 is a single unbatched sample; lift it so one path handles both.
+    const Tensor batched = logits.ndim() == 1 ? logits.unsqueeze(0) : logits;
+    const Tensor labels = logits.ndim() == 1 ? target.unsqueeze(0) : target;
+
+    VKML_CHECK(labels.ndim() == 1, ShapeError, "cross_entropy() target must be rank 1, got rank {}",
+               labels.ndim());
+    VKML_CHECK(labels.numel() == batched.size(0), ShapeError,
+               "cross_entropy() has {} logit rows but {} labels", batched.size(0), labels.numel());
+
+    const int64_t classes = batched.size(1);
+    // Exactly one term per row is non-zero, so summing the masked row recovers
+    // that term exactly -- adding zeros is exact in IEEE-754. The row sum is
+    // therefore not a source of error, which is why the tolerance for this is
+    // inherited from log_softmax rather than widened for a reduction over C.
+    const Tensor picked = sum(mul(log_softmax(batched, -1), one_hot_f32(labels, classes)), {-1});
+    return apply_reduction(neg(picked), reduction);
+}
 
 Tensor index_select(const Tensor& a, int axis, const Tensor& index) {
     VKML_CHECK(index.dtype() == DType::I64, DTypeError, "index_select() index must be I64, got {}",

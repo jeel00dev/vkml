@@ -117,8 +117,6 @@ enum class OpKind : uint16_t {
     SliceBackward,
 
     // -- loss --------------------------------------------------------------
-    MseLoss,
-    CrossEntropy,
 
     // -- optimiser steps, expressed as graph nodes -------------------------
     // Modelled on ggml_opt_step_adamw: making the update a node is what lets

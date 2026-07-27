@@ -89,6 +89,11 @@ class Tolerance:
 POLICY: dict[str, Tolerance] = {
     # -- exact: bit movement or selection only ------------------------------
     "fill": Tolerance(Kind.EXACT, note="writes a constant; no arithmetic"),
+    # arange shares fill's kernel (fill is arange with slope 0). The CPU
+    # evaluates start + i*step in double and rounds once; the shader has no
+    # doubles and rounds twice. Integer parameters -- every use inside the
+    # library, including cross_entropy's class indices -- are exact on both.
+    "arange": Tolerance(Kind.ULP, ulp=4, note="double vs float evaluation of start + i*step"),
     "copy": Tolerance(Kind.EXACT, note="moves bits"),
     "cat": Tolerance(Kind.EXACT, note="moves bits; no arithmetic"),
     "index_select": Tolerance(Kind.EXACT, note="gathers elements; no arithmetic"),
@@ -170,6 +175,16 @@ POLICY: dict[str, Tolerance] = {
     # atol is load-bearing, not decoration: an output element is near zero
     # whenever x_i is near the mean, and a purely relative check is meaningless
     # there. Same reason log_softmax carries one.
+    # mse: sub and square are exact, so the error is the mean's backward
+    # bound. Every term is non-negative, so sum|terms| == N*result and the
+    # backward bound collapses to a RELATIVE gamma_N, about 4.4e-6 at N=1024.
+    "mse_loss": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
+                          note="mean of non-negative terms; gamma_N relative"),
+    # cross_entropy: the masked row sum adds NO error -- exactly one term is
+    # non-zero and adding zeros is exact in IEEE-754 -- so the per-sample
+    # error is log_softmax's, and the batch mean contributes gamma_N on top.
+    "cross_entropy": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
+                               note="log_softmax error plus the batch mean's gamma_N"),
     "layer_norm": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
                             note="two pairwise means then rsqrt; see derivation above"),
     "rms_norm": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,

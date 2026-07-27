@@ -1,9 +1,19 @@
 #version 450
 
-// Writes a constant to every element. The simplest possible kernel, chosen
-// first deliberately: it exercises device creation, allocation, buffer device
-// address, pipeline creation, command recording, dispatch and readback without
-// any indexing logic that could also be wrong.
+// Writes `value + i*step` to every element. Serves both fill and arange: a
+// fill is an arange with step 0, so the two need no separate kernel and no
+// specialisation constant to tell them apart.
+//
+// The simplest kernel in the project, chosen first deliberately: it exercises
+// device creation, allocation, buffer device address, pipeline creation,
+// command recording, dispatch and readback without any indexing logic that
+// could also be wrong.
+//
+// NUMERICAL NOTE. The CPU kernel evaluates start + i*step in double and rounds
+// once; this evaluates it in float and rounds twice. For integer parameters --
+// which is every use inside the library, including cross_entropy's class
+// indices -- both are exact. For a non-representable start or step the two can
+// differ by a couple of ULP, which is what tolerance.py allows for arange.
 
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
@@ -14,10 +24,11 @@ layout(push_constant, scalar) uniform Params {
     uint64_t dst;
     uint     n;
     float    value;
+    float    step;
 } p;
 
 void main() {
     const uint i = gl_GlobalInvocationID.x;
     if (i >= p.n) { return; }
-    F32Buf(p.dst).v[i] = p.value;
+    F32Buf(p.dst).v[i] = p.value + float(i) * p.step;
 }

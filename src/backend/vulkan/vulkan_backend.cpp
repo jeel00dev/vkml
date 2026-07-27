@@ -80,6 +80,7 @@ struct FillPush {
     uint64_t dst;
     uint32_t n;
     float value;
+    float step;  ///< 0 for fill; arange is the same kernel with a slope
 };
 
 struct UnaryPush {
@@ -688,7 +689,10 @@ bool VulkanBackend::supports(const Node& node) const {
     // cannot run on Vulkan, it does not run slowly. Do not restore the old
     // wording without making it true first.
     switch (node.op) {
-        case OpKind::Full: return node.dtype == DType::F32;
+        // Same kernel: fill is arange with a zero slope. F32 only, because the
+        // shader writes through F32Buf -- an I64 arange still falls to the CPU.
+        case OpKind::Full:
+        case OpKind::Arange: return node.dtype == DType::F32;
         // Unary elementwise: one shader, one specialisation constant per op.
         case OpKind::Contiguous:
         case OpKind::Relu:
@@ -801,13 +805,25 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
         }
 
         switch (node->op) {
-            case OpKind::Full: {
-                const auto params = node->params.get<FullParams>();
+            case OpKind::Full:
+            case OpKind::Arange: {
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
                 cfg.spec_constants = {wg};
 
-                const FillPush push{address_of(*node), n_elems, static_cast<float>(params.value)};
+                // A fill is an arange whose slope is zero, so both reach the
+                // same kernel and differ only in what the push constants say.
+                float base = 0.0F;
+                float step = 0.0F;
+                if (node->op == OpKind::Arange) {
+                    const auto ap = node->params.get<ArangeParams>();
+                    base = static_cast<float>(ap.start);
+                    step = static_cast<float>(ap.step);
+                } else {
+                    base = static_cast<float>(node->params.get<FullParams>().value);
+                }
+
+                const FillPush push{address_of(*node), n_elems, base, step};
                 if (debug_dispatch_enabled()) {
                     trace_dispatch(*node, "fill", cfg, sizeof(FillPush), (n_elems + wg - 1) / wg,
                                    impl_->caps.subgroup_size);

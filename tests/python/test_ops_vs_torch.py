@@ -793,3 +793,105 @@ def test_index_select_rejects_non_i64_index():
     v = V.tensor(make_input((4, 2), seed=85))
     with pytest.raises(V.DTypeError):
         V.index_select(v, 0, V.tensor(np.array([0.0, 1.0], dtype=np.float32)))
+
+
+# ---------------------------------------------------------------------------
+# Losses
+# ---------------------------------------------------------------------------
+
+REDUCTIONS = [("mean", V.Reduction.mean), ("sum", V.Reduction.sum), ("none", V.Reduction.none)]
+
+
+@pytest.mark.parametrize("name,red", REDUCTIONS, ids=[r[0] for r in REDUCTIONS])
+@pytest.mark.parametrize("shape", [(8,), (4, 5), (2, 3, 4)])
+def test_mse_loss(shape, name, red):
+    a = make_input(shape, seed=90)
+    b = make_input(shape, seed=91)
+    va, ta = pair(a)
+    vb, tb = pair(b)
+    assert_close(f"mse_loss({name})", V.mse_loss(va, vb, red),
+                 torch.nn.functional.mse_loss(ta, tb, reduction=name),
+                 TOLERANCES["reduction"], inputs=[a, b])
+
+
+@pytest.mark.parametrize("name,red", REDUCTIONS, ids=[r[0] for r in REDUCTIONS])
+@pytest.mark.parametrize("n,c", [(4, 3), (1, 2), (16, 10), (3, 100)])
+def test_cross_entropy(n, c, name, red):
+    logits = make_input((n, c), seed=92)
+    labels = np.random.default_rng(93).integers(0, c, size=n).astype(np.int64)
+
+    v, t = pair(logits)
+    assert_close(f"cross_entropy({name})", V.cross_entropy(v, V.tensor(labels), red),
+                 torch.nn.functional.cross_entropy(
+                     t, torch.from_numpy(labels.copy()), reduction=name),
+                 TOLERANCES["transcendental"], inputs=[logits])
+
+
+def test_cross_entropy_survives_confident_logits():
+    """The reason this is built on log_softmax rather than log(softmax(x)).
+
+    At a 400-logit gap the losing classes underflow softmax to exactly 0, so
+    log(softmax(x)) is -inf and every gradient in the batch becomes NaN. The
+    log-sum-exp form must stay finite and give the near-zero loss the correct
+    prediction deserves.
+    """
+    logits = np.array([[400.0, 0.0, -400.0],
+                       [-400.0, 400.0, 0.0]], dtype=np.float32)
+    labels = np.array([0, 1], dtype=np.int64)
+
+    v = V.tensor(logits, requires_grad=True)
+    loss = V.cross_entropy(v, V.tensor(labels))
+    value = float(loss.numpy())
+
+    assert np.isfinite(value), f"loss is not finite: {value}"
+    assert value < 1e-6, f"a confidently correct prediction should cost ~0, got {value}"
+
+    loss.backward()
+    assert np.isfinite(v.grad.numpy()).all(), "gradient contains non-finite values"
+
+    # And the naive form really would have failed here, so the test is not
+    # asserting something that holds either way.
+    assert float(V.softmax(V.tensor(logits), -1).numpy()[0, 2]) == 0.0
+
+
+def test_cross_entropy_gradients():
+    logits = make_input((6, 5), seed=94)
+    labels = np.random.default_rng(95).integers(0, 5, size=6).astype(np.int64)
+
+    v = V.tensor(logits, requires_grad=True)
+    t = torch.from_numpy(logits.copy()).requires_grad_(True)
+
+    V.cross_entropy(v, V.tensor(labels)).backward()
+    torch.nn.functional.cross_entropy(t, torch.from_numpy(labels.copy())).backward()
+
+    assert_close("cross_entropy grad", v.grad, t.grad, TOLERANCES["transcendental"],
+                 inputs=[logits])
+
+
+def test_cross_entropy_gradient_is_softmax_minus_onehot():
+    """The closed form, independent of torch: d/dlogits = (softmax - onehot)/N.
+    Checking it separately means a bug would have to corrupt both the reference
+    and the composition in the same way to pass."""
+    logits = make_input((4, 3), seed=96)
+    labels = np.array([0, 2, 1, 2], dtype=np.int64)
+
+    v = V.tensor(logits, requires_grad=True)
+    V.cross_entropy(v, V.tensor(labels)).backward()
+
+    onehot = np.zeros((4, 3), dtype=np.float32)
+    onehot[np.arange(4), labels] = 1.0
+    want = (V.softmax(V.tensor(logits), -1).numpy() - onehot) / 4.0
+
+    assert np.allclose(v.grad.numpy(), want, atol=1e-6), f"{v.grad.numpy()}\nvs\n{want}"
+
+
+def test_cross_entropy_rejects_float_target():
+    v = V.tensor(make_input((2, 3), seed=97))
+    with pytest.raises(V.DTypeError):
+        V.cross_entropy(v, V.tensor(np.array([0.0, 1.0], dtype=np.float32)))
+
+
+def test_cross_entropy_rejects_label_count_mismatch():
+    v = V.tensor(make_input((4, 3), seed=98))
+    with pytest.raises(V.ShapeError):
+        V.cross_entropy(v, V.tensor(np.array([0, 1], dtype=np.int64)))

@@ -1093,3 +1093,67 @@ def test_scatter_add_is_bit_reproducible():
     again = V.scatter_add(V.tensor(x, device=gpu_device()), 0,
                           V.tensor(idx, device=gpu_device()), 1).numpy()
     assert gpu.tobytes() == again.tobytes(), "GPU result is not reproducible run to run"
+
+
+# ---------------------------------------------------------------------------
+# Losses
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("n,c", [(4, 3), (1, 2), (16, 10), (3, 100), (2, 257)])
+def test_cross_entropy_on_gpu(n, c):
+    """The full chain -- arange, cast, equal, log_softmax, mul, sum, neg, mean
+    -- on the device. Until arange had a kernel this raised NotImplementedError
+    rather than falling back, so this is also the regression test for that."""
+    rng = np.random.default_rng(SEED)
+    logits = make_data(rng, (n, c), "any")
+    labels = rng.integers(0, c, size=n).astype(np.int64)
+
+    def run(dev):
+        return V.cross_entropy(V.tensor(logits, device=dev),
+                               V.tensor(labels, device=dev)).numpy()
+
+    ctx = Context(op="cross_entropy", layout=Layout((n, c)), dtype="f32", seed=SEED,
+                  inputs=[logits])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+@pytest.mark.parametrize("shape", [(8,), (4, 5), (2, 3, 4)])
+def test_mse_loss_on_gpu(shape):
+    rng = np.random.default_rng(SEED)
+    a = make_data(rng, shape, "any")
+    b = make_data(rng, shape, "any")
+
+    def run(dev):
+        return V.mse_loss(V.tensor(a, device=dev), V.tensor(b, device=dev)).numpy()
+
+    ctx = Context(op="mse_loss", layout=Layout(shape), dtype="f32", seed=SEED, inputs=[a, b])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+def test_arange_on_gpu():
+    """fill and arange share a kernel -- a fill is an arange with slope 0 --
+    so this covers the slope path that fill never exercises."""
+    for start, stop, step in ((0.0, 10.0, 1.0), (-5.0, 5.0, 0.5), (2.0, 300.0, 3.0)):
+        gpu = V.arange(start, stop, step, device=gpu_device()).numpy()
+        cpu = V.arange(start, stop, step, device=V.cpu).numpy()
+        ctx = Context(op="arange", layout=Layout(gpu.shape), dtype="f32", seed=SEED)
+        compare(ctx, gpu, cpu)
+
+
+def test_cross_entropy_gradient_on_gpu():
+    """A loss is only useful if it produces a gradient, and this is the first
+    point in the project where a full forward and backward pass runs on the
+    device."""
+    rng = np.random.default_rng(SEED)
+    logits = make_data(rng, (6, 5), "any")
+    labels = rng.integers(0, 5, size=6).astype(np.int64)
+
+    def grad(dev):
+        v = V.tensor(logits, device=dev, requires_grad=True)
+        V.cross_entropy(v, V.tensor(labels, device=dev)).backward()
+        return v.grad.numpy()
+
+    ctx = Context(op="cross_entropy", layout=Layout((6, 5)), dtype="f32", seed=SEED,
+                  inputs=[logits])
+    compare(ctx, grad(gpu_device()), grad(V.cpu))

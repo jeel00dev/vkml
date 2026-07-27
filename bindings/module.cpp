@@ -519,6 +519,14 @@ NB_MODULE(_vkml_core, m) {
     m.def(
         "cat", [](const std::vector<vkml::Tensor>& ts, int axis) { return vkml::cat(ts, axis); },
         "tensors"_a, "axis"_a = 0);
+    nb::enum_<vkml::Reduction>(m, "Reduction")
+        .value("mean", vkml::Reduction::Mean)
+        .value("sum", vkml::Reduction::Sum)
+        .value("none", vkml::Reduction::None);
+    m.def("mse_loss", &vkml::mse_loss, "input"_a, "target"_a,
+          "reduction"_a = vkml::Reduction::Mean);
+    m.def("cross_entropy", &vkml::cross_entropy, "logits"_a, "target"_a,
+          "reduction"_a = vkml::Reduction::Mean);
     m.def("index_select", &vkml::index_select, "input"_a, "axis"_a, "index"_a);
     m.def("scatter_add", &vkml::scatter_add, "src"_a, "axis"_a, "index"_a, "dim_size"_a);
     m.def("layer_norm", &vkml::layer_norm, "input"_a, "normalized_axes"_a = 1, "eps"_a = 1e-5);

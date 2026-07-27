@@ -63,6 +63,41 @@ namespace vkml {
 /// Elementwise select. `cond` must be Bool; all three broadcast together.
 [[nodiscard]] Tensor where(const Tensor& cond, const Tensor& a, const Tensor& b);
 
+/// How a loss collapses its per-sample values, following torch's `reduction`.
+enum class Reduction {
+    Mean,  ///< average over every element; torch's default
+    Sum,
+    None,  ///< return the per-sample losses unreduced
+};
+
+/// Mean squared error between `input` and `target`, which must broadcast
+/// together. Composed from sub/square and a reduction.
+[[nodiscard]] Tensor mse_loss(const Tensor& input, const Tensor& target,
+                              Reduction reduction = Reduction::Mean);
+
+/// Softmax cross-entropy from raw logits and integer class labels, following
+/// torch.nn.functional.cross_entropy. `logits` is (N, C) or (C,); `target` is
+/// I64 holding a class index per sample.
+///
+/// TAKES LOGITS, NOT PROBABILITIES. Passing softmax output would apply the
+/// normalisation twice and train against a wrong objective while still
+/// producing finite, plausible numbers -- so the distinction is worth stating
+/// twice.
+///
+/// Built on `log_softmax`, which already subtracts the row maximum. The naive
+/// `log(softmax(x))` underflows to -inf as soon as the model becomes confident
+/// -- softmax of a losing logit reaches 0 in fp32 around a 90-logit gap, and
+/// log(0) then poisons every gradient in the batch. The stable form costs
+/// nothing and is the only reason this trains at all.
+///
+/// The label is selected by multiplying against a one-hot mask rather than
+/// gathering, so this composes from operators that already exist on both
+/// backends. Exactly one term per row survives, which makes the row sum exact
+/// rather than merely well-conditioned. The mask is built by comparing class
+/// indices in F32, which is exact for any C below 2^24.
+[[nodiscard]] Tensor cross_entropy(const Tensor& logits, const Tensor& target,
+                                   Reduction reduction = Reduction::Mean);
+
 /// Gathers along `axis` at the positions named by `index`, following
 /// torch.index_select. `index` must be I64 and rank 1; the result takes its
 /// extent on `axis` from the index length, and every other extent from `a`.
