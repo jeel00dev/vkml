@@ -44,8 +44,6 @@ constexpr std::array<std::string_view, kNumOps> kOpNames = {
 
     "index_select", "scatter_add", "slice_backward",
 
-    "sgd_step",     "adam_step",
-
     "where",        "dropout",     "triu",
     "tril",
 };

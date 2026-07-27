@@ -62,19 +62,26 @@ TEST_CASE("op classification predicates") {
     CHECK_FALSE(vkml::is_comparison_op(OpKind::Add));
 }
 
+/// Mixed field widths and an alignment hole, so a round trip that only
+/// memcpy'd the first word would still fail. Declared here rather than borrowed
+/// from a production op: this exercises OpParams, and coupling it to whichever
+/// op happens to have the widest params makes it break when that op changes.
+struct RoundTripProbe {
+    float a;
+    float b;
+    int64_t c;
+    bool d;
+};
+
 TEST_CASE("OpParams round-trips typed structs without heap allocation") {
     vkml::OpParams p;
-    const vkml::AdamParams in{.lr = 1e-3F,
-                              .beta1 = 0.9F,
-                              .beta2 = 0.999F,
-                              .eps = 1e-8F,
-                              .weight_decay = 0.01F,
-                              .step = 42};
+    const RoundTripProbe in{.a = 1e-3F, .b = 0.999F, .c = 42, .d = true};
     p.set(in);
-    const auto out = p.get<vkml::AdamParams>();
-    CHECK(out.lr == doctest::Approx(1e-3F));
-    CHECK(out.beta2 == doctest::Approx(0.999F));
-    CHECK(out.step == 42);
+    const auto out = p.get<RoundTripProbe>();
+    CHECK(out.a == doctest::Approx(1e-3F));
+    CHECK(out.b == doctest::Approx(0.999F));
+    CHECK(out.c == 42);
+    CHECK(out.d);
 
     SUBCASE("a different op's params reuse the same inline buffer") {
         p.set(vkml::SliceParams{.axis = 1, .start = 2, .stop = 5, .step = 2});

@@ -118,13 +118,6 @@ enum class OpKind : uint16_t {
 
     // -- loss --------------------------------------------------------------
 
-    // -- optimiser steps, expressed as graph nodes -------------------------
-    // Modelled on ggml_opt_step_adamw: making the update a node is what lets
-    // forward + backward + update be one submission with no host round-trip
-    // (docs/ARCHITECTURE.md §0 decision 3).
-    SgdStep,
-    AdamStep,
-
     // -- misc --------------------------------------------------------------
     Where,
     Dropout,
@@ -261,22 +254,6 @@ struct NormParams {
     float eps = 1e-5F;
 };
 
-struct SgdParams {
-    float lr = 1e-2F;
-    float momentum = 0.0F;
-    float weight_decay = 0.0F;
-};
-
-struct AdamParams {
-    float lr = 1e-3F;
-    float beta1 = 0.9F;
-    float beta2 = 0.999F;
-    float eps = 1e-8F;
-    float weight_decay = 0.0F;
-    int64_t step = 0;
-};
-
-static_assert(sizeof(AdamParams) <= kOpParamBytes);
 static_assert(sizeof(SliceParams) <= kOpParamBytes);
 
 }  // namespace vkml
