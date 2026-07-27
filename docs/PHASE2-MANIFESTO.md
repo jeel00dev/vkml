@@ -66,15 +66,28 @@ Principle 1 requires knowing exactly what exists. Counted from the tree at `a2d6
 
 **The Vulkan backend — the point of the project — covers 22 % of declared operators.** There is
 no GPU kernel for `Add`, `Sub`, `Mul`, `Div`, `Sigmoid`, `Tanh`, `Gelu`, `Silu`, `Sqrt`, `Log`,
-`Pow`, `Where`, `Clamp`, or any comparison. A model placed on `device='vulkan'` runs most of its
-arithmetic on the CPU and is silently correct-but-slow, because `supports()` falls back rather
-than failing.
+`Pow`, `Where`, `Clamp`, or any comparison.
+
+> **Correction, 2026-07-27.** This section first stated that such a model "runs most of its
+> arithmetic on the CPU and is silently correct-but-slow, because `supports()` falls back rather
+> than failing." **That is wrong**, and it was taken from a comment in `supports()` rather than
+> from the code. There is no fallback. `Executor::realize` throws `NotImplementedError` when the
+> backend does not support a node, verified directly:
+> `V.prod(t)` on `vulkan:0` raises *"backend 'vulkan:0' cannot evaluate op 'prod'"*.
+>
+> `ARCHITECTURE.md` §3 Fork 3 does specify CPU fallback via graph splitting, and `supports()` is
+> the predicate it would need — but the splitting was never built, and the executor says so:
+> *"multi-device splitting is the scheduler's job and arrives with the Vulkan backend."*
+>
+> The finding is unchanged and the consequence is worse than described: a model touching a
+> single unported operator **could not run on Vulkan at all.**
 
 Meanwhile M3 and ten research stages went into tuning one operator, GEMM, to 1,270 GFLOP/s.
 
 That is precisely the pattern Principle 3 exists to stop, and it is the strongest available
-argument for this phase. The fallback design is sound — an unported op is slow, not wrong — but
-it has allowed a 3-in-4 coverage gap to persist invisibly behind a green test suite.
+argument for this phase. The coverage gap persisted behind a green test suite because nothing
+exercised an unported operator *on the Vulkan device*: the parity tests run on CPU, and the
+Vulkan tests only cover operators that already had kernels.
 
 **Immediate consequence:** binary and unary elementwise Vulkan kernels are the highest-value
 work in the project. They unblock every model, they are numerically free (no fold order changes,

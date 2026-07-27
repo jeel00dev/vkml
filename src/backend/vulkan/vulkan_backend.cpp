@@ -657,10 +657,18 @@ bool VulkanBackend::supports(const Node& node) const {
     if (is_view_op(node.op) || node.is_leaf()) {
         return true;
     }
-    // Everything not listed falls back to the CPU, which is what makes
-    // incremental porting safe: an unported op is slow, not wrong. That safety
-    // is also why the gap here went unnoticed for so long -- see
-    // docs/PHASE2-MANIFESTO.md, "starting position".
+    // Anything not listed cannot run on this backend AT ALL: Executor::realize
+    // throws NotImplementedError rather than routing the node elsewhere.
+    //
+    // An earlier version of this comment claimed unported ops "fall back to the
+    // CPU, slow but not wrong". That describes the design in
+    // docs/ARCHITECTURE.md 3 Fork 3, not the code. supports() is the predicate
+    // that fallback would need, but the graph splitting that would consume it
+    // was never built -- see the executor, which says as much.
+    //
+    // The practical consequence, verified: a model touching one unported op
+    // cannot run on Vulkan, it does not run slowly. Do not restore the old
+    // wording without making it true first.
     switch (node.op) {
         case OpKind::Full: return node.dtype == DType::F32;
         // Unary elementwise: one shader, one specialisation constant per op.
