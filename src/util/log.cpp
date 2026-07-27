@@ -44,10 +44,10 @@ std::string_view to_string(LogLevel level) noexcept {
     switch (level) {
         case LogLevel::Trace: return "trace";
         case LogLevel::Debug: return "debug";
-        case LogLevel::Info:  return "info";
-        case LogLevel::Warn:  return "warn";
+        case LogLevel::Info: return "info";
+        case LogLevel::Warn: return "warn";
         case LogLevel::Error: return "error";
-        case LogLevel::Off:   return "off";
+        case LogLevel::Off: return "off";
     }
     return "?";
 }
@@ -56,9 +56,7 @@ void set_log_level(LogLevel level) noexcept {
     level_storage().store(level, std::memory_order_relaxed);
 }
 
-LogLevel log_level() noexcept {
-    return level_storage().load(std::memory_order_relaxed);
-}
+LogLevel log_level() noexcept { return level_storage().load(std::memory_order_relaxed); }
 
 void set_log_callback(LogCallback cb) {
     const std::lock_guard<std::mutex> lock(callback_mutex());

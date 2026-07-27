@@ -77,9 +77,7 @@ inline void store(Node& n, int64_t linear, T value) noexcept {
 }
 
 /// True when a whole-tensor walk can use a flat linear loop.
-[[nodiscard]] inline bool all_contiguous(const Node& a) noexcept {
-    return a.shape.is_contiguous();
-}
+[[nodiscard]] inline bool all_contiguous(const Node& a) noexcept { return a.shape.is_contiguous(); }
 
 template <typename... Rest>
 [[nodiscard]] inline bool all_contiguous(const Node& a, const Rest&... rest) noexcept {

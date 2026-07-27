@@ -27,6 +27,7 @@ std::vector<NodePtr> autograd_order(const NodePtr& root) {
         NodePtr node;
         int next;
     };
+
     std::vector<Frame> stack;
     stack.push_back({root, 0});
 
@@ -159,9 +160,7 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             accumulate(grads, a, reduce_to_shape(grad, Tensor{a}.shape()));
             return;
 
-        case OpKind::Cast:
-            accumulate(grads, a, grad.to(a->dtype));
-            return;
+        case OpKind::Cast: accumulate(grads, a, grad.to(a->dtype)); return;
 
         // -- binary ---------------------------------------------------------
         case OpKind::Add:
@@ -214,17 +213,11 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             return;
 
         // -- unary ----------------------------------------------------------
-        case OpKind::Neg:
-            accumulate(grads, a, neg(grad));
-            return;
+        case OpKind::Neg: accumulate(grads, a, neg(grad)); return;
 
-        case OpKind::Abs:
-            accumulate(grads, a, grad * sign(ta()));
-            return;
+        case OpKind::Abs: accumulate(grads, a, grad * sign(ta())); return;
 
-        case OpKind::Square:
-            accumulate(grads, a, grad * ta() * 2.0);
-            return;
+        case OpKind::Square: accumulate(grads, a, grad * ta() * 2.0); return;
 
         case OpKind::Sqrt:
             // 1/(2*sqrt(a)) reuses the forward result rather than recomputing
@@ -237,30 +230,20 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             accumulate(grads, a, neg(grad * out() * out() * out()) / 2.0);
             return;
 
-        case OpKind::Reciprocal:
-            accumulate(grads, a, neg(grad * out() * out()));
-            return;
+        case OpKind::Reciprocal: accumulate(grads, a, neg(grad * out() * out())); return;
 
-        case OpKind::Exp:
-            accumulate(grads, a, grad * out());
-            return;
+        case OpKind::Exp: accumulate(grads, a, grad * out()); return;
 
-        case OpKind::Log:
-            accumulate(grads, a, grad / ta());
-            return;
+        case OpKind::Log: accumulate(grads, a, grad / ta()); return;
 
-        case OpKind::Sin:
-            accumulate(grads, a, grad * cos(ta()));
-            return;
+        case OpKind::Sin: accumulate(grads, a, grad * cos(ta())); return;
 
-        case OpKind::Cos:
-            accumulate(grads, a, neg(grad * sin(ta())));
-            return;
+        case OpKind::Cos: accumulate(grads, a, neg(grad * sin(ta()))); return;
 
         case OpKind::Tanh:
-            accumulate(grads, a, grad * sub(Tensor::ones(node.shape.dims(), node.dtype,
-                                                         node.device),
-                                            out() * out()));
+            accumulate(grads, a,
+                       grad * sub(Tensor::ones(node.shape.dims(), node.dtype, node.device),
+                                  out() * out()));
             return;
 
         case OpKind::Sigmoid:
@@ -374,8 +357,7 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             const Tensor g_k = p.keepdim ? grad : grad.reshape(keep);
             const Tensor mask = equal(ta(), out_k.broadcast_to(src_dims));
             accumulate(grads, a,
-                       where(mask, g_k.broadcast_to(src_dims).contiguous(),
-                             zeros_like(Tensor{a})));
+                       where(mask, g_k.broadcast_to(src_dims).contiguous(), zeros_like(Tensor{a})));
             return;
         }
 
@@ -395,8 +377,7 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             const auto p = node.params.get<AxisParams>();
             const std::array<int, 1> axes{p.axis};
             const Tensor total = sum(grad, axes, /*keepdim=*/true);
-            accumulate(grads, a,
-                       sub(grad, exp(out()) * total.broadcast_to(Tensor{a}.shape())));
+            accumulate(grads, a, sub(grad, exp(out()) * total.broadcast_to(Tensor{a}.shape())));
             return;
         }
 
@@ -408,20 +389,15 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             accumulate(grads, b, matmul(ta().transpose(-2, -1), grad));
             return;
 
-        default:
-            not_differentiable(node);
+        default: not_differentiable(node);
     }
 }
 
 }  // namespace
 
-NoGradGuard::NoGradGuard() noexcept : previous_(grad_enabled()) {
-    set_grad_enabled(false);
-}
+NoGradGuard::NoGradGuard() noexcept : previous_(grad_enabled()) { set_grad_enabled(false); }
 
-NoGradGuard::~NoGradGuard() {
-    set_grad_enabled(previous_);
-}
+NoGradGuard::~NoGradGuard() { set_grad_enabled(previous_); }
 
 Tensor detach(const Tensor& t) {
     VKML_CHECK(t.defined(), Error, "detach() on an undefined tensor");

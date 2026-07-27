@@ -97,8 +97,7 @@ TEST_CASE("vulkan result strings are decoded") {
     CHECK_THROWS_AS(vkml::vk::check(VK_ERROR_DEVICE_LOST, "test"), vkml::DeviceError);
     // Allocation failure maps to the memory-specific exception so Python sees
     // MemoryError rather than a generic RuntimeError.
-    CHECK_THROWS_AS(vkml::vk::check(VK_ERROR_OUT_OF_DEVICE_MEMORY, "test"),
-                    vkml::OutOfMemoryError);
+    CHECK_THROWS_AS(vkml::vk::check(VK_ERROR_OUT_OF_DEVICE_MEMORY, "test"), vkml::OutOfMemoryError);
 }
 
 TEST_CASE("embedded SPIR-V is well formed") {
@@ -113,9 +112,9 @@ TEST_CASE("embedded SPIR-V is well formed") {
 
 #endif  // VKML_HAS_VULKAN
 
-#    include "vk_pipeline.h"
-#    include "vkml/spv/gemv.h"
-#    include "vkml/spv/probe_private_array.h"
+#include "vk_pipeline.h"
+#include "vkml/spv/gemv.h"
+#include "vkml/spv/probe_private_array.h"
 
 // ---------------------------------------------------------------------------
 // Engineering-theory probe (M3-R4).
@@ -212,8 +211,8 @@ TEST_CASE("private array spill threshold, bracketed") {
     }
     vkml::vk::PipelineCache pipes(ctx);
     MESSAGE("ASIZE  VGPR  scratch  waves   (probe_private_array)");
-    for (const uint32_t n : {16U, 32U, 48U, 56U, 60U, 62U, 63U, 64U, 65U, 66U, 68U,
-                             72U, 80U, 96U, 128U}) {
+    for (const uint32_t n :
+         {16U, 32U, 48U, 56U, 60U, 62U, 63U, 64U, 65U, 66U, 68U, 72U, 80U, 96U, 128U}) {
         vkml::vk::KernelConfig cfg;
         cfg.workgroup_size = 256;
         cfg.spec_constants = {256, n};
@@ -282,7 +281,8 @@ TEST_CASE("M3-R5: scope boundaries of the private-array budget") {
     MESSAGE("S1 -- vec4 arrays: budget in BYTES or in ELEMENTS?");
     for (const uint32_t v : {8U, 15U, 16U, 17U, 20U, 32U, 64U}) {
         const auto s = probe(1, v, 1, 0);
-        if (!s.available) return;
+        if (!s.available)
+            return;
         MESSAGE("  vec4[" << v << "] = " << v * 4 << " floats / " << v * 16
                           << " B   vgpr=" << s.vgprs << "  scratch=" << s.scratch_bytes);
     }
@@ -290,7 +290,8 @@ TEST_CASE("M3-R5: scope boundaries of the private-array budget") {
     MESSAGE("S2 -- constant index vs dynamic index, 128 floats:");
     for (const uint32_t dyn : {0U, 1U}) {
         const auto s = probe(128, 0, dyn, 0);
-        if (!s.available) return;
+        if (!s.available)
+            return;
         MESSAGE("  DYNAMIC=" << dyn << "  vgpr=" << s.vgprs << "  scratch=" << s.scratch_bytes);
     }
 
@@ -298,7 +299,8 @@ TEST_CASE("M3-R5: scope boundaries of the private-array budget") {
     for (const uint32_t sg : {32U, 64U}) {
         for (const uint32_t n : {64U, 65U, 80U}) {
             const auto s = probe(n, 0, 1, sg);
-            if (!s.available) return;
+            if (!s.available)
+                return;
             MESSAGE("  sg=" << sg << " floats=" << n << "  vgpr=" << s.vgprs
                             << "  scratch=" << s.scratch_bytes);
         }
@@ -333,7 +335,8 @@ TEST_CASE("M3-R5: the scope boundaries of A1 and A2 are permanent") {
         const auto at = probe(1, 16, 1, 0);
         const auto past = probe(1, 17, 1, 0);
         const auto far = probe(1, 64, 1, 0);
-        if (!at.available) return;
+        if (!at.available)
+            return;
         CHECK(at.scratch_bytes == 0);
         CHECK(past.scratch_bytes > 0);
         CHECK(far.scratch_bytes > 0);
@@ -345,7 +348,8 @@ TEST_CASE("M3-R5: the scope boundaries of A1 and A2 are permanent") {
         // SCOPE boundary, not an exception: 128 floats is twice the budget.
         const auto constant_idx = probe(128, 0, 0, 0);
         const auto dynamic_idx = probe(128, 0, 1, 0);
-        if (!constant_idx.available) return;
+        if (!constant_idx.available)
+            return;
         CHECK(constant_idx.scratch_bytes == 0);
         CHECK(dynamic_idx.scratch_bytes > 0);
     }
@@ -354,7 +358,8 @@ TEST_CASE("M3-R5: the scope boundaries of A1 and A2 are permanent") {
         for (const uint32_t sg : {32U, 64U}) {
             const auto at = probe(64, 0, 1, sg);
             const auto past = probe(65, 0, 1, sg);
-            if (!at.available) return;
+            if (!at.available)
+                return;
             // Threshold does not move with subgroup size: it is a per-lane budget.
             CHECK(at.scratch_bytes == 0);
             CHECK(past.scratch_bytes > 0);
@@ -363,7 +368,8 @@ TEST_CASE("M3-R5: the scope boundaries of A1 and A2 are permanent") {
             // seen only at subgroup 64.
             for (const uint32_t n : {65U, 72U, 80U, 128U}) {
                 const auto s = probe(n, 0, 1, sg);
-                if (!s.available) return;
+                if (!s.available)
+                    return;
                 const uint64_t raw = static_cast<uint64_t>(n) * 4 * sg;
                 CHECK(s.scratch_bytes == (raw + 1023) / 1024 * 1024);
             }
@@ -434,8 +440,8 @@ TEST_CASE("M4-R3: resident workgroups are an INTEGER function of LDS") {
     CHECK(budget / lds_of(4096) < budget / base);
 }
 
-#    include "vk_command.h"
-#    include "vkml/spv/probe_mlp.h"
+#include "vk_command.h"
+#include "vkml/spv/probe_mlp.h"
 
 // ---------------------------------------------------------------------------
 // M4-R5: why does the latency-hiding crossover move between kernels?

@@ -5,8 +5,8 @@
 
 #include <vector>
 
-using vkml::DType;
 using vkml::Device;
+using vkml::DType;
 using vkml::make_node;
 using vkml::make_view;
 using vkml::Node;
@@ -193,7 +193,7 @@ TEST_CASE("use counts match the number of later consumers") {
         }
         return -1;
     };
-    CHECK(count_of(x) == 2);    // consumed by both l and r
+    CHECK(count_of(x) == 2);  // consumed by both l and r
     CHECK(count_of(l) == 1);
     CHECK(count_of(out) == 0);  // nothing consumes the root
 }

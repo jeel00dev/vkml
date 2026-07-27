@@ -10,8 +10,8 @@
 namespace vkml::vk {
 
 std::string KernelConfig::key() const {
-    std::string k = std::format("wg{}_sg{}_lv{}", workgroup_size, required_subgroup_size,
-                                load_vector_width);
+    std::string k =
+        std::format("wg{}_sg{}_lv{}", workgroup_size, required_subgroup_size, load_vector_width);
     for (const uint32_t c : spec_constants) {
         k += std::format("_{}", c);
     }
@@ -43,10 +43,9 @@ VkShaderModule PipelineCache::module_for(const std::string& name, const uint32_t
         return it->second;
     }
 
-    VKML_ASSERT(bytes % 4 == 0, "SPIR-V module '{}' is {} bytes, not a multiple of 4", name,
-                bytes);
-    VKML_ASSERT(spirv[0] == 0x07230203, "SPIR-V module '{}' has a bad magic number 0x{:08x}",
-                name, spirv[0]);
+    VKML_ASSERT(bytes % 4 == 0, "SPIR-V module '{}' is {} bytes, not a multiple of 4", name, bytes);
+    VKML_ASSERT(spirv[0] == 0x07230203, "SPIR-V module '{}' has a bad magic number 0x{:08x}", name,
+                spirv[0]);
 
     VkShaderModuleCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -62,8 +61,7 @@ VkShaderModule PipelineCache::module_for(const std::string& name, const uint32_t
 }
 
 const PipelineCache::Pipeline& PipelineCache::get(const std::string& name, const uint32_t* spirv,
-                                                  size_t spirv_bytes,
-                                                  uint32_t push_constant_bytes,
+                                                  size_t spirv_bytes, uint32_t push_constant_bytes,
                                                   const KernelConfig& config) {
     const std::string key = name + ":" + config.key();
     if (const auto it = pipelines_.find(key); it != pipelines_.end()) {
@@ -115,8 +113,7 @@ const PipelineCache::Pipeline& PipelineCache::get(const std::string& name, const
     spec.pData = values.data();
 
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup{};
-    subgroup.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
+    subgroup.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
     subgroup.requiredSubgroupSize = config.required_subgroup_size;
 
     VkPipelineShaderStageCreateInfo stage{};
@@ -132,8 +129,9 @@ const PipelineCache::Pipeline& PipelineCache::get(const std::string& name, const
                    name, config.required_subgroup_size);
         VKML_CHECK(config.required_subgroup_size >= ctx_.info().min_subgroup_size &&
                        config.required_subgroup_size <= ctx_.info().max_subgroup_size,
-                   DeviceError, "kernel '{}' pins subgroup size {}, outside the device range {}..{}",
-                   name, config.required_subgroup_size, ctx_.info().min_subgroup_size,
+                   DeviceError,
+                   "kernel '{}' pins subgroup size {}, outside the device range {}..{}", name,
+                   config.required_subgroup_size, ctx_.info().min_subgroup_size,
                    ctx_.info().max_subgroup_size);
         stage.pNext = &subgroup;
     }
@@ -182,8 +180,8 @@ const PipelineCache::Pipeline& PipelineCache::get(const std::string& name, const
     if (p.stats.available) {
         VKML_LOG_DEBUG("  resources: vgpr={} sgpr={} spilled_vgpr={} scratch={}B lds={}B "
                        "max_waves={}",
-                       p.stats.vgprs, p.stats.sgprs, p.stats.spilled_vgprs,
-                       p.stats.scratch_bytes, p.stats.lds_bytes, p.stats.max_waves);
+                       p.stats.vgprs, p.stats.sgprs, p.stats.spilled_vgprs, p.stats.scratch_bytes,
+                       p.stats.lds_bytes, p.stats.max_waves);
     }
 
     return pipelines_.emplace(key, p).first->second;
@@ -248,15 +246,11 @@ PipelineCache::Stats PipelineCache::query_stats(VkPipeline pipeline) const {
             case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR:
                 value = static_cast<int64_t>(st.value.u64);
                 break;
-            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR:
-                value = st.value.i64;
-                break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR: value = st.value.i64; break;
             case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR:
                 value = st.value.b32 != VK_FALSE ? 1 : 0;
                 break;
-            default:
-                value = static_cast<int64_t>(st.value.f64);
-                break;
+            default: value = static_cast<int64_t>(st.value.f64); break;
         }
         out.raw.emplace_back(name, value);
 

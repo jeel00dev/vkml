@@ -95,6 +95,7 @@ std::vector<Node*> topological_order(std::span<const NodePtr> roots) {
         Node* node;
         int next_src;
     };
+
     std::vector<Frame> stack;
 
     for (const NodePtr& root : roots) {

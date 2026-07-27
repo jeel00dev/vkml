@@ -49,19 +49,19 @@ void bench_transfer() {
         const size_t n = bytes / sizeof(float);
         std::vector<float> host(n, 2.0F);
 
-        b::run("transfer", "upload " + std::to_string(mib) + " MiB",
-               [&host, n] {
-                   const Tensor t = Tensor::from_host(host.data(),
-                                                      {static_cast<int64_t>(n)});
-                   b::keep(t.numel());
-               },
-               static_cast<double>(bytes), "B");
+        b::run(
+            "transfer", "upload " + std::to_string(mib) + " MiB",
+            [&host, n] {
+                const Tensor t = Tensor::from_host(host.data(), {static_cast<int64_t>(n)});
+                b::keep(t.numel());
+            },
+            static_cast<double>(bytes), "B");
 
         const Tensor device = Tensor::from_host(host.data(), {static_cast<int64_t>(n)});
         std::vector<float> out(n);
-        b::run("transfer", "download " + std::to_string(mib) + " MiB",
-               [&device, &out] { device.to_host(out.data()); },
-               static_cast<double>(bytes), "B");
+        b::run(
+            "transfer", "download " + std::to_string(mib) + " MiB",
+            [&device, &out] { device.to_host(out.data()); }, static_cast<double>(bytes), "B");
     }
 }
 
@@ -135,14 +135,16 @@ void bench_kernels() {
         b::run("kernel", "exp " + sz, [&a] { exp(a).realize(); }, elems, "elem");
         b::run("kernel", "sum " + sz, [&a] { sum(a).realize(); }, elems, "elem");
         b::run("kernel", "softmax " + sz, [&a] { softmax(a, -1).realize(); }, elems, "elem");
-        b::run("kernel", "contiguous(T) " + sz,
-               [&a] { a.transpose(0, 1).contiguous().realize(); }, elems, "elem");
+        b::run(
+            "kernel", "contiguous(T) " + sz, [&a] { a.transpose(0, 1).contiguous().realize(); },
+            elems, "elem");
     }
 
     // Strided vs contiguous, to quantify what the fast path in iterate.h buys.
     const Tensor big = make(1024, 1024);
-    b::run("kernel", "relu 1024x1024 strided",
-           [&big] { relu(big.transpose(0, 1)).realize(); }, 1024.0 * 1024.0, "elem");
+    b::run(
+        "kernel", "relu 1024x1024 strided", [&big] { relu(big.transpose(0, 1)).realize(); },
+        1024.0 * 1024.0, "elem");
 
     set_eager(prev);
 }
@@ -154,10 +156,11 @@ void bench_matmul() {
     for (const int64_t n : {int64_t{64}, int64_t{128}, int64_t{256}}) {
         const Tensor a = make(n, n);
         const Tensor c = make(n, n);
-        const double flops = 2.0 * static_cast<double>(n) * static_cast<double>(n) *
-                             static_cast<double>(n);
-        b::run("matmul", "sgemm " + std::to_string(n) + "^3",
-               [&a, &c] { matmul(a, c).realize(); }, flops, "FLOP");
+        const double flops =
+            2.0 * static_cast<double>(n) * static_cast<double>(n) * static_cast<double>(n);
+        b::run(
+            "matmul", "sgemm " + std::to_string(n) + "^3", [&a, &c] { matmul(a, c).realize(); },
+            flops, "FLOP");
     }
 
     set_eager(prev);

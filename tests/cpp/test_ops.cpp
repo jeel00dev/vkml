@@ -32,8 +32,7 @@ std::vector<int64_t> host_i64(const Tensor& t) {
     return out;
 }
 
-void check_close(const std::vector<float>& got, const std::vector<float>& want,
-                 float tol = 1e-6F) {
+void check_close(const std::vector<float>& got, const std::vector<float>& want, float tol = 1e-6F) {
     REQUIRE(got.size() == want.size());
     for (size_t i = 0; i < got.size(); ++i) {
         CHECK(got[i] == doctest::Approx(want[i]).epsilon(tol));

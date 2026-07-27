@@ -65,15 +65,14 @@ void k_cast(Node& out) {
     switch (from) {
         case DType::F32:
             switch (to) {
-                case DType::I32:  from_f32(int32_t{}); return;
-                case DType::I64:  from_f32(int64_t{}); return;
+                case DType::I32: from_f32(int32_t{}); return;
+                case DType::I64: from_f32(int64_t{}); return;
                 case DType::Bool:
                     map_unary<uint8_t, float>(out, a,
                                               [](float v) -> uint8_t { return v != 0.0F ? 1 : 0; });
                     return;
                 case DType::F16:
-                    map_unary<uint16_t, float>(out, a,
-                                               [](float v) { return fp32_to_fp16(v); });
+                    map_unary<uint16_t, float>(out, a, [](float v) { return fp32_to_fp16(v); });
                     return;
                 default: break;
             }
@@ -117,8 +116,8 @@ void k_cast(Node& out) {
             break;
     }
 
-    throw DTypeError(std::format("cpu backend: unsupported cast {} -> {}", dtype_name(from),
-                                 dtype_name(to)));
+    throw DTypeError(
+        std::format("cpu backend: unsupported cast {} -> {}", dtype_name(from), dtype_name(to)));
 }
 
 void k_full(Node& out) {
@@ -155,8 +154,7 @@ void k_full(Node& out) {
             std::memset(out.data(), v, static_cast<size_t>(n));
             return;
         }
-        default:
-            unsupported_dtype(out);
+        default: unsupported_dtype(out);
     }
 }
 

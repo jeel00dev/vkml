@@ -49,10 +49,11 @@ namespace {
 
 nb::dlpack::dtype to_dlpack_dtype(DType dt) {
     switch (dt) {
-        case DType::F32:  return nb::dtype<float>();
-        case DType::F16:  return nb::dlpack::dtype{static_cast<uint8_t>(nb::dlpack::dtype_code::Float), 16, 1};
-        case DType::I32:  return nb::dtype<int32_t>();
-        case DType::I64:  return nb::dtype<int64_t>();
+        case DType::F32: return nb::dtype<float>();
+        case DType::F16:
+            return nb::dlpack::dtype{static_cast<uint8_t>(nb::dlpack::dtype_code::Float), 16, 1};
+        case DType::I32: return nb::dtype<int32_t>();
+        case DType::I64: return nb::dtype<int64_t>();
         case DType::Bool: return nb::dtype<bool>();
     }
     throw vkml::DTypeError("unknown dtype");
@@ -64,11 +65,15 @@ DType from_dlpack_dtype(nb::dlpack::dtype dt) {
         throw vkml::DTypeError("vectorised dlpack dtypes are not supported");
     }
     if (code == nb::dlpack::dtype_code::Float) {
-        if (dt.bits == 32) return DType::F32;
-        if (dt.bits == 16) return DType::F16;
+        if (dt.bits == 32)
+            return DType::F32;
+        if (dt.bits == 16)
+            return DType::F16;
     } else if (code == nb::dlpack::dtype_code::Int) {
-        if (dt.bits == 32) return DType::I32;
-        if (dt.bits == 64) return DType::I64;
+        if (dt.bits == 32)
+            return DType::I32;
+        if (dt.bits == 64)
+            return DType::I64;
     } else if (code == nb::dlpack::dtype_code::Bool) {
         return DType::Bool;
     }
@@ -264,14 +269,16 @@ NB_MODULE(_vkml_core, m) {
     // -- device -------------------------------------------------------------
     nb::class_<Device>(m, "device")
         .def(nb::init<>())
-        .def("__init__",
-             [](Device* self, std::string_view spec) { new (self) Device(Device::parse(spec)); },
-             "spec"_a)
+        .def(
+            "__init__",
+            [](Device* self, std::string_view spec) { new (self) Device(Device::parse(spec)); },
+            "spec"_a)
         .def_prop_ro("index", &Device::index)
         .def_prop_ro("is_cpu", &Device::is_cpu)
         .def("__repr__", [](const Device& d) { return "device('" + d.str() + "')"; })
         .def("__str__", &Device::str)
-        .def("__eq__", [](const Device& a, const Device& b) { return a == b; }, nb::is_operator())
+        .def(
+            "__eq__", [](const Device& a, const Device& b) { return a == b; }, nb::is_operator())
         .def("__hash__", [](const Device& d) {
             return static_cast<size_t>(d.index()) * 31U + static_cast<size_t>(d.kind());
         });
@@ -311,88 +318,131 @@ NB_MODULE(_vkml_core, m) {
         .def("__str__", &Tensor::str);
 
     // evaluation
-    tensor.def("realize", [](const Tensor& t) { t.realize(); return t; })
+    tensor
+        .def("realize",
+             [](const Tensor& t) {
+                 t.realize();
+                 return t;
+             })
         .def("item", &Tensor::item)
         .def("numpy", &tensor_to_numpy, "Copy to a new NumPy array.")
-        .def("__dlpack__", [](const Tensor& t, nb::kwargs) { return tensor_to_numpy(t); },
-             "Export via DLPack. Note strides are reported in elements, not bytes.")
+        .def(
+            "__dlpack__", [](const Tensor& t, nb::kwargs) { return tensor_to_numpy(t); },
+            "Export via DLPack. Note strides are reported in elements, not bytes.")
         .def("__dlpack_device__",
              [](const Tensor&) { return nb::make_tuple(nb::device::cpu::value, 0); });
 
     // views
-    tensor.def("reshape", [](const Tensor& t, std::vector<int64_t> d) { return t.reshape(d); },
-               "shape"_a)
-        .def("view", [](const Tensor& t, std::vector<int64_t> d) { return t.reshape(d); },
-             "shape"_a)
-        .def("permute", [](const Tensor& t, std::vector<int> p) { return t.permute(p); },
-             "dims"_a)
+    tensor
+        .def(
+            "reshape", [](const Tensor& t, std::vector<int64_t> d) { return t.reshape(d); },
+            "shape"_a)
+        .def(
+            "view", [](const Tensor& t, std::vector<int64_t> d) { return t.reshape(d); }, "shape"_a)
+        .def(
+            "permute", [](const Tensor& t, std::vector<int> p) { return t.permute(p); }, "dims"_a)
         .def("transpose", &Tensor::transpose, "dim0"_a, "dim1"_a)
         .def_prop_ro("T", [](const Tensor& t) { return t.transpose(-2, -1); })
         .def("squeeze", &Tensor::squeeze, "dim"_a)
         .def("unsqueeze", &Tensor::unsqueeze, "dim"_a)
-        .def("broadcast_to",
-             [](const Tensor& t, std::vector<int64_t> d) { return t.broadcast_to(d); }, "shape"_a)
+        .def(
+            "broadcast_to",
+            [](const Tensor& t, std::vector<int64_t> d) { return t.broadcast_to(d); }, "shape"_a)
         .def("contiguous", &Tensor::contiguous)
         .def("to", &Tensor::to, "dtype"_a)
         .def("astype", &Tensor::to, "dtype"_a)
         .def("__getitem__", &tensor_getitem, "key"_a);
 
     // autograd
-    tensor.def_prop_rw("requires_grad", &Tensor::requires_grad,
-                       [](Tensor& t, bool v) { t.set_requires_grad(v); })
+    tensor
+        .def_prop_rw("requires_grad", &Tensor::requires_grad,
+                     [](Tensor& t, bool v) { t.set_requires_grad(v); })
         .def_prop_rw("grad", &Tensor::grad, [](Tensor& t, const Tensor& g) { t.set_grad(g); })
-        .def("backward", [](const Tensor& t) { vkml::backward(t); },
-             "Accumulate gradients into every leaf that requires grad.")
+        .def(
+            "backward", [](const Tensor& t) { vkml::backward(t); },
+            "Accumulate gradients into every leaf that requires grad.")
         .def("assign_", &Tensor::assign_, "src"_a,
              "In-place overwrite. Used by optimizers; see the C++ docs for the "
              "mid-graph hazard.")
-        .def("detach", [](const Tensor& t) { return vkml::detach(t); },
-             "A view of the same data that carries no gradient history.");
+        .def(
+            "detach", [](const Tensor& t) { return vkml::detach(t); },
+            "A view of the same data that carries no gradient history.");
 
     // arithmetic
-    tensor.def("__add__", [](const Tensor& a, const Tensor& b) { return a + b; }, nb::is_operator())
-        .def("__add__", [](const Tensor& a, double s) { return a + s; }, nb::is_operator())
-        .def("__radd__", [](const Tensor& a, double s) { return a + s; }, nb::is_operator())
-        .def("__sub__", [](const Tensor& a, const Tensor& b) { return a - b; }, nb::is_operator())
-        .def("__sub__", [](const Tensor& a, double s) { return a - s; }, nb::is_operator())
-        .def("__rsub__", [](const Tensor& a, double s) { return vkml::add(vkml::neg(a), s); },
-             nb::is_operator())
-        .def("__mul__", [](const Tensor& a, const Tensor& b) { return a * b; }, nb::is_operator())
-        .def("__mul__", [](const Tensor& a, double s) { return a * s; }, nb::is_operator())
-        .def("__rmul__", [](const Tensor& a, double s) { return a * s; }, nb::is_operator())
-        .def("__truediv__", [](const Tensor& a, const Tensor& b) { return a / b; },
-             nb::is_operator())
-        .def("__truediv__", [](const Tensor& a, double s) { return a / s; }, nb::is_operator())
-        .def("__rtruediv__",
-             [](const Tensor& a, double s) { return vkml::mul(vkml::reciprocal(a), s); },
-             nb::is_operator())
-        .def("__pow__", [](const Tensor& a, double s) { return vkml::pow(a, s); },
-             nb::is_operator())
-        .def("__neg__", [](const Tensor& a) { return -a; }, nb::is_operator())
-        .def("__matmul__", [](const Tensor& a, const Tensor& b) { return vkml::matmul(a, b); },
-             nb::is_operator())
-        .def("__lt__", [](const Tensor& a, const Tensor& b) { return vkml::less(a, b); },
-             nb::is_operator())
-        .def("__gt__", [](const Tensor& a, const Tensor& b) { return vkml::greater(a, b); },
-             nb::is_operator())
-        .def("__le__", [](const Tensor& a, const Tensor& b) { return vkml::less_equal(a, b); },
-             nb::is_operator())
-        .def("__ge__", [](const Tensor& a, const Tensor& b) { return vkml::greater_equal(a, b); },
-             nb::is_operator());
+    tensor.def(
+              "__add__", [](const Tensor& a, const Tensor& b) { return a + b; }, nb::is_operator())
+        .def(
+            "__add__", [](const Tensor& a, double s) { return a + s; }, nb::is_operator())
+        .def(
+            "__radd__", [](const Tensor& a, double s) { return a + s; }, nb::is_operator())
+        .def(
+            "__sub__", [](const Tensor& a, const Tensor& b) { return a - b; }, nb::is_operator())
+        .def(
+            "__sub__", [](const Tensor& a, double s) { return a - s; }, nb::is_operator())
+        .def(
+            "__rsub__", [](const Tensor& a, double s) { return vkml::add(vkml::neg(a), s); },
+            nb::is_operator())
+        .def(
+            "__mul__", [](const Tensor& a, const Tensor& b) { return a * b; }, nb::is_operator())
+        .def(
+            "__mul__", [](const Tensor& a, double s) { return a * s; }, nb::is_operator())
+        .def(
+            "__rmul__", [](const Tensor& a, double s) { return a * s; }, nb::is_operator())
+        .def(
+            "__truediv__", [](const Tensor& a, const Tensor& b) { return a / b; },
+            nb::is_operator())
+        .def(
+            "__truediv__", [](const Tensor& a, double s) { return a / s; }, nb::is_operator())
+        .def(
+            "__rtruediv__",
+            [](const Tensor& a, double s) { return vkml::mul(vkml::reciprocal(a), s); },
+            nb::is_operator())
+        .def(
+            "__pow__", [](const Tensor& a, double s) { return vkml::pow(a, s); }, nb::is_operator())
+        .def(
+            "__neg__", [](const Tensor& a) { return -a; }, nb::is_operator())
+        .def(
+            "__matmul__", [](const Tensor& a, const Tensor& b) { return vkml::matmul(a, b); },
+            nb::is_operator())
+        .def(
+            "__lt__", [](const Tensor& a, const Tensor& b) { return vkml::less(a, b); },
+            nb::is_operator())
+        .def(
+            "__gt__", [](const Tensor& a, const Tensor& b) { return vkml::greater(a, b); },
+            nb::is_operator())
+        .def(
+            "__le__", [](const Tensor& a, const Tensor& b) { return vkml::less_equal(a, b); },
+            nb::is_operator())
+        .def(
+            "__ge__", [](const Tensor& a, const Tensor& b) { return vkml::greater_equal(a, b); },
+            nb::is_operator());
 
     // method forms of common ops, so `x.relu()` works like `vkml.relu(x)`
-    tensor.def("sum", [](const Tensor& t, nb::object ax, bool keep) {
-                   return vkml::sum(t, to_axes(ax, t.ndim()), keep);
-               }, "dim"_a = nb::none(), "keepdim"_a = false)
-        .def("mean", [](const Tensor& t, nb::object ax, bool keep) {
-                 return vkml::mean(t, to_axes(ax, t.ndim()), keep);
-             }, "dim"_a = nb::none(), "keepdim"_a = false)
-        .def("max", [](const Tensor& t, nb::object ax, bool keep) {
-                 return vkml::max(t, to_axes(ax, t.ndim()), keep);
-             }, "dim"_a = nb::none(), "keepdim"_a = false)
-        .def("min", [](const Tensor& t, nb::object ax, bool keep) {
-                 return vkml::min(t, to_axes(ax, t.ndim()), keep);
-             }, "dim"_a = nb::none(), "keepdim"_a = false)
+    tensor
+        .def(
+            "sum",
+            [](const Tensor& t, nb::object ax, bool keep) {
+                return vkml::sum(t, to_axes(ax, t.ndim()), keep);
+            },
+            "dim"_a = nb::none(), "keepdim"_a = false)
+        .def(
+            "mean",
+            [](const Tensor& t, nb::object ax, bool keep) {
+                return vkml::mean(t, to_axes(ax, t.ndim()), keep);
+            },
+            "dim"_a = nb::none(), "keepdim"_a = false)
+        .def(
+            "max",
+            [](const Tensor& t, nb::object ax, bool keep) {
+                return vkml::max(t, to_axes(ax, t.ndim()), keep);
+            },
+            "dim"_a = nb::none(), "keepdim"_a = false)
+        .def(
+            "min",
+            [](const Tensor& t, nb::object ax, bool keep) {
+                return vkml::min(t, to_axes(ax, t.ndim()), keep);
+            },
+            "dim"_a = nb::none(), "keepdim"_a = false)
         .def("relu", &vkml::relu)
         .def("exp", &vkml::exp)
         .def("log", &vkml::log)
@@ -408,20 +458,24 @@ NB_MODULE(_vkml_core, m) {
 
     // -- construction -------------------------------------------------------
     m.def("from_numpy", &tensor_from_array, "array"_a, "dtype"_a = nb::none(),
-          "device"_a = Device::cpu(),
-          "Create a tensor by copying a C-contiguous CPU array.");
+          "device"_a = Device::cpu(), "Create a tensor by copying a C-contiguous CPU array.");
 
-    m.def("zeros", [](std::vector<int64_t> d, DType dt, Device dev) {
-              return Tensor::zeros(d, dt, dev);
-          }, "shape"_a, "dtype"_a = DType::F32, "device"_a = Device::cpu());
-    m.def("ones", [](std::vector<int64_t> d, DType dt, Device dev) {
-              return Tensor::ones(d, dt, dev);
-          }, "shape"_a, "dtype"_a = DType::F32, "device"_a = Device::cpu());
-    m.def("full", [](std::vector<int64_t> d, double v, DType dt, Device dev) {
-              return Tensor::full(d, v, dt, dev);
-          }, "shape"_a, "value"_a, "dtype"_a = DType::F32, "device"_a = Device::cpu());
-    m.def("arange", &Tensor::arange, "start"_a, "stop"_a, "step"_a = 1.0,
-          "dtype"_a = DType::F32, "device"_a = Device::cpu());
+    m.def(
+        "zeros",
+        [](std::vector<int64_t> d, DType dt, Device dev) { return Tensor::zeros(d, dt, dev); },
+        "shape"_a, "dtype"_a = DType::F32, "device"_a = Device::cpu());
+    m.def(
+        "ones",
+        [](std::vector<int64_t> d, DType dt, Device dev) { return Tensor::ones(d, dt, dev); },
+        "shape"_a, "dtype"_a = DType::F32, "device"_a = Device::cpu());
+    m.def(
+        "full",
+        [](std::vector<int64_t> d, double v, DType dt, Device dev) {
+            return Tensor::full(d, v, dt, dev);
+        },
+        "shape"_a, "value"_a, "dtype"_a = DType::F32, "device"_a = Device::cpu());
+    m.def("arange", &Tensor::arange, "start"_a, "stop"_a, "step"_a = 1.0, "dtype"_a = DType::F32,
+          "device"_a = Device::cpu());
 
     // -- free functions -----------------------------------------------------
     m.def("add", nb::overload_cast<const Tensor&, const Tensor&>(&vkml::add));
@@ -463,21 +517,36 @@ NB_MODULE(_vkml_core, m) {
     m.def("clamp_max", &vkml::clamp_max, "input"_a, "max"_a);
     m.def("where", &vkml::where, "condition"_a, "x"_a, "y"_a);
 
-    m.def("sum", [](const Tensor& t, nb::object ax, bool k) {
-              return vkml::sum(t, to_axes(ax, t.ndim()), k);
-          }, "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
-    m.def("mean", [](const Tensor& t, nb::object ax, bool k) {
-              return vkml::mean(t, to_axes(ax, t.ndim()), k);
-          }, "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
-    m.def("prod", [](const Tensor& t, nb::object ax, bool k) {
-              return vkml::prod(t, to_axes(ax, t.ndim()), k);
-          }, "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
-    m.def("amax", [](const Tensor& t, nb::object ax, bool k) {
-              return vkml::max(t, to_axes(ax, t.ndim()), k);
-          }, "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
-    m.def("amin", [](const Tensor& t, nb::object ax, bool k) {
-              return vkml::min(t, to_axes(ax, t.ndim()), k);
-          }, "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
+    m.def(
+        "sum",
+        [](const Tensor& t, nb::object ax, bool k) {
+            return vkml::sum(t, to_axes(ax, t.ndim()), k);
+        },
+        "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
+    m.def(
+        "mean",
+        [](const Tensor& t, nb::object ax, bool k) {
+            return vkml::mean(t, to_axes(ax, t.ndim()), k);
+        },
+        "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
+    m.def(
+        "prod",
+        [](const Tensor& t, nb::object ax, bool k) {
+            return vkml::prod(t, to_axes(ax, t.ndim()), k);
+        },
+        "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
+    m.def(
+        "amax",
+        [](const Tensor& t, nb::object ax, bool k) {
+            return vkml::max(t, to_axes(ax, t.ndim()), k);
+        },
+        "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
+    m.def(
+        "amin",
+        [](const Tensor& t, nb::object ax, bool k) {
+            return vkml::min(t, to_axes(ax, t.ndim()), k);
+        },
+        "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
     m.def("argmax", &vkml::argmax, "input"_a, "dim"_a, "keepdim"_a = false);
     m.def("argmin", &vkml::argmin, "input"_a, "dim"_a, "keepdim"_a = false);
 
@@ -503,70 +572,88 @@ NB_MODULE(_vkml_core, m) {
             return std::string(b.name());
         },
         "index"_a = 0, "Create and register the Vulkan backend for a device.");
-    m.def("vulkan_stats", [](int index) {
-        auto& b = static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index));
-        const vkml::VulkanStats s = b.stats();
-        nb::dict d;
-        d["reserved_bytes"] = s.reserved_bytes;
-        d["in_use_bytes"] = s.in_use_bytes;
-        d["peak_in_use_bytes"] = s.peak_in_use_bytes;
-        d["block_count"] = s.block_count;
-        d["live_allocations"] = s.live_allocations;
-        d["total_allocations"] = s.total_allocations;
-        d["device_allocations"] = s.device_allocations;
-        d["fragmentation"] = s.fragmentation;
-        d["submissions"] = s.submissions;
-        d["dispatches"] = s.dispatches;
-        d["pipelines"] = s.pipelines;
-        return d;
-    }, "index"_a = 0);
-    m.def("vulkan_set_profiling", [](bool on, int index) {
-        static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index)).set_profiling(on);
-    }, "enabled"_a, "index"_a = 0);
-    m.def("vulkan_last_profile", [](int index) {
-        return static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index)).last_profile();
-    }, "index"_a = 0);
-    m.def("vulkan_set_subgroup_override", [](uint32_t size, int index) {
-        static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index))
-            .set_subgroup_override(size);
-    }, "size"_a, "index"_a = 0);
-    m.def("vulkan_pipeline_stats", [](int index) {
-        auto& b = static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index));
-        nb::list out;
-        for (const vkml::PipelineStats& p : b.pipeline_stats()) {
+    m.def(
+        "vulkan_stats",
+        [](int index) {
+            auto& b = static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index));
+            const vkml::VulkanStats s = b.stats();
             nb::dict d;
-            d["name"] = p.name;
-            d["available"] = p.available;
-            d["vgprs"] = p.vgprs;
-            d["sgprs"] = p.sgprs;
-            d["spilled_vgprs"] = p.spilled_vgprs;
-            d["spilled_sgprs"] = p.spilled_sgprs;
-            d["scratch_bytes"] = p.scratch_bytes;
-            d["lds_bytes"] = p.lds_bytes;
-            d["waves_per_simd"] = p.waves_per_simd;
-            d["instructions"] = p.instructions;
-            d["code_bytes"] = p.code_bytes;
-            out.append(d);
-        }
-        return out;
-    }, "index"_a = 0,
-       "Compiler-reported resource usage per compiled pipeline. Empty entries have "
-       "available=False when the driver does not report statistics.");
-    m.def("vulkan_capabilities", [](int index) {
-        const vkml::DeviceCapabilities& c = vkml::vulkan_backend(index).capabilities();
-        nb::dict d;
-        d["fp16_compute"] = c.fp16_compute;
-        d["subgroup_size"] = c.subgroup_size;
-        d["min_subgroup_size"] = c.min_subgroup_size;
-        d["max_subgroup_size"] = c.max_subgroup_size;
-        d["global_float_atomics"] = c.global_float_atomics;
-        d["shared_float_atomics"] = c.shared_float_atomics;
-        d["cooperative_matrix"] = c.cooperative_matrix;
-        d["max_workgroup_invocations"] = c.max_workgroup_invocations;
-        d["max_shared_memory_bytes"] = c.max_shared_memory_bytes;
-        d["total_memory_bytes"] = c.total_memory_bytes;
-        return d;
-    }, "index"_a = 0);
+            d["reserved_bytes"] = s.reserved_bytes;
+            d["in_use_bytes"] = s.in_use_bytes;
+            d["peak_in_use_bytes"] = s.peak_in_use_bytes;
+            d["block_count"] = s.block_count;
+            d["live_allocations"] = s.live_allocations;
+            d["total_allocations"] = s.total_allocations;
+            d["device_allocations"] = s.device_allocations;
+            d["fragmentation"] = s.fragmentation;
+            d["submissions"] = s.submissions;
+            d["dispatches"] = s.dispatches;
+            d["pipelines"] = s.pipelines;
+            return d;
+        },
+        "index"_a = 0);
+    m.def(
+        "vulkan_set_profiling",
+        [](bool on, int index) {
+            static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index)).set_profiling(on);
+        },
+        "enabled"_a, "index"_a = 0);
+    m.def(
+        "vulkan_last_profile",
+        [](int index) {
+            return static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index)).last_profile();
+        },
+        "index"_a = 0);
+    m.def(
+        "vulkan_set_subgroup_override",
+        [](uint32_t size, int index) {
+            static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index))
+                .set_subgroup_override(size);
+        },
+        "size"_a, "index"_a = 0);
+    m.def(
+        "vulkan_pipeline_stats",
+        [](int index) {
+            auto& b = static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index));
+            nb::list out;
+            for (const vkml::PipelineStats& p : b.pipeline_stats()) {
+                nb::dict d;
+                d["name"] = p.name;
+                d["available"] = p.available;
+                d["vgprs"] = p.vgprs;
+                d["sgprs"] = p.sgprs;
+                d["spilled_vgprs"] = p.spilled_vgprs;
+                d["spilled_sgprs"] = p.spilled_sgprs;
+                d["scratch_bytes"] = p.scratch_bytes;
+                d["lds_bytes"] = p.lds_bytes;
+                d["waves_per_simd"] = p.waves_per_simd;
+                d["instructions"] = p.instructions;
+                d["code_bytes"] = p.code_bytes;
+                out.append(d);
+            }
+            return out;
+        },
+        "index"_a = 0,
+        "Compiler-reported resource usage per compiled pipeline. Empty entries have "
+        "available=False when the driver does not report statistics.");
+    m.def(
+        "vulkan_capabilities",
+        [](int index) {
+            const vkml::DeviceCapabilities& c = vkml::vulkan_backend(index).capabilities();
+            nb::dict d;
+            d["fp16_compute"] = c.fp16_compute;
+            d["subgroup_size"] = c.subgroup_size;
+            d["min_subgroup_size"] = c.min_subgroup_size;
+            d["max_subgroup_size"] = c.max_subgroup_size;
+            d["global_float_atomics"] = c.global_float_atomics;
+            d["shared_float_atomics"] = c.shared_float_atomics;
+            d["cooperative_matrix"] = c.cooperative_matrix;
+            d["max_workgroup_invocations"] = c.max_workgroup_invocations;
+            d["max_shared_memory_bytes"] = c.max_shared_memory_bytes;
+            d["total_memory_bytes"] = c.total_memory_bytes;
+            return d;
+        },
+        "index"_a = 0);
 #else
     m.attr("has_vulkan") = false;
     m.def("vulkan_available", [] { return false; });
@@ -575,8 +662,9 @@ NB_MODULE(_vkml_core, m) {
 
     // -- autograd -----------------------------------------------------------
     m.def("backward", [](const Tensor& t) { vkml::backward(t); }, "tensor"_a);
-    m.def("backward", [](const Tensor& t, const Tensor& g) { vkml::backward(t, g); },
-          "tensor"_a, "gradient"_a);
+    m.def(
+        "backward", [](const Tensor& t, const Tensor& g) { vkml::backward(t, g); }, "tensor"_a,
+        "gradient"_a);
     m.def("detach", &vkml::detach, "tensor"_a);
     m.def("set_grad_enabled", &vkml::set_grad_enabled, "enabled"_a);
     m.def("is_grad_enabled", &vkml::grad_enabled);

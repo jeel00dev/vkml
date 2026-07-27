@@ -33,10 +33,10 @@ namespace vkml {
 enum class LogLevel : int {
     Trace = 0,
     Debug = 1,
-    Info  = 2,
-    Warn  = 3,
+    Info = 2,
+    Warn = 3,
     Error = 4,
-    Off   = 5,
+    Off = 5,
 };
 
 [[nodiscard]] std::string_view to_string(LogLevel level) noexcept;

@@ -91,26 +91,26 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
 
 const char* result_string(VkResult r) noexcept {
     switch (r) {
-        case VK_SUCCESS:                        return "VK_SUCCESS";
-        case VK_NOT_READY:                      return "VK_NOT_READY";
-        case VK_TIMEOUT:                        return "VK_TIMEOUT";
-        case VK_INCOMPLETE:                     return "VK_INCOMPLETE";
-        case VK_ERROR_OUT_OF_HOST_MEMORY:       return "VK_ERROR_OUT_OF_HOST_MEMORY";
-        case VK_ERROR_OUT_OF_DEVICE_MEMORY:     return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-        case VK_ERROR_INITIALIZATION_FAILED:    return "VK_ERROR_INITIALIZATION_FAILED";
-        case VK_ERROR_DEVICE_LOST:              return "VK_ERROR_DEVICE_LOST";
-        case VK_ERROR_MEMORY_MAP_FAILED:        return "VK_ERROR_MEMORY_MAP_FAILED";
-        case VK_ERROR_LAYER_NOT_PRESENT:        return "VK_ERROR_LAYER_NOT_PRESENT";
-        case VK_ERROR_EXTENSION_NOT_PRESENT:    return "VK_ERROR_EXTENSION_NOT_PRESENT";
-        case VK_ERROR_FEATURE_NOT_PRESENT:      return "VK_ERROR_FEATURE_NOT_PRESENT";
-        case VK_ERROR_INCOMPATIBLE_DRIVER:      return "VK_ERROR_INCOMPATIBLE_DRIVER";
-        case VK_ERROR_TOO_MANY_OBJECTS:         return "VK_ERROR_TOO_MANY_OBJECTS";
-        case VK_ERROR_FORMAT_NOT_SUPPORTED:     return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-        case VK_ERROR_FRAGMENTED_POOL:          return "VK_ERROR_FRAGMENTED_POOL";
-        case VK_ERROR_OUT_OF_POOL_MEMORY:       return "VK_ERROR_OUT_OF_POOL_MEMORY";
-        case VK_ERROR_INVALID_EXTERNAL_HANDLE:  return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
-        case VK_ERROR_UNKNOWN:                  return "VK_ERROR_UNKNOWN";
-        default:                                return "VK_ERROR_<unrecognised>";
+        case VK_SUCCESS: return "VK_SUCCESS";
+        case VK_NOT_READY: return "VK_NOT_READY";
+        case VK_TIMEOUT: return "VK_TIMEOUT";
+        case VK_INCOMPLETE: return "VK_INCOMPLETE";
+        case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+        case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+        case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+        case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+        case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+        case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+        case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+        case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+        case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+        case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+        case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
+        case VK_ERROR_INVALID_EXTERNAL_HANDLE: return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
+        case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+        default: return "VK_ERROR_<unrecognised>";
     }
 }
 
@@ -124,7 +124,8 @@ void check(VkResult r, const char* what) {
     if (r == VK_ERROR_DEVICE_LOST) {
         throw DeviceError(std::format(
             "{} failed with VK_ERROR_DEVICE_LOST -- the GPU was reset, usually because a "
-            "shader hung or wrote out of bounds. Re-run with validation enabled.", what));
+            "shader hung or wrote out of bounds. Re-run with validation enabled.",
+            what));
     }
     if (r == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
         throw OutOfMemoryError(std::format("{} failed: out of device memory", what));
@@ -147,13 +148,13 @@ std::string DeviceInfo::describe() const {
         name, vendor_id, device_id, driver_name, VK_API_VERSION_MAJOR(api_version),
         VK_API_VERSION_MINOR(api_version), VK_API_VERSION_PATCH(api_version),
         static_cast<double>(device_local_bytes) / (1024.0 * 1024.0 * 1024.0),
-        static_cast<double>(host_visible_device_local_bytes) / (1024.0 * 1024.0),
-        subgroup_size, min_subgroup_size, max_subgroup_size, max_workgroup_invocations,
-        max_shared_memory / 1024, shader_core_count, max_push_constants,
+        static_cast<double>(host_visible_device_local_bytes) / (1024.0 * 1024.0), subgroup_size,
+        min_subgroup_size, max_subgroup_size, max_workgroup_invocations, max_shared_memory / 1024,
+        shader_core_count, max_push_constants,
         static_cast<double>(max_allocation_size) / (1024.0 * 1024.0 * 1024.0),
-        buffer_device_address, scalar_block_layout, timeline_semaphore, shader_float16,
-        shader_int8, shader_int16, storage_buffer_16bit, global_float_atomic_add,
-        shared_float_atomic_add, cooperative_matrix);
+        buffer_device_address, scalar_block_layout, timeline_semaphore, shader_float16, shader_int8,
+        shader_int16, storage_buffer_16bit, global_float_atomic_add, shared_float_atomic_add,
+        cooperative_matrix);
 }
 
 int enumerate_device_count() {
@@ -221,9 +222,8 @@ void Context::create_instance(bool enable_validation) {
     std::vector<const char*> layers;
     std::vector<const char*> extensions;
 
-    const bool want_validation =
-        enable_validation && has_layer("VK_LAYER_KHRONOS_validation") &&
-        has_instance_extension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    const bool want_validation = enable_validation && has_layer("VK_LAYER_KHRONOS_validation") &&
+                                 has_instance_extension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
     if (enable_validation && !want_validation) {
         VKML_LOG_WARN("validation requested but VK_LAYER_KHRONOS_validation is unavailable");
@@ -282,8 +282,7 @@ void Context::query_info() {
 
     // -- properties --------------------------------------------------------
     VkPhysicalDeviceSubgroupSizeControlProperties subgroup_size_props{};
-    subgroup_size_props.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
+    subgroup_size_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
 
     VkPhysicalDeviceVulkan11Properties props11{};
     props11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
@@ -337,8 +336,7 @@ void Context::query_info() {
     } else if (has_core_props) {
         // The older extension reports the topology rather than the active
         // count, so a harvested part reports its physical, not usable, CUs.
-        info_.shader_core_count = core1.shaderEngineCount *
-                                  core1.shaderArraysPerEngineCount *
+        info_.shader_core_count = core1.shaderEngineCount * core1.shaderArraysPerEngineCount *
                                   core1.computeUnitsPerShaderArray;
     }
 
@@ -405,10 +403,9 @@ void Context::query_info() {
 
     // Cooperative matrix is detected by extension rather than by feature bit,
     // because its feature struct only exists when the extension does.
-    info_.cooperative_matrix =
-        has_device_extension(exts, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
-    info_.pipeline_executable_properties = has_device_extension(
-        exts, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+    info_.cooperative_matrix = has_device_extension(exts, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+    info_.pipeline_executable_properties =
+        has_device_extension(exts, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
 
     // -- memory heaps ------------------------------------------------------
     VkPhysicalDeviceMemoryProperties mem{};
@@ -445,7 +442,8 @@ void Context::query_info() {
 void Context::create_logical_device() {
     VKML_CHECK(info_.buffer_device_address, DeviceError,
                "device '{}' does not support bufferDeviceAddress, which the vkml Vulkan "
-               "backend requires (docs/ARCHITECTURE.md 5.3)", info_.name);
+               "backend requires (docs/ARCHITECTURE.md 5.3)",
+               info_.name);
     VKML_CHECK(info_.scalar_block_layout, DeviceError,
                "device '{}' does not support scalarBlockLayout", info_.name);
     VKML_CHECK(info_.timeline_semaphore, DeviceError,
@@ -505,8 +503,7 @@ void Context::create_logical_device() {
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR exec_props{};
     exec_props.sType =
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR;
-    exec_props.pipelineExecutableInfo = info_.pipeline_executable_properties ? VK_TRUE
-                                                                            : VK_FALSE;
+    exec_props.pipelineExecutableInfo = info_.pipeline_executable_properties ? VK_TRUE : VK_FALSE;
     exec_props.pNext = device_exts.empty() ? nullptr : static_cast<void*>(&atomic_float);
 
     VkPhysicalDeviceVulkan13Features feats13{};
@@ -517,8 +514,7 @@ void Context::create_logical_device() {
     feats13.maintenance4 = VK_TRUE;
     feats13.pNext = info_.pipeline_executable_properties
                         ? static_cast<void*>(&exec_props)
-                        : (device_exts.empty() ? nullptr
-                                               : static_cast<void*>(&atomic_float));
+                        : (device_exts.empty() ? nullptr : static_cast<void*>(&atomic_float));
 
     VkPhysicalDeviceVulkan12Features feats12{};
     feats12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;

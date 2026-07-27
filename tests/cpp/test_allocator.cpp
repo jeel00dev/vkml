@@ -72,9 +72,9 @@ TEST_CASE("Storage still accepts foreign memory with a custom deleter") {
     bool freed = false;
 
     {
-        auto s = std::make_shared<vkml::Storage>(
-            foreign.data(), foreign.size() * sizeof(float), vkml::Device::cpu(),
-            [&freed](void*, size_t) { freed = true; });
+        auto s = std::make_shared<vkml::Storage>(foreign.data(), foreign.size() * sizeof(float),
+                                                 vkml::Device::cpu(),
+                                                 [&freed](void*, size_t) { freed = true; });
         CHECK(s->data() == foreign.data());
         CHECK_FALSE(freed);
     }

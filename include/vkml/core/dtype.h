@@ -26,10 +26,10 @@ inline constexpr int kNumDTypes = 5;
 
 [[nodiscard]] constexpr size_t dtype_size(DType dt) noexcept {
     switch (dt) {
-        case DType::F32:  return 4;
-        case DType::F16:  return 2;
-        case DType::I32:  return 4;
-        case DType::I64:  return 8;
+        case DType::F32: return 4;
+        case DType::F16: return 2;
+        case DType::I32: return 4;
+        case DType::I64: return 8;
         case DType::Bool: return 1;
     }
     return 0;
@@ -37,10 +37,10 @@ inline constexpr int kNumDTypes = 5;
 
 [[nodiscard]] constexpr std::string_view dtype_name(DType dt) noexcept {
     switch (dt) {
-        case DType::F32:  return "f32";
-        case DType::F16:  return "f16";
-        case DType::I32:  return "i32";
-        case DType::I64:  return "i64";
+        case DType::F32: return "f32";
+        case DType::F16: return "f16";
+        case DType::I32: return "i32";
+        case DType::I64: return "i64";
         case DType::Bool: return "bool";
     }
     return "?";
@@ -55,9 +55,7 @@ inline constexpr int kNumDTypes = 5;
 }
 
 /// Only floating tensors can carry gradients, matching PyTorch.
-[[nodiscard]] constexpr bool is_differentiable(DType dt) noexcept {
-    return is_floating(dt);
-}
+[[nodiscard]] constexpr bool is_differentiable(DType dt) noexcept { return is_floating(dt); }
 
 // ---------------------------------------------------------------------------
 // fp16 <-> fp32

@@ -57,13 +57,9 @@ std::shared_ptr<Storage> make_cpu_storage(size_t nbytes) {
 
 namespace storage_stats {
 
-size_t live_bytes() noexcept {
-    return live_bytes_counter().load(std::memory_order_relaxed);
-}
+size_t live_bytes() noexcept { return live_bytes_counter().load(std::memory_order_relaxed); }
 
-size_t live_blocks() noexcept {
-    return live_blocks_counter().load(std::memory_order_relaxed);
-}
+size_t live_blocks() noexcept { return live_blocks_counter().load(std::memory_order_relaxed); }
 
 size_t total_allocations() noexcept {
     return total_allocations_counter().load(std::memory_order_relaxed);

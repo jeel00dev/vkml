@@ -52,9 +52,9 @@
 
 /// Marks a branch that should be unreachable given the surrounding invariants.
 #define VKML_UNREACHABLE(...)                                                                      \
-    throw ::vkml::InternalError(::vkml::detail::format_internal(                                   \
-        __FILE__, __LINE__, static_cast<const char*>(__func__), "unreachable",                     \
-        std::format(__VA_ARGS__)))
+    throw ::vkml::InternalError(                                                                   \
+        ::vkml::detail::format_internal(__FILE__, __LINE__, static_cast<const char*>(__func__),    \
+                                        "unreachable", std::format(__VA_ARGS__)))
 
 /// Marks a path that is designed but not yet built.
 #define VKML_NOT_IMPLEMENTED(...) throw ::vkml::NotImplementedError(std::format(__VA_ARGS__))

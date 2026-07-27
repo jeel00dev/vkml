@@ -67,8 +67,7 @@ void Recorder::set_profiling(bool enabled) {
         qci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
         qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
         qci.queryCount = kMaxQueries;
-        check(vkCreateQueryPool(ctx_.device(), &qci, nullptr, &query_pool_),
-              "vkCreateQueryPool");
+        check(vkCreateQueryPool(ctx_.device(), &qci, nullptr, &query_pool_), "vkCreateQueryPool");
     }
 }
 
@@ -117,9 +116,8 @@ void Recorder::resolve_timestamps() {
         for (const auto& [label, slot] : pending_) {
             const uint64_t start = raw[slot];
             const uint64_t end = raw[slot + 1];
-            const double ms = end > start
-                                  ? static_cast<double>(end - start) * ns_per_tick / 1e6
-                                  : 0.0;
+            const double ms =
+                end > start ? static_cast<double>(end - start) * ns_per_tick / 1e6 : 0.0;
             profile_.push_back(ProfileEntry{label, ms});
         }
     }
@@ -181,8 +179,7 @@ void Recorder::dispatch(const PipelineCache::Pipeline& pipeline, const void* pus
                            push_constant_bytes, push_constants);
     }
 
-    const uint64_t groups =
-        (element_count + pipeline.workgroup_size - 1) / pipeline.workgroup_size;
+    const uint64_t groups = (element_count + pipeline.workgroup_size - 1) / pipeline.workgroup_size;
     VKML_CHECK(groups <= ctx_.info().max_workgroup_count[0], DeviceError,
                "dispatch needs {} workgroups but the device allows {} in x", groups,
                ctx_.info().max_workgroup_count[0]);
@@ -193,9 +190,8 @@ void Recorder::dispatch(const PipelineCache::Pipeline& pipeline, const void* pus
     ++dispatch_count_;
 }
 
-void Recorder::dispatch_groups(const PipelineCache::Pipeline& pipeline,
-                               const void* push_constants, uint32_t push_constant_bytes,
-                               uint64_t group_count) {
+void Recorder::dispatch_groups(const PipelineCache::Pipeline& pipeline, const void* push_constants,
+                               uint32_t push_constant_bytes, uint64_t group_count) {
     VKML_ASSERT(recording_, "dispatch_groups() outside begin()/submit()");
     if (group_count == 0) {
         return;
@@ -318,7 +314,8 @@ void Recorder::wait(uint64_t value) {
     if (r == VK_TIMEOUT) {
         throw DeviceError(std::format(
             "timed out after 30s waiting for GPU timeline value {} -- a shader has most likely "
-            "hung. Re-run with validation enabled.", value));
+            "hung. Re-run with validation enabled.",
+            value));
     }
     check(r, "vkWaitSemaphores");
     resolve_timestamps();
@@ -340,9 +337,7 @@ StagingBuffer::StagingBuffer(Context& ctx, Allocator& allocator, Recorder& recor
     VKML_LOG_DEBUG("vulkan staging buffer: {} MiB", capacity / (1024 * 1024));
 }
 
-StagingBuffer::~StagingBuffer() {
-    allocator_.free(staging_);
-}
+StagingBuffer::~StagingBuffer() { allocator_.free(staging_); }
 
 void StagingBuffer::upload(const void* src, const Allocation& dst, uint64_t dst_offset,
                            uint64_t bytes) {
@@ -393,8 +388,8 @@ void StagingBuffer::download(void* dst, const Allocation& src, uint64_t src_offs
         recorder_.begin();
         // Ordered against any shader still writing the source.
         recorder_.barrier();
-        recorder_.copy(src_buffer, src.offset + src_offset + done, staging_buffer,
-                       staging_.offset, chunk);
+        recorder_.copy(src_buffer, src.offset + src_offset + done, staging_buffer, staging_.offset,
+                       chunk);
         const uint64_t ticket = recorder_.submit();
         recorder_.wait(ticket);
 

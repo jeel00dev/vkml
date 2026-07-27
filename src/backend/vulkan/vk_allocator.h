@@ -36,12 +36,12 @@ enum class MemoryKind : uint8_t {
 ///   - the descriptor-less model falls out naturally, since a shader only ever
 ///     needs that 64-bit number.
 struct Allocation {
-    uint32_t block = 0;          ///< index into the owning pool
-    uint64_t offset = 0;         ///< byte offset within the block
-    uint64_t size = 0;           ///< usable bytes (the request, not the padded reservation)
-    uint64_t padded_size = 0;    ///< bytes actually reserved, after alignment rounding
-    VkDeviceAddress address = 0; ///< block address + offset; what shaders receive
-    void* mapped = nullptr;      ///< host pointer, HostStaging only
+    uint32_t block = 0;           ///< index into the owning pool
+    uint64_t offset = 0;          ///< byte offset within the block
+    uint64_t size = 0;            ///< usable bytes (the request, not the padded reservation)
+    uint64_t padded_size = 0;     ///< bytes actually reserved, after alignment rounding
+    VkDeviceAddress address = 0;  ///< block address + offset; what shaders receive
+    void* mapped = nullptr;       ///< host pointer, HostStaging only
     MemoryKind kind = MemoryKind::DeviceLocal;
 
     [[nodiscard]] bool valid() const noexcept { return size > 0 || padded_size > 0; }
@@ -49,14 +49,14 @@ struct Allocation {
 
 /// Snapshot of allocator state, for diagnostics and leak assertions.
 struct AllocatorStats {
-    uint64_t reserved_bytes = 0;    ///< total VkDeviceMemory obtained from the driver
-    uint64_t in_use_bytes = 0;      ///< currently handed out (padded)
-    uint64_t requested_bytes = 0;   ///< currently handed out (unpadded); the difference is waste
+    uint64_t reserved_bytes = 0;   ///< total VkDeviceMemory obtained from the driver
+    uint64_t in_use_bytes = 0;     ///< currently handed out (padded)
+    uint64_t requested_bytes = 0;  ///< currently handed out (unpadded); the difference is waste
     uint64_t peak_in_use_bytes = 0;
     uint32_t block_count = 0;
     uint32_t live_allocations = 0;
-    uint64_t total_allocations = 0;  ///< monotonic
-    uint64_t device_allocations = 0; ///< monotonic count of vkAllocateMemory calls
+    uint64_t total_allocations = 0;   ///< monotonic
+    uint64_t device_allocations = 0;  ///< monotonic count of vkAllocateMemory calls
 
     /// Largest single free run, across all blocks.
     uint64_t largest_free_run = 0;

@@ -53,9 +53,8 @@ void k_sum(Node& out) {
     if (out.dtype != DType::F32) {
         unsupported_dtype(out);
     }
-    reduce_generic<float>(out, [](const Reader& read, int64_t n) {
-        return pairwise_sum<float>(read, 0, n);
-    });
+    reduce_generic<float>(
+        out, [](const Reader& read, int64_t n) { return pairwise_sum<float>(read, 0, n); });
 }
 
 void k_mean(Node& out) {
@@ -194,9 +193,8 @@ void softmax_impl(Node& out) {
             peak = std::max(peak, read(k));
         }
 
-        const float denom =
-            pairwise_sum<float>([&read, peak](int64_t k) { return std::exp(read(k) - peak); }, 0,
-                                n_axis);
+        const float denom = pairwise_sum<float>(
+            [&read, peak](int64_t k) { return std::exp(read(k) - peak); }, 0, n_axis);
 
         for (int64_t k = 0; k < n_axis; ++k) {
             const float shifted = read(k) - peak;

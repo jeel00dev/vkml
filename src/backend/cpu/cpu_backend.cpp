@@ -34,7 +34,7 @@ CpuBackend::CpuBackend() {
     caps_.bf16_compute = false;
 
     caps_.subgroup_ops = false;
-    caps_.global_float_atomics = true;   // trivially, since execution is serial
+    caps_.global_float_atomics = true;  // trivially, since execution is serial
     caps_.shared_float_atomics = true;
     caps_.cooperative_matrix = false;
 

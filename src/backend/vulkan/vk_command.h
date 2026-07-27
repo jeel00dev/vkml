@@ -78,8 +78,7 @@ public:
     void barrier();
 
     /// Records a buffer-to-buffer copy, used for staged uploads and downloads.
-    void copy(VkBuffer src, uint64_t src_offset, VkBuffer dst, uint64_t dst_offset,
-              uint64_t bytes);
+    void copy(VkBuffer src, uint64_t src_offset, VkBuffer dst, uint64_t dst_offset, uint64_t bytes);
 
     /// Abandons an in-progress recording.
     ///
@@ -118,6 +117,7 @@ public:
     void set_label(std::string label) { next_label_ = std::move(label); }
 
     [[nodiscard]] uint64_t submitted_count() const noexcept { return timeline_value_; }
+
     [[nodiscard]] uint64_t dispatch_count() const noexcept { return dispatch_count_; }
 
 private:

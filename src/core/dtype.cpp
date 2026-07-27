@@ -8,9 +8,7 @@ namespace {
 
 // C++20 std::bit_cast replaces the union punning that ggml's C implementation
 // needs, and is well-defined rather than merely widely-supported.
-[[nodiscard]] constexpr float bits_to_float(uint32_t w) noexcept {
-    return std::bit_cast<float>(w);
-}
+[[nodiscard]] constexpr float bits_to_float(uint32_t w) noexcept { return std::bit_cast<float>(w); }
 
 [[nodiscard]] constexpr uint32_t float_to_bits(float f) noexcept {
     return std::bit_cast<uint32_t>(f);

@@ -107,13 +107,21 @@ namespace vkml {
 
 // Operator sugar.
 [[nodiscard]] inline Tensor operator+(const Tensor& a, const Tensor& b) { return add(a, b); }
+
 [[nodiscard]] inline Tensor operator-(const Tensor& a, const Tensor& b) { return sub(a, b); }
+
 [[nodiscard]] inline Tensor operator*(const Tensor& a, const Tensor& b) { return mul(a, b); }
+
 [[nodiscard]] inline Tensor operator/(const Tensor& a, const Tensor& b) { return div(a, b); }
+
 [[nodiscard]] inline Tensor operator+(const Tensor& a, double s) { return add(a, s); }
+
 [[nodiscard]] inline Tensor operator-(const Tensor& a, double s) { return sub(a, s); }
+
 [[nodiscard]] inline Tensor operator*(const Tensor& a, double s) { return mul(a, s); }
+
 [[nodiscard]] inline Tensor operator/(const Tensor& a, double s) { return div(a, s); }
+
 [[nodiscard]] inline Tensor operator-(const Tensor& a) { return neg(a); }
 
 }  // namespace vkml

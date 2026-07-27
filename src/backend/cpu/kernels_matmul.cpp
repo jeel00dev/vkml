@@ -85,8 +85,6 @@ void k_matmul(Node& out) {
 
 }  // namespace
 
-void register_matmul_kernels(KernelTable& t) {
-    t[static_cast<size_t>(OpKind::Matmul)] = k_matmul;
-}
+void register_matmul_kernels(KernelTable& t) { t[static_cast<size_t>(OpKind::Matmul)] = k_matmul; }
 
 }  // namespace vkml::cpu

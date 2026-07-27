@@ -47,13 +47,9 @@ void bind_storage(Node& node) {
 
 }  // namespace
 
-void set_eager(bool enabled) noexcept {
-    eager_flag().store(enabled, std::memory_order_relaxed);
-}
+void set_eager(bool enabled) noexcept { eager_flag().store(enabled, std::memory_order_relaxed); }
 
-bool eager() noexcept {
-    return eager_flag().load(std::memory_order_relaxed);
-}
+bool eager() noexcept { return eager_flag().load(std::memory_order_relaxed); }
 
 void realize(std::span<const NodePtr> roots) {
     const std::vector<Node*> order = topological_order(roots);

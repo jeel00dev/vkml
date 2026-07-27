@@ -22,7 +22,7 @@ namespace vkml {
 /// regression -- an optimisation that made the kernel slower -- was a register
 /// allocation problem, invisible to timing and obvious in these numbers.
 struct PipelineStats {
-    std::string name;          ///< pipeline key, e.g. "gemm_reg:wg256_..."
+    std::string name;  ///< pipeline key, e.g. "gemm_reg:wg256_..."
     bool available = false;
     uint32_t vgprs = 0;
     uint32_t sgprs = 0;
@@ -59,7 +59,9 @@ public:
     ~VulkanBackend() override;
 
     [[nodiscard]] std::string_view name() const noexcept override { return name_; }
+
     [[nodiscard]] Device device() const noexcept override { return device_; }
+
     [[nodiscard]] const DeviceCapabilities& capabilities() const noexcept override;
     [[nodiscard]] Allocator& allocator() override;
     [[nodiscard]] bool supports(const Node& node) const override;

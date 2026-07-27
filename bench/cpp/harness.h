@@ -34,8 +34,8 @@ struct Result {
     double ns_min = 0.0;
     double ns_mean = 0.0;
     int64_t iterations = 0;
-    double work = 0.0;         ///< bytes, FLOPs or elements; 0 if not meaningful
-    std::string work_unit;     ///< "B", "FLOP", "elem"
+    double work = 0.0;      ///< bytes, FLOPs or elements; 0 if not meaningful
+    std::string work_unit;  ///< "B", "FLOP", "elem"
 };
 
 class Registry {
@@ -71,8 +71,7 @@ public:
                 }
             }
             std::printf("%-14s %-38s %14s %14s %16s\n", r.category.c_str(), r.name.c_str(),
-                        format_time(r.ns_min).c_str(), format_time(r.ns_mean).c_str(),
-                        thr.c_str());
+                        format_time(r.ns_min).c_str(), format_time(r.ns_mean).c_str(), thr.c_str());
         }
         std::printf("\n");
     }

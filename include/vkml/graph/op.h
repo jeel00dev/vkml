@@ -157,10 +157,8 @@ inline constexpr int kMaxSrc = 4;
         case OpKind::Slice:
         case OpKind::Broadcast:
         case OpKind::Squeeze:
-        case OpKind::Unsqueeze:
-            return true;
-        default:
-            return false;
+        case OpKind::Unsqueeze: return true;
+        default: return false;
     }
 }
 
@@ -172,10 +170,8 @@ inline constexpr int kMaxSrc = 4;
         case OpKind::Greater:
         case OpKind::LessEqual:
         case OpKind::GreaterEqual:
-        case OpKind::NotEqual:
-            return true;
-        default:
-            return false;
+        case OpKind::NotEqual: return true;
+        default: return false;
     }
 }
 
@@ -212,9 +208,7 @@ struct OpParams {
         return value;
     }
 
-    friend bool operator==(const OpParams& a, const OpParams& b) noexcept {
-        return a.raw == b.raw;
-    }
+    friend bool operator==(const OpParams& a, const OpParams& b) noexcept { return a.raw == b.raw; }
 };
 
 /// Axes are carried as a bitmask rather than a list: rank is at most 4, so 4

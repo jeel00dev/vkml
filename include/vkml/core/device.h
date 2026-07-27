@@ -13,7 +13,7 @@ enum class DeviceKind : uint8_t {
 
 [[nodiscard]] constexpr std::string_view device_kind_name(DeviceKind kind) noexcept {
     switch (kind) {
-        case DeviceKind::CPU:    return "cpu";
+        case DeviceKind::CPU: return "cpu";
         case DeviceKind::Vulkan: return "vulkan";
     }
     return "?";

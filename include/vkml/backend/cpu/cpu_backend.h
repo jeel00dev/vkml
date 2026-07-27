@@ -22,9 +22,7 @@ public:
 
     [[nodiscard]] Device device() const noexcept override { return Device::cpu(); }
 
-    [[nodiscard]] const DeviceCapabilities& capabilities() const noexcept override {
-        return caps_;
-    }
+    [[nodiscard]] const DeviceCapabilities& capabilities() const noexcept override { return caps_; }
 
     [[nodiscard]] Allocator& allocator() override { return cpu_allocator(); }
 

@@ -127,8 +127,7 @@ struct SplitShape {
             ks.push_back(in.stride(i));
         }
     }
-    return SplitShape{Shape::strided(kd, ks, in.itemsize()),
-                      Shape::strided(rd, rs, in.itemsize())};
+    return SplitShape{Shape::strided(kd, ks, in.itemsize()), Shape::strided(rd, rs, in.itemsize())};
 }
 
 struct SoftmaxPush {
@@ -322,25 +321,25 @@ static_assert(sizeof(UnaryPush) <= 256, "unary push constants exceed the device 
 /// Mirrors the OP_* codes in shaders/unary.comp. Codes 0-4 are frozen; adding
 /// an operation appends.
 enum class UnaryOp : uint32_t {
-    Copy       = 0,
-    Relu       = 1,
-    Neg        = 2,
-    Abs        = 3,
-    Exp        = 4,
-    Sign       = 5,
-    Square     = 6,
-    Sqrt       = 7,
-    Rsqrt      = 8,
+    Copy = 0,
+    Relu = 1,
+    Neg = 2,
+    Abs = 3,
+    Exp = 4,
+    Sign = 5,
+    Square = 6,
+    Sqrt = 7,
+    Rsqrt = 8,
     Reciprocal = 9,
-    Log        = 10,
-    Erf        = 11,
-    Sin        = 12,
-    Cos        = 13,
-    Tanh       = 14,
-    Sigmoid    = 15,
-    Gelu       = 16,
-    Silu       = 17,
-    Clamp      = 18,
+    Log = 10,
+    Erf = 11,
+    Sin = 12,
+    Cos = 13,
+    Tanh = 14,
+    Sigmoid = 15,
+    Gelu = 16,
+    Silu = 17,
+    Clamp = 18,
 };
 
 /// OpKind -> shader code. Returns nullopt for anything this shader does not
@@ -349,46 +348,26 @@ enum class UnaryOp : uint32_t {
 /// wrong output rather than a loud failure.
 [[nodiscard]] std::optional<UnaryOp> to_unary_op(OpKind k) {
     switch (k) {
-        case OpKind::Contiguous:
-            return UnaryOp::Copy;
-        case OpKind::Relu:
-            return UnaryOp::Relu;
-        case OpKind::Neg:
-            return UnaryOp::Neg;
-        case OpKind::Abs:
-            return UnaryOp::Abs;
-        case OpKind::Exp:
-            return UnaryOp::Exp;
-        case OpKind::Sign:
-            return UnaryOp::Sign;
-        case OpKind::Square:
-            return UnaryOp::Square;
-        case OpKind::Sqrt:
-            return UnaryOp::Sqrt;
-        case OpKind::Rsqrt:
-            return UnaryOp::Rsqrt;
-        case OpKind::Reciprocal:
-            return UnaryOp::Reciprocal;
-        case OpKind::Log:
-            return UnaryOp::Log;
-        case OpKind::Erf:
-            return UnaryOp::Erf;
-        case OpKind::Sin:
-            return UnaryOp::Sin;
-        case OpKind::Cos:
-            return UnaryOp::Cos;
-        case OpKind::Tanh:
-            return UnaryOp::Tanh;
-        case OpKind::Sigmoid:
-            return UnaryOp::Sigmoid;
-        case OpKind::Gelu:
-            return UnaryOp::Gelu;
-        case OpKind::Silu:
-            return UnaryOp::Silu;
-        case OpKind::Clamp:
-            return UnaryOp::Clamp;
-        default:
-            return std::nullopt;
+        case OpKind::Contiguous: return UnaryOp::Copy;
+        case OpKind::Relu: return UnaryOp::Relu;
+        case OpKind::Neg: return UnaryOp::Neg;
+        case OpKind::Abs: return UnaryOp::Abs;
+        case OpKind::Exp: return UnaryOp::Exp;
+        case OpKind::Sign: return UnaryOp::Sign;
+        case OpKind::Square: return UnaryOp::Square;
+        case OpKind::Sqrt: return UnaryOp::Sqrt;
+        case OpKind::Rsqrt: return UnaryOp::Rsqrt;
+        case OpKind::Reciprocal: return UnaryOp::Reciprocal;
+        case OpKind::Log: return UnaryOp::Log;
+        case OpKind::Erf: return UnaryOp::Erf;
+        case OpKind::Sin: return UnaryOp::Sin;
+        case OpKind::Cos: return UnaryOp::Cos;
+        case OpKind::Tanh: return UnaryOp::Tanh;
+        case OpKind::Sigmoid: return UnaryOp::Sigmoid;
+        case OpKind::Gelu: return UnaryOp::Gelu;
+        case OpKind::Silu: return UnaryOp::Silu;
+        case OpKind::Clamp: return UnaryOp::Clamp;
+        default: return std::nullopt;
     }
 }
 
@@ -453,8 +432,7 @@ std::string VulkanStats::describe() const {
         "execution: {} submissions, {} dispatches, {} pipelines",
         static_cast<double>(reserved_bytes) / mib, block_count,
         static_cast<double>(in_use_bytes) / mib, static_cast<double>(peak_in_use_bytes) / mib,
-        live_allocations, total_allocations, device_allocations, fragmentation * 100.0,
-        submissions,
+        live_allocations, total_allocations, device_allocations, fragmentation * 100.0, submissions,
         dispatches, pipelines);
 }
 
@@ -474,8 +452,7 @@ struct VulkanBackend::Impl {
         StorageAllocator(Impl& impl, Device dev) : impl_(impl), device_(dev) {}
 
         [[nodiscard]] std::shared_ptr<Storage> allocate(size_t nbytes) override {
-            const vk::Allocation a =
-                impl_.allocator.allocate(nbytes, vk::MemoryKind::DeviceLocal);
+            const vk::Allocation a = impl_.allocator.allocate(nbytes, vk::MemoryKind::DeviceLocal);
 
             // The device address is what a Storage's `data()` reports. It is
             // NOT a host pointer and must never be dereferenced on the CPU --
@@ -491,18 +468,19 @@ struct VulkanBackend::Impl {
                 impl_.live.emplace(a.address, a);
             }
 
-            return std::make_shared<Storage>(
-                handle, nbytes, device_, [this, a](void*, size_t) {
-                    {
-                        const std::lock_guard<std::mutex> lock(impl_.map_mutex);
-                        impl_.live.erase(a.address);
-                    }
-                    impl_.allocator.free(a);
-                });
+            return std::make_shared<Storage>(handle, nbytes, device_, [this, a](void*, size_t) {
+                {
+                    const std::lock_guard<std::mutex> lock(impl_.map_mutex);
+                    impl_.live.erase(a.address);
+                }
+                impl_.allocator.free(a);
+            });
         }
 
         [[nodiscard]] std::string_view name() const noexcept override { return "vulkan"; }
+
         [[nodiscard]] Device device() const noexcept override { return device_; }
+
         [[nodiscard]] size_t live_bytes() const noexcept override {
             return impl_.allocator.stats().in_use_bytes;
         }
@@ -545,12 +523,8 @@ struct VulkanBackend::Impl {
     }
 
     Impl(int index, bool validation, uint64_t staging_bytes)
-        : ctx(index, validation),
-          allocator(ctx),
-          pipelines(ctx),
-          recorder(ctx, allocator),
-          staging(ctx, allocator, recorder, staging_bytes),
-          caps(ctx.capabilities()) {}
+        : ctx(index, validation), allocator(ctx), pipelines(ctx), recorder(ctx, allocator),
+          staging(ctx, allocator, recorder, staging_bytes), caps(ctx.capabilities()) {}
 };
 
 VulkanBackend::VulkanBackend(int device_index, bool enable_validation) {
@@ -570,13 +544,9 @@ VulkanBackend::~VulkanBackend() {
     }
 }
 
-const DeviceCapabilities& VulkanBackend::capabilities() const noexcept {
-    return impl_->caps;
-}
+const DeviceCapabilities& VulkanBackend::capabilities() const noexcept { return impl_->caps; }
 
-Allocator& VulkanBackend::allocator() {
-    return *impl_->storage_allocator;
-}
+Allocator& VulkanBackend::allocator() { return *impl_->storage_allocator; }
 
 bool VulkanBackend::supports(const Node& node) const {
     if (is_view_op(node.op) || node.is_leaf()) {
@@ -587,8 +557,7 @@ bool VulkanBackend::supports(const Node& node) const {
     // is also why the gap here went unnoticed for so long -- see
     // docs/PHASE2-MANIFESTO.md, "starting position".
     switch (node.op) {
-        case OpKind::Full:
-            return node.dtype == DType::F32;
+        case OpKind::Full: return node.dtype == DType::F32;
         // Unary elementwise: one shader, one specialisation constant per op.
         case OpKind::Contiguous:
         case OpKind::Relu:
@@ -608,28 +577,21 @@ bool VulkanBackend::supports(const Node& node) const {
         case OpKind::Sigmoid:
         case OpKind::Gelu:
         case OpKind::Silu:
-        case OpKind::Clamp:
-            return node.dtype == DType::F32;
-        case OpKind::Cast:
-            return true;
+        case OpKind::Clamp: return node.dtype == DType::F32;
+        case OpKind::Cast: return true;
         case OpKind::Sum:
         case OpKind::Mean:
         case OpKind::Max:
-        case OpKind::Min:
-            return node.dtype == DType::F32;
+        case OpKind::Min: return node.dtype == DType::F32;
         case OpKind::ArgMax:
-        case OpKind::ArgMin:
-            return node.dtype == DType::I64;
+        case OpKind::ArgMin: return node.dtype == DType::I64;
         case OpKind::Softmax:
-        case OpKind::LogSoftmax:
-            return node.dtype == DType::F32;
+        case OpKind::LogSoftmax: return node.dtype == DType::F32;
         case OpKind::Matmul:
             // Operands arrive normalised to rank 4 by the graph builder, and
             // the output is always freshly allocated and contiguous.
-            return node.dtype == DType::F32 && node.shape.ndim() == 4 &&
-                   node.shape.is_contiguous();
-        default:
-            return false;
+            return node.dtype == DType::F32 && node.shape.ndim() == 4 && node.shape.is_contiguous();
+        default: return false;
     }
 }
 
@@ -651,6 +613,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
     // next begin() asserts and hides the original error.
     struct RecordingGuard {
         vk::Recorder& rec;
+
         ~RecordingGuard() { rec.abort_recording(); }
     } guard{rec};
 
@@ -675,11 +638,10 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 cfg.workgroup_size = wg;
                 cfg.spec_constants = {wg};
 
-                const FillPush push{address_of(*node), n_elems,
-                                    static_cast<float>(params.value)};
+                const FillPush push{address_of(*node), n_elems, static_cast<float>(params.value)};
                 if (debug_dispatch_enabled()) {
-                    trace_dispatch(*node, "fill", cfg, sizeof(FillPush),
-                                   (n_elems + wg - 1) / wg, impl_->caps.subgroup_size);
+                    trace_dispatch(*node, "fill", cfg, sizeof(FillPush), (n_elems + wg - 1) / wg,
+                                   impl_->caps.subgroup_size);
                 }
                 rec.dispatch(pipes.get("fill", spv::fill, spv::fill_size, sizeof(FillPush), cfg),
                              &push, sizeof(push), n_elems);
@@ -742,12 +704,12 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 push.out_op = to_gpu_operand(node->shape, esz);
 
                 if (debug_dispatch_enabled()) {
-                    trace_dispatch(*node, "unary", cfg, sizeof(UnaryPush),
-                                   (n_elems + wg - 1) / wg, impl_->caps.subgroup_size);
+                    trace_dispatch(*node, "unary", cfg, sizeof(UnaryPush), (n_elems + wg - 1) / wg,
+                                   impl_->caps.subgroup_size);
                 }
                 rec.dispatch(
-                    pipes.get("unary", spv::unary, spv::unary_size, sizeof(UnaryPush), cfg),
-                    &push, sizeof(push), n_elems);
+                    pipes.get("unary", spv::unary, spv::unary_size, sizeof(UnaryPush), cfg), &push,
+                    sizeof(push), n_elems);
                 break;
             }
 
@@ -791,12 +753,12 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                 uint32_t op_id = 0;
                 switch (node->op) {
-                    case OpKind::Sum:    op_id = 0; break;
-                    case OpKind::Mean:   op_id = 1; break;
-                    case OpKind::Max:    op_id = 2; break;
-                    case OpKind::Min:    op_id = 3; break;
+                    case OpKind::Sum: op_id = 0; break;
+                    case OpKind::Mean: op_id = 1; break;
+                    case OpKind::Max: op_id = 2; break;
+                    case OpKind::Min: op_id = 3; break;
                     case OpKind::ArgMax: op_id = 4; break;
-                    default:             op_id = 5; break;
+                    default: op_id = 5; break;
                 }
 
                 // wave64 is pinned here. Reductions are the one kernel family
@@ -871,8 +833,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     return v == nullptr ? 0U : static_cast<uint32_t>(std::atoi(v)) * 256U;
                 }();
                 cfg.shared_memory_bytes += sm_pad * sizeof(float);
-                cfg.spec_constants = {wg, node->op == OpKind::LogSoftmax ? 1U : 0U, wg,
-                                      sm_pad};
+                cfg.spec_constants = {wg, node->op == OpKind::LogSoftmax ? 1U : 0U, wg, sm_pad};
 
                 const size_t esz = dtype_size(src.dtype);
                 SoftmaxPush push{};
@@ -890,8 +851,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                                    impl_->caps.subgroup_size);
                 }
                 rec.dispatch_groups(
-                    pipes.get("softmax", spv::softmax, spv::softmax_size, sizeof(SoftmaxPush),
-                              cfg),
+                    pipes.get("softmax", spv::softmax, spv::softmax_size, sizeof(SoftmaxPush), cfg),
                     &push, sizeof(push), n_out);
                 break;
             }
@@ -949,8 +909,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     // M4-R2: LDS padding, discriminator only. Default 0.
                     static const uint32_t pad_floats = [] {
                         const char* v = std::getenv("VKML_GEMV_PAD_KB");
-                        return v == nullptr ? 0U
-                                            : static_cast<uint32_t>(std::atoi(v)) * 256U;
+                        return v == nullptr ? 0U : static_cast<uint32_t>(std::atoi(v)) * 256U;
                     }();
                     gcfg.shared_memory_bytes += pad_floats * sizeof(float);
                     gcfg.spec_constants = {kGemvWg, levels, 1, kGemvWg, pad_floats};
@@ -968,8 +927,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     gp.op_a = to_gpu_operand(a.shape, gesz);
                     gp.op_b = to_gpu_operand(b.shape, gesz);
 
-                    const auto& gpipe = pipes.get("gemv", spv::gemv, spv::gemv_size,
-                                                  sizeof(GemmPush), gcfg);
+                    const auto& gpipe =
+                        pipes.get("gemv", spv::gemv, spv::gemv_size, sizeof(GemmPush), gcfg);
                     if (debug_dispatch_enabled()) {
                         VKML_LOG_INFO("  gemv M={} N={} K={} ktiles={} passes={} levels={} "
                                       "groups={} wg={} lds={}B",
@@ -1022,6 +981,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 const bool use_tiled = kernel_choice == 1;
 
                 constexpr uint32_t kTile = 16;
+
                 // Register-blocked geometry. 2x2 is the largest block for which
                 // the per-accumulator pairwise carry stack fits in registers
                 // without collapsing occupancy -- see the note in gemm_reg.comp.
@@ -1040,6 +1000,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 struct BlockGeom {
                     uint32_t bm, bn, rm, rn;
                 };
+
                 static const BlockGeom forced_block = []() -> BlockGeom {
                     const char* v = std::getenv("VKML_GEMM_BLOCK");
                     const std::string_view sel = v != nullptr ? v : "";
@@ -1139,11 +1100,10 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 // Stage 6 geometry.
                 static const char* tile_force = std::getenv("VKML_GEMM_TILE");
                 const std::string_view tile_sel = tile_force != nullptr ? tile_force : "";
-                const uint32_t kBM = block_forced ? forced_block.bm
+                const uint32_t kBM = block_forced                           ? forced_block.bm
                                      : (tile_sel == "m" || tile_sel == "l") ? 64U
                                                                             : 32U;
-                const uint32_t kBN =
-                    block_forced ? forced_block.bn : (tile_sel == "l") ? 64U : 32U;
+                const uint32_t kBN = block_forced ? forced_block.bn : (tile_sel == "l") ? 64U : 32U;
                 // BK=32, raised from 16 in Stage 5.75. Two reasons, both
                 // measured: it halves the K-tile count (one fewer carry-stack
                 // level, so fewer VGPRs), and it makes each block a 32-element
@@ -1156,12 +1116,10 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 const uint32_t kRN = forced_block.rn;
                 const uint32_t kRegWg = (kBM / kRM) * (kBN / kRN);
                 VKML_ASSERT(kRegWg <= impl_->caps.max_workgroup_invocations,
-                            "gemm tile {}x{} at {}x{} needs {} invocations, device allows {}",
-                            kBM, kBN, kRM, kRN, kRegWg,
-                            impl_->caps.max_workgroup_invocations);
+                            "gemm tile {}x{} at {}x{} needs {} invocations, device allows {}", kBM,
+                            kBN, kRM, kRN, kRegWg, impl_->caps.max_workgroup_invocations);
 
-                const uint32_t gemm_wg =
-                    use_naive ? wg : (use_tiled ? kTile * kTile : kRegWg);
+                const uint32_t gemm_wg = use_naive ? wg : (use_tiled ? kTile * kTile : kRegWg);
 
                 // -- split-K decision ---------------------------------------
                 //
@@ -1184,9 +1142,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                         ((m + kBM - 1) / kBM) * ((n + kBN - 1) / kBN) * b0 * b1;
                     // FORCED passes an explicit partition count and bypasses the
                     // profitability rule; AUTO passes 0 and lets it decide.
-                    const uint32_t requested = split_k_mode() == SplitKMode::Forced
-                                                   ? split_k_requested()
-                                                   : 0U;
+                    const uint32_t requested =
+                        split_k_mode() == SplitKMode::Forced ? split_k_requested() : 0U;
                     return plan_split_k(out_tiles, total_ktiles, total,
                                         impl_->caps.shader_core_count, requested);
                 }();
@@ -1236,11 +1193,10 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                         const char* v = std::getenv("VKML_GEMM_NOVEC");
                         return v != nullptr && v[0] != '\0' && v[0] != '0';
                     }();
-                    const bool can_vec4 = !novec && (kBK % 4 == 0) && (kBN % 4 == 0) &&
-                                          a.shape.stride(3) ==
-                                              static_cast<int64_t>(dtype_size(a.dtype)) &&
-                                          b.shape.stride(3) ==
-                                              static_cast<int64_t>(dtype_size(b.dtype));
+                    const bool can_vec4 =
+                        !novec && (kBK % 4 == 0) && (kBN % 4 == 0) &&
+                        a.shape.stride(3) == static_cast<int64_t>(dtype_size(a.dtype)) &&
+                        b.shape.stride(3) == static_cast<int64_t>(dtype_size(b.dtype));
 
                     cfg.load_vector_width = can_vec4 ? 4 : 1;
                     // Double buffering doubles the tile storage.
@@ -1255,9 +1211,9 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     }();
                     const bool lds_vec = !no_ldsvec && kRN == 2;
 
-
-                    cfg.spec_constants = {gemm_wg,  kBM, kBN, kBK, kRM, kRN, levels,
-                                          can_vec4 ? 1U : 0U, lds_vec ? 1U : 0U};
+                    cfg.spec_constants = {
+                        gemm_wg,          kBM, kBN, kBK, kRM, kRN, levels, can_vec4 ? 1U : 0U,
+                        lds_vec ? 1U : 0U};
                 }
 
                 const size_t esz = dtype_size(node->dtype);
@@ -1276,10 +1232,10 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 if (use_naive) {
                     if (debug_dispatch_enabled()) {
                         VKML_LOG_INFO("  gemm M={} N={} K={} batch={}x{} tile=none reg=1x1 "
-                                      "shared=0B AI=0.25", m, n, k, b0, b1);
+                                      "shared=0B AI=0.25",
+                                      m, n, k, b0, b1);
                         trace_dispatch(*node, "gemm_naive", cfg, sizeof(GemmPush),
-                                       (total + gemm_wg - 1) / gemm_wg,
-                                       impl_->caps.subgroup_size);
+                                       (total + gemm_wg - 1) / gemm_wg, impl_->caps.subgroup_size);
                     }
                     rec.dispatch(pipes.get("gemm_naive", spv::gemm_naive, spv::gemm_naive_size,
                                            sizeof(GemmPush), cfg),
@@ -1295,8 +1251,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 const uint32_t groups = tiles_m * tiles_n * b0 * b1;
 
                 // AI = 2*BM*BN*BK / ((BM*BK + BK*BN) * 4 bytes)
-                const double ai = 2.0 * tm * tn * tk /
-                                  ((static_cast<double>(tm) * tk + tk * tn) * 4.0);
+                const double ai =
+                    2.0 * tm * tn * tk / ((static_cast<double>(tm) * tk + tk * tn) * 4.0);
 
                 if (debug_dispatch_enabled()) {
                     VKML_LOG_INFO(
@@ -1304,9 +1260,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                         "reg={}x{} threads={} shared={}B AI={:.2f} "
                         "owns_rows_per_thread={} owns_cols_per_thread={}",
                         m, n, k, b0, b1, tm, tn, tk, tiles_m, tiles_n, (k + tk - 1) / tk,
-                        use_tiled ? 1 : kRM, use_tiled ? 1 : kRN, gemm_wg,
-                        cfg.shared_memory_bytes, ai, use_tiled ? 1 : kRM,
-                        use_tiled ? 1 : kRN);
+                        use_tiled ? 1 : kRM, use_tiled ? 1 : kRN, gemm_wg, cfg.shared_memory_bytes,
+                        ai, use_tiled ? 1 : kRM, use_tiled ? 1 : kRN);
                     trace_dispatch(*node, use_tiled ? "gemm_tiled" : "gemm_reg", cfg,
                                    sizeof(GemmPush), groups, impl_->caps.subgroup_size);
                 }
@@ -1317,8 +1272,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                                           sizeof(GemmPush), cfg)
                               : (use_db ? pipes.get("gemm_db", spv::gemm_db, spv::gemm_db_size,
                                                     sizeof(GemmPush), cfg)
-                                        : pipes.get("gemm_reg", spv::gemm_reg,
-                                                    spv::gemm_reg_size, sizeof(GemmPush), cfg));
+                                        : pipes.get("gemm_reg", spv::gemm_reg, spv::gemm_reg_size,
+                                                    sizeof(GemmPush), cfg));
                 if (debug_dispatch_enabled() && gemm_pipe.stats.available) {
                     const auto& st = gemm_pipe.stats;
                     VKML_LOG_INFO("  compiler: vgpr={} sgpr={} spilled_vgpr={} spilled_sgpr={} "
@@ -1339,8 +1294,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                                                   sizeof(GemmPush), cfg),
                                         &push, sizeof(push), groups);
                 } else if (!use_split_k) {
-                    rec.dispatch_groups(pipes.get("gemm_reg", spv::gemm_reg,
-                                                  spv::gemm_reg_size, sizeof(GemmPush), cfg),
+                    rec.dispatch_groups(pipes.get("gemm_reg", spv::gemm_reg, spv::gemm_reg_size,
+                                                  sizeof(GemmPush), cfg),
                                         &push, sizeof(push), groups);
                 } else {
                     // -- split-K -------------------------------------------
@@ -1351,24 +1306,20 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     // workspace slice. Nothing inside the kernel knows split-K
                     // exists, which is why its numerical behaviour cannot have
                     // drifted.
-                    const uint64_t slice_elems =
-                        static_cast<uint64_t>(total) ;  // b0*b1*m*n
-                    const uint64_t ws_bytes =
-                        slice_elems * splits * static_cast<uint64_t>(esz);
+                    const uint64_t slice_elems = static_cast<uint64_t>(total);  // b0*b1*m*n
+                    const uint64_t ws_bytes = slice_elems * splits * static_cast<uint64_t>(esz);
                     const uint64_t ws = impl_->splitk_workspace(ws_bytes);
 
-                    const auto& part_pipe = pipes.get("gemm_reg", spv::gemm_reg,
-                                                      spv::gemm_reg_size, sizeof(GemmPush), cfg);
+                    const auto& part_pipe = pipes.get("gemm_reg", spv::gemm_reg, spv::gemm_reg_size,
+                                                      sizeof(GemmPush), cfg);
                     for (uint32_t s = 0; s < splits; ++s) {
                         const uint32_t k_begin = s * split_chunk * kBK;
                         const uint32_t k_len = std::min(split_chunk * kBK, k - k_begin);
 
                         GemmPush sp = push;
                         // Strides are in ELEMENTS; addresses are in bytes.
-                        sp.a = push.a + static_cast<uint64_t>(k_begin) *
-                                            push.op_a.nb[3] * esz;
-                        sp.b = push.b + static_cast<uint64_t>(k_begin) *
-                                            push.op_b.nb[2] * esz;
+                        sp.a = push.a + static_cast<uint64_t>(k_begin) * push.op_a.nb[3] * esz;
+                        sp.b = push.b + static_cast<uint64_t>(k_begin) * push.op_b.nb[2] * esz;
                         sp.d = ws + static_cast<uint64_t>(s) * slice_elems * esz;
                         sp.k = k_len;
                         // No barrier between partitions: they write disjoint
@@ -1403,14 +1354,14 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     if (debug_dispatch_enabled()) {
                         VKML_LOG_INFO("  split-k splits={} chunk={} ktiles/part={} "
                                       "stack_levels={} workspace={}KiB reduce_levels={}",
-                                      splits, split_chunk, split_chunk,
-                                      cfg.spec_constants[6], ws_bytes / 1024, split_levels);
+                                      splits, split_chunk, split_chunk, cfg.spec_constants[6],
+                                      ws_bytes / 1024, split_levels);
                         if (red_pipe.stats.available) {
                             const auto& st = red_pipe.stats;
                             VKML_LOG_INFO("  reduce compiler: vgpr={} sgpr={} spilled_vgpr={} "
                                           "scratch={}B lds={}B max_waves={}",
-                                          st.vgprs, st.sgprs, st.spilled_vgprs,
-                                          st.scratch_bytes, st.lds_bytes, st.max_waves);
+                                          st.vgprs, st.sgprs, st.spilled_vgprs, st.scratch_bytes,
+                                          st.lds_bytes, st.max_waves);
                         }
                     }
 
@@ -1440,8 +1391,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
     if (debug_dispatch_enabled()) {
         const auto& profile = rec.profile();
         for (size_t i = 0; i < profile.size() && i < traced.size(); ++i) {
-            VKML_LOG_INFO("  timing op={} gpu={:.4f}ms", op_name(traced[i]->op),
-                          profile[i].gpu_ms);
+            VKML_LOG_INFO("  timing op={} gpu={:.4f}ms", op_name(traced[i]->op), profile[i].gpu_ms);
         }
     }
 
@@ -1457,8 +1407,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
             for (size_t i = 0; i < host.size(); ++i) {
                 body += std::format("{}{:g}", i ? ", " : "", host[i]);
             }
-            VKML_LOG_INFO("  dump op={} shape={} [{}]", op_name(node->op), node->shape.str(),
-                          body);
+            VKML_LOG_INFO("  dump op={} shape={} [{}]", op_name(node->op), node->shape.str(), body);
         }
     }
 }
@@ -1475,8 +1424,7 @@ void VulkanBackend::copy_from_host(Storage& dst, int64_t dst_offset, const void*
     impl_->staging.upload(src, it->second, static_cast<uint64_t>(dst_offset), nbytes);
 }
 
-void VulkanBackend::copy_to_host(void* dst, const Storage& src, int64_t src_offset,
-                                 size_t nbytes) {
+void VulkanBackend::copy_to_host(void* dst, const Storage& src, int64_t src_offset, size_t nbytes) {
     if (nbytes == 0) {
         return;
     }
@@ -1507,9 +1455,7 @@ std::vector<PipelineStats> VulkanBackend::pipeline_stats() const {
     return out;
 }
 
-void VulkanBackend::set_profiling(bool enabled) {
-    impl_->recorder.set_profiling(enabled);
-}
+void VulkanBackend::set_profiling(bool enabled) { impl_->recorder.set_profiling(enabled); }
 
 std::vector<std::pair<std::string, double>> VulkanBackend::last_profile() const {
     std::vector<std::pair<std::string, double>> out;
@@ -1519,17 +1465,11 @@ std::vector<std::pair<std::string, double>> VulkanBackend::last_profile() const 
     return out;
 }
 
-void VulkanBackend::set_subgroup_override(uint32_t size) {
-    impl_->subgroup_override = size;
-}
+void VulkanBackend::set_subgroup_override(uint32_t size) { impl_->subgroup_override = size; }
 
-void VulkanBackend::synchronize() {
-    impl_->recorder.wait_idle();
-}
+void VulkanBackend::synchronize() { impl_->recorder.wait_idle(); }
 
-void VulkanBackend::trim() {
-    impl_->allocator.trim();
-}
+void VulkanBackend::trim() { impl_->allocator.trim(); }
 
 VulkanStats VulkanBackend::stats() const {
     const vk::AllocatorStats a = impl_->allocator.stats();
@@ -1548,17 +1488,11 @@ VulkanStats VulkanBackend::stats() const {
     return s;
 }
 
-bool vulkan_available() {
-    return vk::enumerate_device_count() > 0;
-}
+bool vulkan_available() { return vk::enumerate_device_count() > 0; }
 
-int vulkan_device_count() {
-    return vk::enumerate_device_count();
-}
+int vulkan_device_count() { return vk::enumerate_device_count(); }
 
-std::vector<std::string> vulkan_device_names() {
-    return vk::enumerate_device_names();
-}
+std::vector<std::string> vulkan_device_names() { return vk::enumerate_device_names(); }
 
 namespace {
 

@@ -45,9 +45,7 @@ namespace {
     return 0.5F * x * (1.0F + std::erf(x * kInvSqrt2));
 }
 
-[[nodiscard]] float silu(float x) noexcept {
-    return x * sigmoid(x);
-}
+[[nodiscard]] float silu(float x) noexcept { return x * sigmoid(x); }
 
 [[nodiscard]] float sign(float x) noexcept {
     if (x > 0.0F) {
@@ -89,29 +87,93 @@ void compare_f32(Node& out, Op op) {
                                [op](float x, float y) -> uint8_t { return op(x, y) ? 1 : 0; });
 }
 
-void k_neg(Node& o) { unary_f32(o, [](float x) { return -x; }); }
-void k_abs(Node& o) { unary_f32(o, [](float x) { return std::fabs(x); }); }
-void k_sign(Node& o) { unary_f32(o, [](float x) { return sign(x); }); }
-void k_square(Node& o) { unary_f32(o, [](float x) { return x * x; }); }
-void k_sqrt(Node& o) { unary_f32(o, [](float x) { return std::sqrt(x); }); }
-void k_rsqrt(Node& o) { unary_f32(o, [](float x) { return 1.0F / std::sqrt(x); }); }
-void k_reciprocal(Node& o) { unary_f32(o, [](float x) { return 1.0F / x; }); }
-void k_exp(Node& o) { unary_f32(o, [](float x) { return std::exp(x); }); }
-void k_log(Node& o) { unary_f32(o, [](float x) { return std::log(x); }); }
-void k_erf(Node& o) { unary_f32(o, [](float x) { return std::erf(x); }); }
-void k_sin(Node& o) { unary_f32(o, [](float x) { return std::sin(x); }); }
-void k_cos(Node& o) { unary_f32(o, [](float x) { return std::cos(x); }); }
-void k_tanh(Node& o) { unary_f32(o, [](float x) { return std::tanh(x); }); }
-void k_sigmoid(Node& o) { unary_f32(o, [](float x) { return sigmoid(x); }); }
-void k_relu(Node& o) { unary_f32(o, [](float x) { return x > 0.0F ? x : 0.0F; }); }
-void k_gelu(Node& o) { unary_f32(o, [](float x) { return gelu(x); }); }
-void k_silu(Node& o) { unary_f32(o, [](float x) { return silu(x); }); }
+void k_neg(Node& o) {
+    unary_f32(o, [](float x) { return -x; });
+}
 
-void k_add(Node& o) { binary_f32(o, [](float x, float y) { return x + y; }); }
-void k_sub(Node& o) { binary_f32(o, [](float x, float y) { return x - y; }); }
-void k_mul(Node& o) { binary_f32(o, [](float x, float y) { return x * y; }); }
-void k_div(Node& o) { binary_f32(o, [](float x, float y) { return x / y; }); }
-void k_pow(Node& o) { binary_f32(o, [](float x, float y) { return std::pow(x, y); }); }
+void k_abs(Node& o) {
+    unary_f32(o, [](float x) { return std::fabs(x); });
+}
+
+void k_sign(Node& o) {
+    unary_f32(o, [](float x) { return sign(x); });
+}
+
+void k_square(Node& o) {
+    unary_f32(o, [](float x) { return x * x; });
+}
+
+void k_sqrt(Node& o) {
+    unary_f32(o, [](float x) { return std::sqrt(x); });
+}
+
+void k_rsqrt(Node& o) {
+    unary_f32(o, [](float x) { return 1.0F / std::sqrt(x); });
+}
+
+void k_reciprocal(Node& o) {
+    unary_f32(o, [](float x) { return 1.0F / x; });
+}
+
+void k_exp(Node& o) {
+    unary_f32(o, [](float x) { return std::exp(x); });
+}
+
+void k_log(Node& o) {
+    unary_f32(o, [](float x) { return std::log(x); });
+}
+
+void k_erf(Node& o) {
+    unary_f32(o, [](float x) { return std::erf(x); });
+}
+
+void k_sin(Node& o) {
+    unary_f32(o, [](float x) { return std::sin(x); });
+}
+
+void k_cos(Node& o) {
+    unary_f32(o, [](float x) { return std::cos(x); });
+}
+
+void k_tanh(Node& o) {
+    unary_f32(o, [](float x) { return std::tanh(x); });
+}
+
+void k_sigmoid(Node& o) {
+    unary_f32(o, [](float x) { return sigmoid(x); });
+}
+
+void k_relu(Node& o) {
+    unary_f32(o, [](float x) { return x > 0.0F ? x : 0.0F; });
+}
+
+void k_gelu(Node& o) {
+    unary_f32(o, [](float x) { return gelu(x); });
+}
+
+void k_silu(Node& o) {
+    unary_f32(o, [](float x) { return silu(x); });
+}
+
+void k_add(Node& o) {
+    binary_f32(o, [](float x, float y) { return x + y; });
+}
+
+void k_sub(Node& o) {
+    binary_f32(o, [](float x, float y) { return x - y; });
+}
+
+void k_mul(Node& o) {
+    binary_f32(o, [](float x, float y) { return x * y; });
+}
+
+void k_div(Node& o) {
+    binary_f32(o, [](float x, float y) { return x / y; });
+}
+
+void k_pow(Node& o) {
+    binary_f32(o, [](float x, float y) { return std::pow(x, y); });
+}
 
 void k_maximum(Node& o) {
     // std::fmax propagates the non-NaN operand; torch.maximum propagates NaN.
@@ -132,12 +194,29 @@ void k_minimum(Node& o) {
     });
 }
 
-void k_equal(Node& o) { compare_f32(o, [](float x, float y) { return x == y; }); }
-void k_less(Node& o) { compare_f32(o, [](float x, float y) { return x < y; }); }
-void k_greater(Node& o) { compare_f32(o, [](float x, float y) { return x > y; }); }
-void k_less_equal(Node& o) { compare_f32(o, [](float x, float y) { return x <= y; }); }
-void k_greater_equal(Node& o) { compare_f32(o, [](float x, float y) { return x >= y; }); }
-void k_not_equal(Node& o) { compare_f32(o, [](float x, float y) { return x != y; }); }
+void k_equal(Node& o) {
+    compare_f32(o, [](float x, float y) { return x == y; });
+}
+
+void k_less(Node& o) {
+    compare_f32(o, [](float x, float y) { return x < y; });
+}
+
+void k_greater(Node& o) {
+    compare_f32(o, [](float x, float y) { return x > y; });
+}
+
+void k_less_equal(Node& o) {
+    compare_f32(o, [](float x, float y) { return x <= y; });
+}
+
+void k_greater_equal(Node& o) {
+    compare_f32(o, [](float x, float y) { return x >= y; });
+}
+
+void k_not_equal(Node& o) {
+    compare_f32(o, [](float x, float y) { return x != y; });
+}
 
 void k_clamp(Node& out) {
     if (out.dtype != DType::F32) {
@@ -176,8 +255,8 @@ void k_where(Node& out) {
 }  // namespace
 
 void unsupported_dtype(const Node& node) {
-    throw DTypeError(std::format("cpu backend: op '{}' does not support dtype {}",
-                                 op_name(node.op), dtype_name(node.dtype)));
+    throw DTypeError(std::format("cpu backend: op '{}' does not support dtype {}", op_name(node.op),
+                                 dtype_name(node.dtype)));
 }
 
 void register_elementwise_kernels(KernelTable& t) {

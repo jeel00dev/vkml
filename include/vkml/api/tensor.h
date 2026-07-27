@@ -61,8 +61,7 @@ public:
 
     /// Copies `nbytes` of host data into a new tensor.
     [[nodiscard]] static Tensor from_host(const void* data, std::span<const int64_t> dims,
-                                          DType dtype = DType::F32,
-                                          Device device = Device::cpu());
+                                          DType dtype = DType::F32, Device device = Device::cpu());
 
     // Braced-list overloads.
     //
@@ -76,19 +75,18 @@ public:
         return full(std::span<const int64_t>{dims.begin(), dims.size()}, value, dtype, device);
     }
 
-    [[nodiscard]] static Tensor zeros(std::initializer_list<int64_t> dims,
-                                      DType dtype = DType::F32, Device device = Device::cpu()) {
+    [[nodiscard]] static Tensor zeros(std::initializer_list<int64_t> dims, DType dtype = DType::F32,
+                                      Device device = Device::cpu()) {
         return zeros(std::span<const int64_t>{dims.begin(), dims.size()}, dtype, device);
     }
 
-    [[nodiscard]] static Tensor ones(std::initializer_list<int64_t> dims,
-                                     DType dtype = DType::F32, Device device = Device::cpu()) {
+    [[nodiscard]] static Tensor ones(std::initializer_list<int64_t> dims, DType dtype = DType::F32,
+                                     Device device = Device::cpu()) {
         return ones(std::span<const int64_t>{dims.begin(), dims.size()}, dtype, device);
     }
 
     [[nodiscard]] static Tensor from_host(const void* data, std::initializer_list<int64_t> dims,
-                                          DType dtype = DType::F32,
-                                          Device device = Device::cpu()) {
+                                          DType dtype = DType::F32, Device device = Device::cpu()) {
         return from_host(data, std::span<const int64_t>{dims.begin(), dims.size()}, dtype, device);
     }
 

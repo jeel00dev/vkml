@@ -49,8 +49,7 @@ std::string AllocatorStats::describe() const {
         static_cast<double>(in_use_bytes) / mib, live_allocations,
         static_cast<double>(peak_in_use_bytes) / mib,
         static_cast<double>(in_use_bytes - requested_bytes) / mib,
-        static_cast<double>(largest_free_run) / mib, fragmentation() * 100.0,
-        total_allocations,
+        static_cast<double>(largest_free_run) / mib, fragmentation() * 100.0, total_allocations,
         device_allocations);
 }
 
@@ -144,8 +143,8 @@ uint32_t Allocator::find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags w
     if (avoid != 0) {
         return find_memory_type(type_bits, want, 0);
     }
-    throw DeviceError(std::format(
-        "no memory type satisfies flags 0x{:x} (typeBits 0x{:x})", want, type_bits));
+    throw DeviceError(
+        std::format("no memory type satisfies flags 0x{:x} (typeBits 0x{:x})", want, type_bits));
 }
 
 uint32_t Allocator::create_block(uint64_t min_size, MemoryKind kind) {
@@ -285,9 +284,8 @@ Allocation Allocator::allocate(uint64_t size, MemoryKind kind, std::string_view 
             a.size = size;
             a.padded_size = padded;
             a.address = block.address + offset;
-            a.mapped = block.mapped != nullptr
-                           ? static_cast<std::byte*>(block.mapped) + offset
-                           : nullptr;
+            a.mapped =
+                block.mapped != nullptr ? static_cast<std::byte*>(block.mapped) + offset : nullptr;
             a.kind = kind;
 
             if (!debug_name.empty()) {

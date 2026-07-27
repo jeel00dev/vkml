@@ -81,8 +81,9 @@ Tensor Tensor::from_host(const void* data, std::span<const int64_t> dims, DType 
                          Device device) {
     NodePtr n = make_leaf(dims, dtype, device);
     if (n->shape.nbytes() > 0) {
-        VKML_CHECK(data != nullptr, Error, "from_host received a null pointer for a non-empty "
-                                           "tensor");
+        VKML_CHECK(data != nullptr, Error,
+                   "from_host received a null pointer for a non-empty "
+                   "tensor");
         backend_for(device).copy_from_host(*n->storage, 0, data, n->shape.nbytes());
     }
     return Tensor{std::move(n)};
@@ -181,8 +182,8 @@ void Tensor::to_host(void* dst) const {
 float Tensor::item() const {
     require_defined(*this, "item()");
     VKML_CHECK(numel() == 1, ShapeError, "item() requires exactly one element, got {}", numel());
-    VKML_CHECK(node_->dtype == DType::F32, DTypeError,
-               "item() currently supports F32 only, got {}", dtype_name(node_->dtype));
+    VKML_CHECK(node_->dtype == DType::F32, DTypeError, "item() currently supports F32 only, got {}",
+               dtype_name(node_->dtype));
     float v = 0.0F;
     to_host(&v);
     return v;
@@ -308,8 +309,7 @@ void Tensor::assign_(const Tensor& src) {
     require_defined(*this, "assign_()");
     VKML_CHECK(src.defined(), Error, "assign_() from an undefined tensor");
     VKML_CHECK(node_->shape.same_dims(src.node()->shape), ShapeError,
-               "assign_() shape mismatch: {} vs {}", node_->shape.str(),
-               src.node()->shape.str());
+               "assign_() shape mismatch: {} vs {}", node_->shape.str(), src.node()->shape.str());
     VKML_CHECK(node_->dtype == src.dtype(), DTypeError, "assign_() dtype mismatch: {} vs {}",
                dtype_name(node_->dtype), dtype_name(src.dtype()));
     VKML_CHECK(node_->device == src.device(), DeviceError, "assign_() device mismatch");

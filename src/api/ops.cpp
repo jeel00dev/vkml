@@ -13,8 +13,8 @@ namespace {
 
 void check_same_device(const Tensor& a, const Tensor& b, OpKind op) {
     VKML_CHECK(a.device() == b.device(), DeviceError,
-               "'{}' operands are on different devices: {} and {}", op_name(op),
-               a.device().str(), b.device().str());
+               "'{}' operands are on different devices: {} and {}", op_name(op), a.device().str(),
+               b.device().str());
 }
 
 /// M0 policy: no implicit type promotion between tensors.
@@ -53,8 +53,7 @@ Tensor binary(OpKind op, const Tensor& a, const Tensor& b, DType out_dtype) {
     const Tensor ba = a.shape() == dims ? a : a.broadcast_to(dims);
     const Tensor bb = b.shape() == dims ? b : b.broadcast_to(dims);
 
-    auto n = make_node(op, Shape::contiguous(dims, dtype_size(out_dtype)), out_dtype,
-                       a.device());
+    auto n = make_node(op, Shape::contiguous(dims, dtype_size(out_dtype)), out_dtype, a.device());
     n->src[0] = ba.node();
     n->src[1] = bb.node();
     n->n_src = 2;
@@ -64,8 +63,8 @@ Tensor binary(OpKind op, const Tensor& a, const Tensor& b, DType out_dtype) {
 }
 
 Tensor unary(OpKind op, const Tensor& a) {
-    auto n = make_node(op, Shape::contiguous(a.shape(), dtype_size(a.dtype())), a.dtype(),
-                       a.device());
+    auto n =
+        make_node(op, Shape::contiguous(a.shape(), dtype_size(a.dtype())), a.dtype(), a.device());
     n->src[0] = a.node();
     n->n_src = 1;
     n->requires_grad = grad_enabled() && a.requires_grad();
@@ -124,9 +123,13 @@ Tensor reduction(OpKind op, const Tensor& a, std::span<const int> axes, bool kee
 // ---------------------------------------------------------------------------
 
 Tensor add(const Tensor& a, const Tensor& b) { return binary(OpKind::Add, a, b, a.dtype()); }
+
 Tensor sub(const Tensor& a, const Tensor& b) { return binary(OpKind::Sub, a, b, a.dtype()); }
+
 Tensor mul(const Tensor& a, const Tensor& b) { return binary(OpKind::Mul, a, b, a.dtype()); }
+
 Tensor div(const Tensor& a, const Tensor& b) { return binary(OpKind::Div, a, b, a.dtype()); }
+
 Tensor pow(const Tensor& a, const Tensor& b) { return binary(OpKind::Pow, a, b, a.dtype()); }
 
 Tensor maximum(const Tensor& a, const Tensor& b) {
@@ -138,12 +141,17 @@ Tensor minimum(const Tensor& a, const Tensor& b) {
 }
 
 Tensor add(const Tensor& a, double s) { return add(a, scalar_like(a, s)); }
+
 Tensor sub(const Tensor& a, double s) { return sub(a, scalar_like(a, s)); }
+
 Tensor mul(const Tensor& a, double s) { return mul(a, scalar_like(a, s)); }
+
 Tensor div(const Tensor& a, double s) { return div(a, scalar_like(a, s)); }
+
 Tensor pow(const Tensor& a, double s) { return pow(a, scalar_like(a, s)); }
 
 Tensor equal(const Tensor& a, const Tensor& b) { return binary(OpKind::Equal, a, b, DType::Bool); }
+
 Tensor less(const Tensor& a, const Tensor& b) { return binary(OpKind::Less, a, b, DType::Bool); }
 
 Tensor greater(const Tensor& a, const Tensor& b) {
@@ -163,21 +171,37 @@ Tensor not_equal(const Tensor& a, const Tensor& b) {
 }
 
 Tensor neg(const Tensor& a) { return unary(OpKind::Neg, a); }
+
 Tensor abs(const Tensor& a) { return unary(OpKind::Abs, a); }
+
 Tensor sign(const Tensor& a) { return unary(OpKind::Sign, a); }
+
 Tensor square(const Tensor& a) { return unary(OpKind::Square, a); }
+
 Tensor sqrt(const Tensor& a) { return unary(OpKind::Sqrt, a); }
+
 Tensor rsqrt(const Tensor& a) { return unary(OpKind::Rsqrt, a); }
+
 Tensor reciprocal(const Tensor& a) { return unary(OpKind::Reciprocal, a); }
+
 Tensor exp(const Tensor& a) { return unary(OpKind::Exp, a); }
+
 Tensor log(const Tensor& a) { return unary(OpKind::Log, a); }
+
 Tensor erf(const Tensor& a) { return unary(OpKind::Erf, a); }
+
 Tensor sin(const Tensor& a) { return unary(OpKind::Sin, a); }
+
 Tensor cos(const Tensor& a) { return unary(OpKind::Cos, a); }
+
 Tensor tanh(const Tensor& a) { return unary(OpKind::Tanh, a); }
+
 Tensor sigmoid(const Tensor& a) { return unary(OpKind::Sigmoid, a); }
+
 Tensor relu(const Tensor& a) { return unary(OpKind::Relu, a); }
+
 Tensor gelu(const Tensor& a) { return unary(OpKind::Gelu, a); }
+
 Tensor silu(const Tensor& a) { return unary(OpKind::Silu, a); }
 
 namespace {
@@ -210,21 +234,17 @@ Tensor clamp_max(const Tensor& a, double hi) {
     return clamp_impl(a, ClampParams{.hi = static_cast<float>(hi), .has_hi = true});
 }
 
-Tensor zeros_like(const Tensor& a) {
-    return Tensor::zeros(a.shape(), a.dtype(), a.device());
-}
+Tensor zeros_like(const Tensor& a) { return Tensor::zeros(a.shape(), a.dtype(), a.device()); }
 
-Tensor ones_like(const Tensor& a) {
-    return Tensor::ones(a.shape(), a.dtype(), a.device());
-}
+Tensor ones_like(const Tensor& a) { return Tensor::ones(a.shape(), a.dtype(), a.device()); }
 
 Tensor full_like(const Tensor& a, double value) {
     return Tensor::full(a.shape(), value, a.dtype(), a.device());
 }
 
 Tensor where(const Tensor& cond, const Tensor& a, const Tensor& b) {
-    VKML_CHECK(cond.dtype() == DType::Bool, DTypeError,
-               "where() condition must be Bool, got {}", dtype_name(cond.dtype()));
+    VKML_CHECK(cond.dtype() == DType::Bool, DTypeError, "where() condition must be Bool, got {}",
+               dtype_name(cond.dtype()));
     check_same_dtype(a, b, OpKind::Where);
     check_same_device(a, b, OpKind::Where);
 
@@ -279,8 +299,8 @@ namespace {
 
 Tensor softmax_family(OpKind op, const Tensor& a, int axis) {
     const int norm = normalize_dim(axis, a.ndim());
-    auto n = make_node(op, Shape::contiguous(a.shape(), dtype_size(a.dtype())), a.dtype(),
-                       a.device());
+    auto n =
+        make_node(op, Shape::contiguous(a.shape(), dtype_size(a.dtype())), a.dtype(), a.device());
     n->src[0] = a.node();
     n->n_src = 1;
     n->params.set(AxisParams{.axis = norm});
@@ -310,8 +330,8 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
     const bool a_vec = a.ndim() == 1;
     const bool b_vec = b.ndim() == 1;
 
-    Tensor am = a_vec ? a.unsqueeze(0) : a;   // [K] -> [1, K]
-    Tensor bm = b_vec ? b.unsqueeze(1) : b;   // [K] -> [K, 1]
+    Tensor am = a_vec ? a.unsqueeze(0) : a;  // [K] -> [1, K]
+    Tensor bm = b_vec ? b.unsqueeze(1) : b;  // [K] -> [K, 1]
 
     // Bind the shapes to locals. Tensor::shape() returns by value, so writing
     // `am.shape().begin()` and `am.shape().end()` would produce iterators into
@@ -334,8 +354,7 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
     std::vector<int64_t> batch = broadcast_dims(a_batch, b_batch);
 
     VKML_CHECK(batch.size() <= 2, ShapeError,
-               "matmul supports at most 2 batch axes at rank {} (got {})", kMaxDims,
-               batch.size());
+               "matmul supports at most 2 batch axes at rank {} (got {})", kMaxDims, batch.size());
     while (batch.size() < 2) {
         batch.insert(batch.begin(), 1);
     }

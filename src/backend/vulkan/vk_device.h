@@ -87,11 +87,17 @@ public:
     Context& operator=(Context&&) = delete;
 
     [[nodiscard]] VkInstance instance() const noexcept { return instance_; }
+
     [[nodiscard]] VkPhysicalDevice physical() const noexcept { return physical_; }
+
     [[nodiscard]] VkDevice device() const noexcept { return device_; }
+
     [[nodiscard]] VkQueue queue() const noexcept { return queue_; }
+
     [[nodiscard]] uint32_t queue_family() const noexcept { return queue_family_; }
+
     [[nodiscard]] const DeviceInfo& info() const noexcept { return info_; }
+
     [[nodiscard]] bool validation_enabled() const noexcept { return debug_messenger_ != nullptr; }
 
     /// Fills in the backend-agnostic capability struct.

@@ -12,12 +12,8 @@ std::atomic<bool>& flag() noexcept {
 
 }  // namespace
 
-void set_grad_enabled(bool enabled) noexcept {
-    flag().store(enabled, std::memory_order_relaxed);
-}
+void set_grad_enabled(bool enabled) noexcept { flag().store(enabled, std::memory_order_relaxed); }
 
-bool grad_enabled() noexcept {
-    return flag().load(std::memory_order_relaxed);
-}
+bool grad_enabled() noexcept { return flag().load(std::memory_order_relaxed); }
 
 }  // namespace vkml

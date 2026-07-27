@@ -93,9 +93,7 @@ int64_t Shape::numel() const noexcept {
     return n;
 }
 
-size_t Shape::nbytes() const noexcept {
-    return static_cast<size_t>(numel()) * itemsize_;
-}
+size_t Shape::nbytes() const noexcept { return static_cast<size_t>(numel()) * itemsize_; }
 
 bool Shape::is_contiguous() const noexcept {
     if (numel() == 0) {
@@ -240,8 +238,8 @@ Shape Shape::broadcast_to(std::span<const int64_t> target) const {
             s.dims_[k] = target[k];
             s.strides_[k] = 0;
         } else {
-            throw ShapeError(std::format("cannot broadcast extent {} to {} at axis {}", dims_[i],
-                                         target[k], k));
+            throw ShapeError(
+                std::format("cannot broadcast extent {} to {} at axis {}", dims_[i], target[k], k));
         }
     }
     return s;
@@ -260,7 +258,8 @@ std::optional<Shape> Shape::reshaped(std::span<const int64_t> dims) const {
             VKML_CHECK(infer_at < 0, ShapeError, "at most one extent may be -1");
             infer_at = static_cast<int>(i);
         } else {
-            VKML_CHECK(resolved[i] >= 0, ShapeError, "invalid extent {} at axis {}", resolved[i], i);
+            VKML_CHECK(resolved[i] >= 0, ShapeError, "invalid extent {} at axis {}", resolved[i],
+                       i);
             known *= resolved[i];
         }
     }
@@ -271,7 +270,8 @@ std::optional<Shape> Shape::reshaped(std::span<const int64_t> dims) const {
                    "cannot infer an extent: {} elements do not divide by {}", n, known);
         resolved[static_cast<size_t>(infer_at)] = n / known;
     } else {
-        VKML_CHECK(known == n, ShapeError, "reshape changes the element count ({} -> {})", n, known);
+        VKML_CHECK(known == n, ShapeError, "reshape changes the element count ({} -> {})", n,
+                   known);
     }
 
     // A non-contiguous view generally cannot be re-expressed as strides over the

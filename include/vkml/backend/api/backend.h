@@ -65,8 +65,7 @@ public:
                                 size_t nbytes) = 0;
 
     /// Copies device storage out to host bytes.
-    virtual void copy_to_host(void* dst, const Storage& src, int64_t src_offset,
-                              size_t nbytes) = 0;
+    virtual void copy_to_host(void* dst, const Storage& src, int64_t src_offset, size_t nbytes) = 0;
 
     /// Blocks until all previously submitted work has completed. A no-op for
     /// synchronous backends.
