@@ -285,10 +285,108 @@ void k_cat(Node& out) {
     }
 }
 
+/// Splits a linear index around `axis` into (outer, along, inner).
+///
+/// `inner` is the product of the extents after the axis and `outer` everything
+/// before, so an element's position along the axis is `(i / inner) % extent`.
+/// Shared by cat, index_select and scatter_add, which all remap exactly one
+/// axis and leave the rest alone.
+struct AxisSplit {
+    int64_t inner = 1;
+    int64_t extent = 1;
+};
+
+[[nodiscard]] AxisSplit axis_split(const Shape& s, int axis) {
+    AxisSplit r;
+    for (int i = axis + 1; i < s.ndim(); ++i) {
+        r.inner *= s.dim(i);
+    }
+    r.extent = s.dim(axis);
+    return r;
+}
+
+/// Gathers rows named by an index vector. Embedding's forward pass.
+void k_index_select(Node& out) {
+    const Node& a = *out.src[0];
+    const Node& idx = *out.src[1];
+    const int axis = out.params.get<AxisParams>().axis;
+
+    const int64_t n = out.shape.numel();
+    if (n == 0) {
+        return;
+    }
+
+    const AxisSplit o = axis_split(out.shape, axis);
+    const int64_t a_extent = a.shape.dim(axis);
+    const size_t esz = dtype_size(out.dtype);
+
+    auto* dst = static_cast<std::byte*>(out.data());
+    const auto* src = static_cast<const std::byte*>(a.data());
+
+    for (int64_t i = 0; i < n; ++i) {
+        const int64_t rest = i % o.inner;
+        const int64_t k = (i / o.inner) % o.extent;
+        const int64_t outer = i / (o.inner * o.extent);
+
+        const int64_t j = load<int64_t>(idx, k);
+        VKML_CHECK(j >= 0 && j < a_extent, IndexError,
+                   "index_select: index[{}] = {} is out of range for extent {}", k, j, a_extent);
+
+        const int64_t from = (outer * a_extent + j) * o.inner + rest;
+        std::memcpy(dst + linear_to_offset(i, out.shape), src + linear_to_offset(from, a.shape),
+                    esz);
+    }
+}
+
+/// Adjoint of index_select: accumulate each source slice into the row it came
+/// from. Repeated indices mean several sources land on one destination, which
+/// is what makes this irreducible to the elementwise and reduction ops.
+///
+/// Walks the SOURCE in ascending linear order, so for any destination the
+/// contributions arrive in ascending index order. That fixed order is what
+/// makes the result bit-reproducible, and it is the same order the Vulkan
+/// kernel uses -- deliberately, so the two agree exactly rather than merely
+/// within a tolerance. Fixing it costs nothing here and is the only way to
+/// have it at all on the GPU, which has no global float atomicAdd.
+void k_scatter_add(Node& out) {
+    const Node& src = *out.src[0];
+    const Node& idx = *out.src[1];
+    const int axis = out.params.get<AxisParams>().axis;
+
+    if (out.dtype != DType::F32) {
+        unsupported_dtype(out);
+    }
+    VKML_ASSERT(out.shape.is_contiguous(), "scatter_add output must be contiguous");
+    std::memset(out.data(), 0, out.shape.nbytes());
+
+    const int64_t n = src.shape.numel();
+    if (n == 0) {
+        return;
+    }
+
+    const AxisSplit s = axis_split(src.shape, axis);
+    const int64_t out_extent = out.shape.dim(axis);
+    auto* dst = static_cast<float*>(out.data());
+
+    for (int64_t i = 0; i < n; ++i) {
+        const int64_t rest = i % s.inner;
+        const int64_t k = (i / s.inner) % s.extent;
+        const int64_t outer = i / (s.inner * s.extent);
+
+        const int64_t j = load<int64_t>(idx, k);
+        VKML_CHECK(j >= 0 && j < out_extent, IndexError,
+                   "scatter_add: index[{}] = {} is out of range for extent {}", k, j, out_extent);
+
+        dst[(outer * out_extent + j) * s.inner + rest] += load<float>(src, i);
+    }
+}
+
 }  // namespace
 
 void register_movement_kernels(KernelTable& t) {
     t[static_cast<size_t>(OpKind::Cat)] = k_cat;
+    t[static_cast<size_t>(OpKind::IndexSelect)] = k_index_select;
+    t[static_cast<size_t>(OpKind::ScatterAdd)] = k_scatter_add;
     t[static_cast<size_t>(OpKind::SliceBackward)] = k_slice_backward;
     t[static_cast<size_t>(OpKind::Contiguous)] = k_contiguous;
     t[static_cast<size_t>(OpKind::Cast)] = k_cast;

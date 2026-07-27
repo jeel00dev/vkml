@@ -8,6 +8,8 @@
 #include "vkml/spv/binary.h"
 #include "vkml/spv/cast.h"
 #include "vkml/spv/cat.h"
+#include "vkml/spv/index_select.h"
+#include "vkml/spv/scatter_add.h"
 #include "vkml/spv/fill.h"
 #include "vkml/spv/gemm_naive.h"
 #include "vkml/spv/gemm_db.h"
@@ -147,6 +149,22 @@ struct CatPush {
 };
 
 static_assert(sizeof(CatPush) <= 256, "cat push constants exceed the device budget");
+
+/// Shared by index_select and scatter_add: the two are adjoints and remap the
+/// same axis, so they need the same description of it.
+struct GatherPush {
+    uint64_t src;
+    uint64_t index;
+    uint64_t dst;
+    uint32_t n;
+    uint32_t inner;
+    uint32_t out_extent;
+    uint32_t src_extent;
+    GpuOperand src_op;
+    GpuOperand out_op;
+};
+
+static_assert(sizeof(GatherPush) <= 256, "gather push constants exceed the device budget");
 
 struct ReducePush {
     uint64_t src;
@@ -722,6 +740,13 @@ bool VulkanBackend::supports(const Node& node) const {
         // The CPU kernel is byte-wise and so dtype-generic; the shader reads
         // through F32Buf, so it claims only F32 and everything else falls back.
         case OpKind::Cat: return node.dtype == DType::F32 && binary_srcs_are_f32(node);
+        // Values are F32, the index is I64. Both shaders read the index through
+        // I64Buf, so the dtype is checked rather than assumed.
+        case OpKind::IndexSelect:
+        case OpKind::ScatterAdd:
+            return node.dtype == DType::F32 && node.src[0] != nullptr &&
+                   node.src[0]->dtype == DType::F32 && node.src[1] != nullptr &&
+                   node.src[1]->dtype == DType::I64;
         case OpKind::Cast: return true;
         case OpKind::Sum:
         case OpKind::Mean:
@@ -911,6 +936,51 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 rec.dispatch(
                     pipes.get("binary", spv::binary, spv::binary_size, sizeof(BinaryPush), cfg),
                     &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::IndexSelect:
+            case OpKind::ScatterAdd: {
+                const bool gather = node->op == OpKind::IndexSelect;
+                const Node& src = *node->src[0];
+                const Node& index = *node->src[1];
+                const size_t esz = dtype_size(node->dtype);
+                const int axis = node->params.get<AxisParams>().axis;
+                const int nd = node->shape.ndim();
+
+                uint32_t inner = 1;
+                for (int i = axis + 1; i < nd; ++i) {
+                    inner *= static_cast<uint32_t>(node->shape.dim(i));
+                }
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg};
+
+                GatherPush push{};
+                push.src = address_of(src);
+                push.index = address_of(index);
+                push.dst = address_of(*node);
+                push.n = n_elems;
+                push.inner = inner;
+                // For the gather, `out_extent` is the index length and
+                // `src_extent` the axis being read. The scatter swaps them:
+                // it owns a destination row and scans the index instead.
+                push.out_extent = static_cast<uint32_t>(node->shape.dim(axis));
+                push.src_extent = static_cast<uint32_t>(src.shape.dim(axis));
+                push.src_op = to_gpu_operand(src.shape, esz);
+                push.out_op = to_gpu_operand(node->shape, esz);
+
+                const char* name = gather ? "index_select" : "scatter_add";
+                const uint32_t* code = gather ? spv::index_select : spv::scatter_add;
+                const size_t code_size = gather ? spv::index_select_size : spv::scatter_add_size;
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, name, cfg, sizeof(GatherPush), (n_elems + wg - 1) / wg,
+                                   impl_->caps.subgroup_size);
+                }
+                rec.dispatch(pipes.get(name, code, code_size, sizeof(GatherPush), cfg), &push,
+                             sizeof(push), n_elems);
                 break;
             }
 

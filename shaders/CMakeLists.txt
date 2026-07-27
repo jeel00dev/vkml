@@ -16,6 +16,8 @@ set(VKML_SHADERS
     where.comp
     tri.comp
     cat.comp
+    index_select.comp
+    scatter_add.comp
     cast.comp
     reduce.comp
     softmax.comp

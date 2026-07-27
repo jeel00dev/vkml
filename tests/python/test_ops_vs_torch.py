@@ -703,3 +703,93 @@ def test_dtype_promotion_is_strict():
     b = a.to(V.int32)
     with pytest.raises(TypeError):
         _ = a + b
+
+
+# ---------------------------------------------------------------------------
+# Indexing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape,axis,idx", [
+    ((5, 3), 0, [0, 2, 4]),
+    ((5, 3), 1, [2, 0]),
+    ((5, 3), 0, [1, 1, 1]),        # repeated: legal for a gather
+    ((4, 3, 2), 1, [2, 0, 1]),
+    ((6,), 0, [5, 0, 3]),
+    ((5, 3), 0, []),               # empty index
+])
+def test_index_select(shape, axis, idx):
+    x = make_input(shape, seed=80)
+    v, t = pair(x)
+    i = np.array(idx, dtype=np.int64)
+    assert_close(f"index_select(axis={axis})", V.index_select(v, axis, V.tensor(i)),
+                 torch.index_select(t, axis, torch.from_numpy(i.copy())), inputs=[x])
+
+
+@pytest.mark.parametrize("axis,idx,dim_size", [
+    (0, [0, 2, 2, 1], 4),          # index 2 repeated: the accumulating case
+    (0, [1, 1, 1, 1], 3),          # all to one row
+    (0, [0, 1, 2, 3], 4),          # a permutation, so no accumulation
+    (1, [0, 0, 1], 2),
+])
+def test_scatter_add(axis, idx, dim_size):
+    """Repeated indices are the whole point: several source slices land on one
+    destination, which is what stops this composing from elementwise ops."""
+    i = np.array(idx, dtype=np.int64)
+    shape = (len(idx), 3) if axis == 0 else (3, len(idx))
+    x = make_input(shape, seed=81)
+
+    v, t = pair(x)
+    out_shape = list(shape)
+    out_shape[axis] = dim_size
+
+    want = torch.zeros(out_shape).index_add_(axis, torch.from_numpy(i.copy()), t)
+    assert_close(f"scatter_add(axis={axis})", V.scatter_add(v, axis, V.tensor(i), dim_size),
+                 want, inputs=[x])
+
+
+def test_scatter_add_and_index_select_are_adjoint():
+    """<scatter_add(u), v> == <u, index_select(v)> for all u, v -- the defining
+    property of an adjoint pair, and what makes each the other's gradient.
+    Checked numerically rather than assumed, because getting it wrong produces
+    gradients that are plausible but silently wrong."""
+    rng = np.random.default_rng(82)
+    i = np.array([0, 2, 2, 1, 0], dtype=np.int64)
+    u = rng.normal(size=(5, 4)).astype(np.float32)      # source layout
+    w = rng.normal(size=(3, 4)).astype(np.float32)      # destination layout
+
+    lhs = float((V.scatter_add(V.tensor(u), 0, V.tensor(i), 3).numpy() * w).sum())
+    rhs = float((u * V.index_select(V.tensor(w), 0, V.tensor(i)).numpy()).sum())
+    assert abs(lhs - rhs) <= 1e-4 * max(1.0, abs(lhs)), f"{lhs} vs {rhs}"
+
+
+def test_embedding_backward_matches_torch():
+    """The reason scatter_add exists. An embedding lookup is index_select, and
+    its gradient accumulates every occurrence of a token back onto one row."""
+    rng = np.random.default_rng(83)
+    weight = rng.normal(size=(6, 4)).astype(np.float32)
+    tokens = np.array([0, 3, 3, 1, 0, 3], dtype=np.int64)
+
+    v = V.tensor(weight, requires_grad=True)
+    t = torch.from_numpy(weight.copy()).requires_grad_(True)
+
+    V.sum(V.mul(V.index_select(v, 0, V.tensor(tokens)),
+                V.index_select(v, 0, V.tensor(tokens)))).backward()
+    (torch.index_select(t, 0, torch.from_numpy(tokens.copy())) ** 2).sum().backward()
+
+    assert_close("embedding grad", v.grad, t.grad, inputs=[weight])
+    # Token 3 appears three times, token 2 never: the gradient must reflect both.
+    assert np.allclose(v.grad.numpy()[2], 0.0), "unused row received gradient"
+    assert np.abs(v.grad.numpy()[3]).max() > 0.0, "repeated row received none"
+
+
+def test_index_select_rejects_out_of_range():
+    v = V.tensor(make_input((4, 2), seed=84))
+    with pytest.raises(V.IndexError_):
+        V.index_select(v, 0, V.tensor(np.array([0, 9], dtype=np.int64))).numpy()
+
+
+def test_index_select_rejects_non_i64_index():
+    v = V.tensor(make_input((4, 2), seed=85))
+    with pytest.raises(V.DTypeError):
+        V.index_select(v, 0, V.tensor(np.array([0.0, 1.0], dtype=np.float32)))

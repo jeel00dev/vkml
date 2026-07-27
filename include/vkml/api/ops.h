@@ -63,6 +63,30 @@ namespace vkml {
 /// Elementwise select. `cond` must be Bool; all three broadcast together.
 [[nodiscard]] Tensor where(const Tensor& cond, const Tensor& a, const Tensor& b);
 
+/// Gathers along `axis` at the positions named by `index`, following
+/// torch.index_select. `index` must be I64 and rank 1; the result takes its
+/// extent on `axis` from the index length, and every other extent from `a`.
+///
+/// This is Embedding's forward pass.
+[[nodiscard]] Tensor index_select(const Tensor& a, int axis, const Tensor& index);
+
+/// Adjoint of `index_select`: accumulates each slice of `src` into the row of a
+/// zero-filled result named by `index`, following torch.index_add.
+/// `dim_size` is the extent of the result on `axis`.
+///
+/// One of the four operations docs/ARCHITECTURE.md records as genuinely needing
+/// its own kernel rather than composing from forward ops -- repeated indices
+/// mean several source slices land on one destination, which no elementwise or
+/// reduction op expresses.
+///
+/// DETERMINISM. The target GPU has no global float atomicAdd
+/// (`shaderBufferFloat32AtomicAdd = false`, measured), so the usual
+/// atomic scatter is unavailable -- and unwanted, since its order varies run to
+/// run. Both backends instead fold contributions in ascending index order,
+/// which makes the result bit-reproducible and identical between them.
+[[nodiscard]] Tensor scatter_add(const Tensor& src, int axis, const Tensor& index,
+                                 int64_t dim_size);
+
 /// Standardises over the last `normalized_axes` axes: subtract the mean,
 /// divide by the standard deviation. No affine term -- `nn.LayerNorm` applies
 /// its own weight and bias with `mul`/`add`, which the autograd handles without

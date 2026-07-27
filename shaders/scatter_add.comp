@@ -1,0 +1,67 @@
+#version 450
+
+// Adjoint of index_select: accumulate each source slice into the destination
+// row its index names.
+//
+// WHY THIS IS INVERTED RELATIVE TO THE OBVIOUS IMPLEMENTATION
+// -----------------------------------------------------------
+// The natural GPU scatter is one thread per SOURCE element doing an atomicAdd
+// on the destination. Two things rule that out here:
+//
+//   1. The target GPU reports shaderBufferFloat32AtomicAdd = false (measured,
+//      docs/ARCHITECTURE.md 1.1). There is no global float atomicAdd to call.
+//   2. Even where one exists, the order in which contending adds land varies
+//      between runs, so the result is not reproducible. vkml guarantees
+//      bit-reproducibility, so the atomic path is unwanted independently of
+//      whether the hardware offers it.
+//
+// So the loop is inverted: one thread per DESTINATION element, scanning the
+// index vector and summing the sources that name it. Every destination is
+// written by exactly one invocation -- no contention, nothing to synchronise,
+// and the fold order is ascending index, fixed by construction.
+//
+// That order is the same one the CPU kernel uses, which is why the two agree
+// bit-for-bit rather than within a tolerance (tests/python/tolerance.py).
+//
+// COST. Each destination scans the whole index vector, so this is
+// O(n_out * index_len) where an atomic scatter would be O(n_src). Fine at the
+// sizes in scope; for a large-vocabulary embedding backward it is not, and the
+// fix is a sort-based segmented reduction, which stays deterministic. Recorded
+// rather than taken, because there is no profile yet saying it matters.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;
+    uint64_t index;
+    uint64_t dst;
+    uint     n;           // destination element count
+    uint     inner;       // product of extents after the scattered axis
+    uint     out_extent;  // extent of the scattered axis in the destination
+    uint     src_extent;  // = index length
+    Operand  src_op;
+    Operand  out_op;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    const uint rest  = i % p.inner;
+    const uint j     = (i / p.inner) % p.out_extent;  // the row this thread owns
+    const uint outer = i / (p.inner * p.out_extent);
+
+    // Ascending k: the fold order, and the reason this is reproducible.
+    float acc = 0.0;
+    for (uint k = 0; k < p.src_extent; ++k) {
+        if (uint(I64Buf(p.index).v[k]) == j) {
+            const uint from = (outer * p.src_extent + k) * p.inner + rest;
+            acc += F32Buf(p.src).v[operand_offset(from, p.src_op)];
+        }
+    }
+
+    F32Buf(p.dst).v[operand_offset(i, p.out_op)] = acc;
+}

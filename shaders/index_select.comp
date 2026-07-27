@@ -1,0 +1,46 @@
+#version 450
+
+// Gathers along one axis at positions named by an index vector.
+// Embedding's forward pass.
+//
+// One thread per OUTPUT element, so every write is owned by exactly one
+// invocation and no synchronisation is needed. Repeated indices are harmless
+// here -- two outputs may read the same input row, which is a read, not a race.
+// The adjoint (scatter_add) is where that stops being true.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;
+    uint64_t index;
+    uint64_t dst;
+    uint     n;
+    uint     inner;       // product of extents after the gathered axis
+    uint     out_extent;  // = index length
+    uint     src_extent;  // extent of the gathered axis in the source
+    Operand  in_op;
+    Operand  out_op;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    const uint rest  = i % p.inner;
+    const uint k     = (i / p.inner) % p.out_extent;
+    const uint outer = i / (p.inner * p.out_extent);
+
+    // Out-of-range indices are rejected on the host, where the error can name
+    // the offending position. Clamping here keeps a stale index from reading
+    // outside the buffer if that check is ever bypassed.
+    const int64_t raw = I64Buf(p.index).v[k];
+    const uint j = uint(clamp(raw, int64_t(0), int64_t(p.src_extent) - 1));
+
+    const uint from = (outer * p.src_extent + j) * p.inner + rest;
+
+    F32Buf(p.dst).v[operand_offset(i, p.out_op)] =
+        F32Buf(p.src).v[operand_offset(from, p.in_op)];
+}

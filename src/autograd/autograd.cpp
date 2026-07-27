@@ -252,6 +252,24 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
                            sub(Tensor::ones(node.shape.dims(), node.dtype, node.device), out()));
             return;
 
+        // index_select and scatter_add are each other's adjoint, which is the
+        // whole reason scatter_add exists as an operator: gathering rows is
+        // linear, and the transpose of a gather is a scatter-with-accumulation.
+        // Repeated indices are exactly why the accumulation cannot be dropped.
+        case OpKind::IndexSelect: {
+            const int axis = node.params.get<AxisParams>().axis;
+            const Tensor index{node.src[1]};
+            accumulate(grads, a, scatter_add(grad, axis, index, node.src[0]->shape.dim(axis)));
+            return;
+        }
+
+        case OpKind::ScatterAdd: {
+            const int axis = node.params.get<AxisParams>().axis;
+            const Tensor index{node.src[1]};
+            accumulate(grads, a, index_select(grad, axis, index));
+            return;
+        }
+
         // Concatenation is a permutation of elements, so its adjoint is the
         // inverse permutation: each operand takes back exactly the slice of the
         // gradient it contributed. Slice is a view, so this allocates nothing

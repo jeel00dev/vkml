@@ -1020,3 +1020,76 @@ def test_all_gemm_kernels_agree(kernel):
     ctx = Context(op="matmul", layout=Layout(a.shape), dtype="f32", seed=11,
                   inputs=[a, b], extra=f"GEMM kernel = {kernel}")
     compare(ctx, got, want, terms_abs_sum=float(abs_prod.max()), reduction_n=90)
+
+
+# ---------------------------------------------------------------------------
+# Indexing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape,axis,idx", [
+    ((5, 3), 0, [0, 2, 4]),
+    ((5, 3), 1, [2, 0]),
+    ((5, 3), 0, [1, 1, 1]),
+    ((4, 3, 2), 1, [2, 0, 1]),
+    ((6,), 0, [5, 0, 3]),
+    ((257, 2), 0, list(range(0, 257, 3))),   # crosses a workgroup boundary
+])
+def test_index_select_on_gpu(shape, axis, idx):
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, shape, "any")
+    i = np.array(idx, dtype=np.int64)
+
+    def run(dev):
+        return V.index_select(V.tensor(x, device=dev), axis, V.tensor(i, device=dev)).numpy()
+
+    ctx = Context(op="index_select", layout=Layout(shape), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+@pytest.mark.parametrize("axis,idx,dim_size", [
+    (0, [0, 2, 2, 1], 4),
+    (0, [1, 1, 1, 1], 3),
+    (0, [0, 1, 2, 3], 4),
+    (1, [0, 0, 1], 2),
+    (0, [0] * 64, 3),        # heavy contention on one row
+])
+def test_scatter_add_on_gpu(axis, idx, dim_size):
+    """The kernel inverts the loop -- one thread per destination, scanning the
+    index -- precisely so that repeated indices need no atomic. Contention is
+    therefore the case to test, not the case to avoid."""
+    rng = np.random.default_rng(SEED)
+    i = np.array(idx, dtype=np.int64)
+    shape = (len(idx), 3) if axis == 0 else (3, len(idx))
+    x = make_data(rng, shape, "any")
+
+    def run(dev):
+        return V.scatter_add(V.tensor(x, device=dev), axis, V.tensor(i, device=dev),
+                             dim_size).numpy()
+
+    ctx = Context(op="scatter_add", layout=Layout(shape), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+def test_scatter_add_is_bit_reproducible():
+    """The policy entry claims EXACT on the grounds that both backends fold in
+    ascending index order. This is that claim under test.
+
+    Float addition is not associative, so a different fold order shows up as a
+    different result -- values are chosen with widely separated magnitudes so a
+    reordering cannot hide inside the rounding.
+    """
+    idx = np.array([0, 0, 0, 0, 0, 0], dtype=np.int64)
+    x = np.array([[1e8], [1.0], [-1e8], [1.0], [1e-8], [1.0]], dtype=np.float32)
+
+    gpu = V.scatter_add(V.tensor(x, device=gpu_device()), 0,
+                        V.tensor(idx, device=gpu_device()), 1).numpy()
+    cpu = V.scatter_add(V.tensor(x, device=V.cpu), 0, V.tensor(idx, device=V.cpu), 1).numpy()
+
+    assert gpu.tobytes() == cpu.tobytes(), (
+        f"fold order differs between backends: gpu={gpu.tolist()} cpu={cpu.tolist()}"
+    )
+    # Repeating on the GPU must give the identical bytes, not merely close ones.
+    again = V.scatter_add(V.tensor(x, device=gpu_device()), 0,
+                          V.tensor(idx, device=gpu_device()), 1).numpy()
+    assert gpu.tobytes() == again.tobytes(), "GPU result is not reproducible run to run"

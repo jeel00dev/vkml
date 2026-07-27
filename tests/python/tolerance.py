@@ -91,6 +91,14 @@ POLICY: dict[str, Tolerance] = {
     "fill": Tolerance(Kind.EXACT, note="writes a constant; no arithmetic"),
     "copy": Tolerance(Kind.EXACT, note="moves bits"),
     "cat": Tolerance(Kind.EXACT, note="moves bits; no arithmetic"),
+    "index_select": Tolerance(Kind.EXACT, note="gathers elements; no arithmetic"),
+    # EXACT despite being a sum, and that is a claim about the fold rather
+    # than about the magnitudes: both backends accumulate into a destination
+    # in ascending index order, so the two perform the identical sequence of
+    # IEEE additions. A tolerance here would be weaker than the truth and
+    # would stop detecting an ordering change, which is the failure that
+    # matters -- see test_scatter_add_is_bit_reproducible.
+    "scatter_add": Tolerance(Kind.EXACT, note="same ascending-index fold on both backends"),
     "contiguous": Tolerance(Kind.EXACT, note="moves bits"),
     "identity": Tolerance(Kind.EXACT),
     "relu": Tolerance(Kind.EXACT, note="max(x, 0): a select, not an operation"),

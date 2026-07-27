@@ -283,6 +283,54 @@ std::vector<int> trailing_axes(const Tensor& a, int count, const char* what) {
 
 }  // namespace
 
+Tensor index_select(const Tensor& a, int axis, const Tensor& index) {
+    VKML_CHECK(index.dtype() == DType::I64, DTypeError, "index_select() index must be I64, got {}",
+               dtype_name(index.dtype()));
+    VKML_CHECK(index.ndim() == 1, ShapeError, "index_select() index must be rank 1, got rank {}",
+               index.ndim());
+    check_same_device(a, index, OpKind::IndexSelect);
+
+    const int ax = normalize_dim(axis, a.ndim());
+    std::vector<int64_t> dims = a.shape();
+    dims[static_cast<size_t>(ax)] = index.numel();
+
+    auto n = make_node(OpKind::IndexSelect, Shape::contiguous(dims, dtype_size(a.dtype())),
+                       a.dtype(), a.device());
+    n->src[0] = a.node();
+    n->src[1] = index.node();
+    n->n_src = 2;
+    n->params.set(AxisParams{.axis = ax});
+    n->requires_grad = grad_enabled() && a.requires_grad();
+    return finish(std::move(n));
+}
+
+Tensor scatter_add(const Tensor& src, int axis, const Tensor& index, int64_t dim_size) {
+    VKML_CHECK(index.dtype() == DType::I64, DTypeError, "scatter_add() index must be I64, got {}",
+               dtype_name(index.dtype()));
+    VKML_CHECK(index.ndim() == 1, ShapeError, "scatter_add() index must be rank 1, got rank {}",
+               index.ndim());
+    check_same_device(src, index, OpKind::ScatterAdd);
+    VKML_CHECK(dim_size >= 0, ShapeError, "scatter_add() dim_size must be non-negative, got {}",
+               dim_size);
+
+    const int ax = normalize_dim(axis, src.ndim());
+    VKML_CHECK(src.size(ax) == index.numel(), ShapeError,
+               "scatter_add() source extent on axis {} is {} but the index has {} entries", ax,
+               src.size(ax), index.numel());
+
+    std::vector<int64_t> dims = src.shape();
+    dims[static_cast<size_t>(ax)] = dim_size;
+
+    auto n = make_node(OpKind::ScatterAdd, Shape::contiguous(dims, dtype_size(src.dtype())),
+                       src.dtype(), src.device());
+    n->src[0] = src.node();
+    n->src[1] = index.node();
+    n->n_src = 2;
+    n->params.set(AxisParams{.axis = ax});
+    n->requires_grad = grad_enabled() && src.requires_grad();
+    return finish(std::move(n));
+}
+
 Tensor layer_norm(const Tensor& a, int normalized_axes, double eps) {
     const std::vector<int> axes = trailing_axes(a, normalized_axes, "layer_norm");
 
