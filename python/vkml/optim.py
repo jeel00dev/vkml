@@ -79,6 +79,66 @@ class SGD(Optimizer):
                 p.assign_(p.detach() - g * self.lr)
 
 
+class RMSProp(Optimizer):
+    """RMSProp, matching torch.optim.RMSprop.
+
+    The running average starts at zero, as torch's does, so the first step is
+    ``(1 - alpha) * g**2`` rather than ``g**2``. That difference persists for
+    many steps through the exponential average, so it is not a detail.
+    """
+
+    def __init__(self, params, lr: float = 1e-2, alpha: float = 0.99, eps: float = 1e-8,
+                 weight_decay: float = 0.0, momentum: float = 0.0, centered: bool = False):
+        super().__init__(params)
+        self.lr = lr
+        self.alpha = alpha
+        self.eps = eps
+        self.weight_decay = weight_decay
+        self.momentum = momentum
+        self.centered = centered
+        self._square_avg: list[V.Tensor | None] = [None] * len(self.params)
+        self._grad_avg: list[V.Tensor | None] = [None] * len(self.params)
+        self._buffer: list[V.Tensor | None] = [None] * len(self.params)
+
+    def step(self) -> None:
+        with V.no_grad():
+            for i, p in enumerate(self.params):
+                g = p.grad
+                if not g.defined():
+                    continue
+
+                if self.weight_decay != 0.0:
+                    g = g + p.detach() * self.weight_decay
+
+                sq = self._square_avg[i]
+                sq = (g * g) * (1.0 - self.alpha) if sq is None else (
+                    sq * self.alpha + (g * g) * (1.0 - self.alpha)
+                )
+                self._square_avg[i] = sq.detach().realize()
+                variance = self._square_avg[i]
+
+                if self.centered:
+                    # Subtracting the squared mean gives the variance rather
+                    # than the second moment, which stops a large constant
+                    # gradient from shrinking the step it deserves.
+                    ga = self._grad_avg[i]
+                    ga = g * (1.0 - self.alpha) if ga is None else (
+                        ga * self.alpha + g * (1.0 - self.alpha)
+                    )
+                    self._grad_avg[i] = ga.detach().realize()
+                    variance = variance - self._grad_avg[i] * self._grad_avg[i]
+
+                direction = g / (V.sqrt(variance) + self.eps)
+
+                if self.momentum != 0.0:
+                    buf = self._buffer[i]
+                    buf = direction if buf is None else (buf * self.momentum + direction)
+                    self._buffer[i] = buf.detach().realize()
+                    direction = self._buffer[i]
+
+                p.assign_(p.detach() - direction * self.lr)
+
+
 class Adam(Optimizer):
     """Adam with bias correction, matching torch.optim.Adam defaults."""
 
@@ -122,3 +182,57 @@ class Adam(Optimizer):
                 m_hat = self._m[i] / bc1
                 v_hat = self._v[i] / bc2
                 p.assign_(p.detach() - m_hat * self.lr / (V.sqrt(v_hat) + self.eps))
+
+
+class AdamW(Adam):
+    """Adam with *decoupled* weight decay, matching torch.optim.AdamW.
+
+    The only difference from Adam is where the decay is applied, and it is not
+    cosmetic. Adam adds ``wd * p`` to the gradient, so the decay then passes
+    through the second-moment normalisation and is scaled by ``1/sqrt(v)`` --
+    parameters with small gradients get decayed far harder than intended.
+    AdamW subtracts ``lr * wd * p`` from the parameter directly, leaving the
+    adaptive step to act on the gradient alone.
+
+    torch's default weight_decay is 1e-2 here, not the 0.0 Adam uses; decoupled
+    decay is the reason the optimiser exists, so defaulting it off would be a
+    trap.
+    """
+
+    def __init__(self, params, lr: float = 1e-3, betas: tuple[float, float] = (0.9, 0.999),
+                 eps: float = 1e-8, weight_decay: float = 1e-2):
+        # Adam's own weight_decay stays at zero: this class never routes decay
+        # through the gradient, which is the entire distinction.
+        super().__init__(params, lr=lr, betas=betas, eps=eps, weight_decay=0.0)
+        self.decoupled_weight_decay = weight_decay
+
+    def step(self) -> None:
+        self._t += 1
+        bc1 = 1.0 - self.beta1 ** self._t
+        bc2 = 1.0 - self.beta2 ** self._t
+
+        with V.no_grad():
+            for i, p in enumerate(self.params):
+                g = p.grad
+                if not g.defined():
+                    continue
+
+                m = self._m[i]
+                v = self._v[i]
+                m = g * (1.0 - self.beta1) if m is None else (m * self.beta1 + g * (1.0 - self.beta1))
+                v = (g * g) * (1.0 - self.beta2) if v is None else (
+                    v * self.beta2 + (g * g) * (1.0 - self.beta2)
+                )
+                self._m[i] = m.detach().realize()
+                self._v[i] = v.detach().realize()
+
+                m_hat = self._m[i] / bc1
+                v_hat = self._v[i] / bc2
+
+                # Decay first, then the adaptive step -- torch's order, and the
+                # two do not commute because the decay changes what p is.
+                decayed = p.detach()
+                if self.decoupled_weight_decay != 0.0:
+                    decayed = decayed - decayed * (self.lr * self.decoupled_weight_decay)
+
+                p.assign_(decayed - m_hat * self.lr / (V.sqrt(v_hat) + self.eps))

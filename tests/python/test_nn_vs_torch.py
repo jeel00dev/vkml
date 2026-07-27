@@ -261,3 +261,83 @@ def test_mnist_style_mlp_training_parity():
     for (name, vp), (_, tp) in zip(vkml_model.named_parameters(),
                                    torch_model.named_parameters()):
         assert_close(f"MNIST-MLP final {name}", vp, tp, Tol(1e-4, 1e-4))
+
+
+def _trajectory(name, make_vkml_opt, make_torch_opt, steps=20, tol=Tol(1e-4, 1e-4)):
+    """Run both frameworks in lockstep and compare every step.
+
+    An optimiser with a wrong update rule can still reach a plausible final
+    loss; comparing the whole trajectory is what catches drift, and state-
+    carrying optimisers drift rather than jump.
+    """
+    torch_model = torch.nn.Sequential(torch.nn.Linear(6, 8), torch.nn.Tanh(),
+                                      torch.nn.Linear(8, 3))
+    vkml_model = V.nn.Sequential(V.nn.Linear(6, 8), V.nn.Tanh(), V.nn.Linear(8, 3))
+    _copy_weights(vkml_model, torch_model)
+
+    x = make_input((9, 6), seed=2600)
+    y = make_input((9, 3), seed=2601)
+
+    v_opt = make_vkml_opt(vkml_model.parameters())
+    t_opt = make_torch_opt(torch_model.parameters())
+
+    for step in range(steps):
+        v_opt.zero_grad()
+        v_loss = V.nn.mse_loss(vkml_model(V.tensor(x)), V.tensor(y))
+        v_loss.backward()
+        v_opt.step()
+
+        t_opt.zero_grad()
+        t_loss = torch.nn.functional.mse_loss(torch_model(torch.from_numpy(x.copy())),
+                                              torch.from_numpy(y.copy()))
+        t_loss.backward()
+        t_opt.step()
+
+        assert_close(f"{name} loss @ step {step}", v_loss, t_loss, tol)
+
+    for (vn, vp), (tn, tp) in zip(vkml_model.named_parameters(),
+                                  torch_model.named_parameters()):
+        assert vn == tn
+        assert_close(f"{name} final param {vn}", vp, tp, tol)
+
+
+@pytest.mark.parametrize("weight_decay", [0.0, 1e-2, 0.1])
+def test_adamw_parameter_trajectory(weight_decay):
+    _trajectory(f"AdamW(wd={weight_decay})",
+                lambda p: V.optim.AdamW(p, lr=1e-2, weight_decay=weight_decay),
+                lambda p: torch.optim.AdamW(p, lr=1e-2, weight_decay=weight_decay))
+
+
+@pytest.mark.parametrize("momentum,centered", [(0.0, False), (0.9, False), (0.0, True)])
+def test_rmsprop_parameter_trajectory(momentum, centered):
+    _trajectory(f"RMSProp(momentum={momentum},centered={centered})",
+                lambda p: V.optim.RMSProp(p, lr=1e-3, momentum=momentum, centered=centered),
+                lambda p: torch.optim.RMSprop(p, lr=1e-3, momentum=momentum,
+                                              centered=centered))
+
+
+def test_adamw_decouples_decay_from_adam():
+    """AdamW is not Adam-with-weight_decay, and the difference is the point.
+
+    Adam routes decay through the gradient, so it passes through the
+    second-moment normalisation and is scaled by 1/sqrt(v). AdamW subtracts it
+    from the parameter directly. With the same wd the two must diverge --
+    otherwise one of them is implemented as the other.
+    """
+    x = make_input((6, 4), seed=2700)
+    y = make_input((6, 2), seed=2701)
+
+    finals = {}
+    for name, ctor in (("adam", lambda p: V.optim.Adam(p, lr=1e-2, weight_decay=0.1)),
+                       ("adamw", lambda p: V.optim.AdamW(p, lr=1e-2, weight_decay=0.1))):
+        model = V.nn.Sequential(V.nn.Linear(4, 5), V.nn.Tanh(), V.nn.Linear(5, 2))
+        opt = ctor(model.parameters())
+        for _ in range(10):
+            opt.zero_grad()
+            V.nn.mse_loss(model(V.tensor(x)), V.tensor(y)).backward()
+            opt.step()
+        finals[name] = next(iter(model.named_parameters()))[1].numpy().copy()
+
+    assert not np.allclose(finals["adam"], finals["adamw"], atol=1e-6), (
+        "Adam and AdamW produced identical parameters; decay is not decoupled"
+    )
