@@ -331,7 +331,7 @@ enum class UnaryOp : uint32_t { Copy = 0, Relu = 1, Neg = 2, Abs = 3, Exp = 4 };
 /// Dumps small tensors after a dispatch, with VKML_VULKAN_DUMP=<max_elements>.
 /// Off unless set; capped so a stray setting cannot print a 4M-element tensor.
 [[nodiscard]] int64_t debug_dump_limit() {
-    static const int64_t limit = [] -> int64_t {
+    static const int64_t limit = []() -> int64_t {
         const char* v = std::getenv("VKML_VULKAN_DUMP");
         if (v == nullptr || v[0] == '\0') {
             return 0;
@@ -922,7 +922,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 struct BlockGeom {
                     uint32_t bm, bn, rm, rn;
                 };
-                static const BlockGeom forced_block = [] -> BlockGeom {
+                static const BlockGeom forced_block = []() -> BlockGeom {
                     const char* v = std::getenv("VKML_GEMM_BLOCK");
                     const std::string_view sel = v != nullptr ? v : "";
                     if (sel == "4x2") {
@@ -1058,7 +1058,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 // partial is exactly a subtree of the unsplit carry stack
                 // (docs/SPLIT_K_DESIGN.md 2.3-2.4).
                 const uint32_t total_ktiles = (k + kBK - 1) / kBK;
-                const SplitKPlan sk = [&] -> SplitKPlan {
+                const SplitKPlan sk = [&]() -> SplitKPlan {
                     if (use_naive || use_tiled || split_k_mode() == SplitKMode::Off) {
                         return {};
                     }
