@@ -1,0 +1,163 @@
+#version 450
+
+// Reductions: sum, mean, max, min, argmax, argmin.
+//
+// STRUCTURE: one workgroup per output element
+// -------------------------------------------
+// Each workgroup folds all the elements belonging to one output position. That
+// makes the whole reduction single-pass and, more importantly, DETERMINISTIC:
+// the assignment of elements to lanes and the shape of the combining tree are
+// fixed by the shape alone, so the same input always produces bit-identical
+// output. No global atomics are involved -- which is not merely a preference,
+// since this GPU has no global float atomicAdd at all (measured,
+// docs/ARCHITECTURE.md 1.1).
+//
+// A split-K second pass would extract more parallelism when there are few
+// output elements and many inputs. That is a PERFORMANCE change, not a
+// correctness one, and is deliberately not done yet.
+//
+// NUMERICS: pairwise all the way down
+// -----------------------------------
+// Two levels, both logarithmic:
+//
+//   1. Within a lane, elements are accumulated with an explicit pairwise
+//      "carry stack" (below). GLSL has no recursion, so the recursive halving
+//      the CPU backend uses is expressed iteratively -- the merge pattern is
+//      identical, giving the same (B + log2(n/B))*eps error bound.
+//   2. Across lanes, a shared-memory tree halves the active set each step.
+//
+// A flat sequential accumulator would be far simpler and would miss the
+// project's 1e-5 gate: at n = 65536 its worst-case relative error is
+// 65536 * 1.19e-7 = 7.8e-3, roughly 780x over budget.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+layout(constant_id = 1) const uint OP = 0;
+layout(constant_id = 2) const uint WG = 256;
+
+#define OP_SUM    0
+#define OP_MEAN   1
+#define OP_MAX    2
+#define OP_MIN    3
+#define OP_ARGMAX 4
+#define OP_ARGMIN 5
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;
+    uint64_t dst;
+    uint     n_out;     // number of output elements == number of workgroups
+    uint     n_red;     // elements folded into each output
+    Operand  kept;      // extents/strides of the surviving axes, in the INPUT
+    Operand  reduced;   // extents/strides of the collapsed axes, in the INPUT
+} p;
+
+shared float s_val[gl_WorkGroupSize.x];
+shared uint  s_idx[gl_WorkGroupSize.x];
+
+bool is_arg()   { return OP == OP_ARGMAX || OP == OP_ARGMIN; }
+bool is_minmax(){ return OP == OP_MAX || OP == OP_MIN || is_arg(); }
+
+// Pairwise accumulation without recursion.
+//
+// Values are pushed one block at a time. A block merges with the one below it
+// whenever the running count has a 1 in that bit position -- exactly the carry
+// propagation of binary increment, which reproduces the balanced merge tree of
+// the recursive formulation. 24 levels covers 2^24 blocks, far beyond any
+// reduction length reachable here.
+#define STACK_LEVELS 24
+
+void main() {
+    const uint out_id = gl_WorkGroupID.x;
+    if (out_id >= p.n_out) { return; }
+
+    const uint lane = gl_LocalInvocationID.x;
+    const uint base = operand_offset(out_id, p.kept);
+
+    float acc = 0.0;
+    uint  acc_idx = 0;
+
+    if (is_minmax()) {
+        // Identity for a min/max fold. A lane with no work keeps it, and the
+        // tree below ignores it because every real value compares better.
+        acc = (OP == OP_MAX || OP == OP_ARGMAX) ? -1.0 / 0.0 : 1.0 / 0.0;
+        acc_idx = 0xFFFFFFFFu;
+
+        for (uint k = lane; k < p.n_red; k += WG) {
+            const float v = F32Buf(p.src).v[base + operand_offset(k, p.reduced)];
+            if (OP == OP_MAX || OP == OP_ARGMAX) {
+                // Strict > keeps the FIRST extremum, matching torch.argmax and
+                // the CPU backend. >= would silently return the last.
+                if (v > acc || acc_idx == 0xFFFFFFFFu) {
+                    if (v > acc) { acc = v; acc_idx = k; }
+                }
+            } else {
+                if (v < acc) { acc = v; acc_idx = k; }
+            }
+        }
+    } else {
+        float stack[STACK_LEVELS];
+        uint  count = 0;
+
+        // Each lane walks a strided slice, accumulating 32 at a time
+        // sequentially (matching kPairwiseBlock on the CPU) and pushing each
+        // block onto the carry stack.
+        uint k = lane;
+        while (k < p.n_red) {
+            float block = 0.0;
+            for (uint b = 0; b < 32u && k < p.n_red; ++b, k += WG) {
+                block += F32Buf(p.src).v[base + operand_offset(k, p.reduced)];
+            }
+
+            uint c = count++;
+            uint level = 0;
+            while ((c & 1u) == 1u) {
+                block += stack[level];
+                c >>= 1u;
+                ++level;
+            }
+            stack[level] = block;
+        }
+
+        // Drain the stack smallest-first, so partial sums of similar magnitude
+        // combine before large ones absorb them.
+        for (uint level = 0; level < STACK_LEVELS; ++level) {
+            if (((count >> level) & 1u) == 1u) { acc += stack[level]; }
+        }
+    }
+
+    s_val[lane] = acc;
+    s_idx[lane] = acc_idx;
+    barrier();
+
+    // Shared-memory tree. Halving keeps the depth at log2(WG) and the order
+    // fixed, which is what makes the result reproducible.
+    for (uint stride = gl_WorkGroupSize.x / 2u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) {
+            const float other = s_val[lane + stride];
+            const uint  oidx  = s_idx[lane + stride];
+            if (OP == OP_MAX || OP == OP_ARGMAX) {
+                if (other > s_val[lane]) { s_val[lane] = other; s_idx[lane] = oidx; }
+                else if (other == s_val[lane] && oidx < s_idx[lane]) { s_idx[lane] = oidx; }
+            } else if (OP == OP_MIN || OP == OP_ARGMIN) {
+                if (other < s_val[lane]) { s_val[lane] = other; s_idx[lane] = oidx; }
+                else if (other == s_val[lane] && oidx < s_idx[lane]) { s_idx[lane] = oidx; }
+            } else {
+                s_val[lane] += other;
+            }
+        }
+        barrier();
+    }
+
+    if (lane != 0u) { return; }
+
+    if (is_arg()) {
+        I64Buf(p.dst).v[out_id] = int64_t(s_idx[0]);
+    } else if (OP == OP_MEAN) {
+        F32Buf(p.dst).v[out_id] = s_val[0] / float(p.n_red);
+    } else {
+        F32Buf(p.dst).v[out_id] = s_val[0];
+    }
+}

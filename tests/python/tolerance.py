@@ -1,0 +1,191 @@
+"""Centralized numerical tolerance policy.
+
+WHY THIS EXISTS
+---------------
+Individual tests must not choose their own tolerances. Twice during this
+project a test "failed" because its tolerance model was wrong rather than
+because the code was:
+
+  1. matmul at K=4096 missed a 1e-5 *relative* check while sitting 431x inside
+     its backward-error bound -- the dot product was ill-conditioned
+     (Sigma|a_i*b_i| = 4051 against a result of 3.17), so relative-to-result was
+     meaningless.
+  2. Vulkan exp() differed from glibc expf() by 1.14e-5 absolute, which is
+     3 ULP at magnitude 46 -- inside the Vulkan specification's own allowance.
+
+Both were the *check* being wrong, and both cost real debugging time. So the
+tolerance for an operation is now a property of the operation, derived from a
+citable source, and stated once here.
+
+SOURCES
+-------
+* Vulkan 1.3 specification, "Precision and Operation of SPIR-V Instructions",
+  which gives per-instruction ULP allowances for 32-bit floats. These are
+  *permissions granted to the driver*, so a conforming implementation may
+  legitimately differ from libm by that much.
+* IEEE-754: correctly-rounded operations (+, -, *, /, sqrt, fma) are exact to
+  0.5 ULP, so anything built only from those must agree bit-for-bit.
+* Higham, "Accuracy and Stability of Numerical Algorithms": summation and dot
+  products are bounded in BACKWARD error, |computed - exact| <= gamma * sum|terms|,
+  with gamma ~ n*eps sequential and ~(B + log2(n/B))*eps for pairwise with base
+  block B.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+import numpy as np
+
+FP32_EPS = float(np.finfo(np.float32).eps)  # 1.1920929e-07
+FP16_EPS = float(np.finfo(np.float16).eps)  # 9.7656250e-04
+
+# Base size of the sequential block in the pairwise summation both backends use.
+# Must match kPairwiseBlock in src/backend/cpu/reduce.h.
+PAIRWISE_BLOCK = 32
+
+
+class Kind(Enum):
+    """How an operation's error is bounded."""
+
+    EXACT = "exact"
+    """Bit-for-bit identical. Only for operations that move or select bits, or
+    that are built solely from correctly-rounded IEEE-754 primitives."""
+
+    ULP = "ulp"
+    """Within N units in the last place. For transcendentals, where the Vulkan
+    spec explicitly permits the driver to differ from a correctly-rounded
+    result."""
+
+    RELATIVE = "relative"
+    """Within a relative bound. For composites whose error is dominated by a
+    small number of rounding steps."""
+
+    BACKWARD = "backward"
+    """|computed - exact| <= gamma * sum|terms|. For summation, dot products and
+    anything built on them, where the result may be far smaller than the terms
+    that produced it."""
+
+
+@dataclass(frozen=True)
+class Tolerance:
+    kind: Kind
+    ulp: int = 0
+    rtol: float = 0.0
+    atol: float = 0.0
+    note: str = ""
+
+
+# ---------------------------------------------------------------------------
+# The policy.
+#
+# ULP figures are the Vulkan 1.3 specification's allowances for 32-bit float,
+# with a small margin where the spec expresses the bound as a function of the
+# input (exp is "3 + 2*|x|" ULP, so a fixed number only holds over a bounded
+# domain -- the generators keep inputs inside one).
+# ---------------------------------------------------------------------------
+
+POLICY: dict[str, Tolerance] = {
+    # -- exact: bit movement or selection only ------------------------------
+    "fill": Tolerance(Kind.EXACT, note="writes a constant; no arithmetic"),
+    "copy": Tolerance(Kind.EXACT, note="moves bits"),
+    "contiguous": Tolerance(Kind.EXACT, note="moves bits"),
+    "identity": Tolerance(Kind.EXACT),
+    "relu": Tolerance(Kind.EXACT, note="max(x, 0): a select, not an operation"),
+    "neg": Tolerance(Kind.EXACT, note="sign bit flip"),
+    "abs": Tolerance(Kind.EXACT, note="sign bit clear"),
+    "sign": Tolerance(Kind.EXACT),
+    "clamp": Tolerance(Kind.EXACT, note="two selects"),
+    "maximum": Tolerance(Kind.EXACT),
+    "minimum": Tolerance(Kind.EXACT),
+    "where": Tolerance(Kind.EXACT, note="select"),
+    "cast": Tolerance(Kind.EXACT, note="IEEE-754 conversions are correctly rounded"),
+    "eq": Tolerance(Kind.EXACT),
+    "lt": Tolerance(Kind.EXACT),
+    "gt": Tolerance(Kind.EXACT),
+    "le": Tolerance(Kind.EXACT),
+    "ge": Tolerance(Kind.EXACT),
+    "ne": Tolerance(Kind.EXACT),
+    "argmax": Tolerance(Kind.EXACT, note="returns an index"),
+    "argmin": Tolerance(Kind.EXACT),
+    "max": Tolerance(Kind.EXACT, note="selects an existing element"),
+    "min": Tolerance(Kind.EXACT),
+    # IEEE-754 requires these to be correctly rounded, so a conforming GPU and
+    # a conforming CPU must agree exactly.
+    "add": Tolerance(Kind.EXACT, note="IEEE-754 correctly rounded"),
+    "sub": Tolerance(Kind.EXACT, note="IEEE-754 correctly rounded"),
+    "mul": Tolerance(Kind.EXACT, note="IEEE-754 correctly rounded"),
+    # -- ULP: Vulkan spec allowances ----------------------------------------
+    "div": Tolerance(Kind.ULP, ulp=3, note="Vulkan: 2.5 ULP for OpFDiv"),
+    "sqrt": Tolerance(Kind.ULP, ulp=3, note="Vulkan: 2.5 ULP"),
+    "rsqrt": Tolerance(Kind.ULP, ulp=3, note="Vulkan: 2 ULP for InverseSqrt"),
+    "exp": Tolerance(Kind.ULP, ulp=8, note="Vulkan: 3 + 2*|x| ULP; inputs bounded to |x|<=3"),
+    "log": Tolerance(Kind.ULP, ulp=4, note="Vulkan: 3 ULP outside [0.5, 2]"),
+    "sin": Tolerance(Kind.ULP, ulp=0, atol=2.0**-11,
+                     note="Vulkan gives an ABSOLUTE bound 2^-11 inside [-pi, pi], not ULP"),
+    "cos": Tolerance(Kind.ULP, ulp=0, atol=2.0**-11, note="as sin"),
+    "tanh": Tolerance(Kind.RELATIVE, rtol=1e-5, note="composite of exp and div"),
+    "sigmoid": Tolerance(Kind.RELATIVE, rtol=1e-5, note="composite of exp and div"),
+    "gelu": Tolerance(Kind.RELATIVE, rtol=1e-5, note="erf-based; libm and GPU erf differ"),
+    "silu": Tolerance(Kind.RELATIVE, rtol=1e-5, note="x * sigmoid(x)"),
+    "pow": Tolerance(Kind.ULP, ulp=16, note="Vulkan: 16 ULP for OpPow"),
+    "reciprocal": Tolerance(Kind.ULP, ulp=3, note="Vulkan: 2.5 ULP for OpFDiv"),
+    # -- backward error: reductions and products ----------------------------
+    "sum": Tolerance(Kind.BACKWARD, note="pairwise summation"),
+    "mean": Tolerance(Kind.BACKWARD, note="pairwise sum then one divide"),
+    "prod": Tolerance(Kind.BACKWARD, note="sequential product"),
+    "matmul": Tolerance(Kind.BACKWARD, note="pairwise dot product"),
+    "softmax": Tolerance(Kind.RELATIVE, rtol=1e-5,
+                         note="max-subtract, exp, pairwise sum, divide"),
+    "log_softmax": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
+                             note="as softmax; atol covers results near zero"),
+}
+
+
+def lookup(op: str) -> Tolerance:
+    if op not in POLICY:
+        raise KeyError(
+            f"no tolerance policy for '{op}'. Add one to tests/python/tolerance.py with a "
+            f"citable justification rather than picking a number at the call site."
+        )
+    return POLICY[op]
+
+
+# ---------------------------------------------------------------------------
+# Error measures
+# ---------------------------------------------------------------------------
+
+
+def ulp_distance(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Distance in representable float32 steps.
+
+    Reinterpreting a float's bits as a sign-magnitude integer makes adjacent
+    representable values adjacent integers, so subtracting gives the count of
+    steps between them. Negative values are folded so the mapping stays
+    monotonic across zero.
+    """
+    ai = a.astype(np.float32).view(np.int32).astype(np.int64)
+    bi = b.astype(np.float32).view(np.int32).astype(np.int64)
+    ai = np.where(ai < 0, np.int64(0x80000000) - ai, ai)
+    bi = np.where(bi < 0, np.int64(0x80000000) - bi, bi)
+    return np.abs(ai - bi)
+
+
+def pairwise_gamma(n: int) -> float:
+    """Relative error factor for pairwise summation of n terms."""
+    if n <= 1:
+        return 0.0
+    blocks = max(n / PAIRWISE_BLOCK, 1.0)
+    return (PAIRWISE_BLOCK + np.log2(blocks)) * FP32_EPS
+
+
+def backward_error_atol(terms_abs_sum: float, n: int, safety: float = 4.0) -> float:
+    """Absolute tolerance for a sum or dot product.
+
+    `terms_abs_sum` is sum|terms| -- for a plain sum that is sum|x_i|, for a dot
+    product sum|a_i*b_i|. The safety factor covers the fact that BOTH
+    implementations carry error, so their difference can be up to twice either
+    bound.
+    """
+    return float(pairwise_gamma(n) * terms_abs_sum * safety)

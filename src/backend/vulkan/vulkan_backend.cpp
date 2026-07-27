@@ -1,0 +1,1497 @@
+#include "vkml/backend/vulkan/vulkan_backend.h"
+
+#include "vk_allocator.h"
+#include "vk_command.h"
+#include "vk_device.h"
+#include "vk_pipeline.h"
+
+#include "vkml/spv/cast.h"
+#include "vkml/spv/fill.h"
+#include "vkml/spv/gemm_naive.h"
+#include "vkml/spv/gemm_db.h"
+#include "vkml/spv/gemm_reg.h"
+#include "vkml/spv/gemm_split_k_reduce.h"
+#include "vkml/spv/gemm_tiled.h"
+#include "vkml/spv/gemv.h"
+#include "vkml/spv/reduce.h"
+#include "vkml/spv/softmax.h"
+#include "vkml/spv/unary.h"
+
+#include "vkml/util/assert.h"
+#include "vkml/util/log.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdlib>
+#include <string_view>
+#include <cstring>
+#include <format>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+
+namespace vkml {
+namespace {
+
+/// Mirrors the Operand struct in shaders/common.glsl.
+///
+/// scalar_block_layout is what lets this be a plain struct on both sides with
+/// no padding rules to reconcile -- the single reason the push constant blocks
+/// below can be written as ordinary C++.
+struct GpuOperand {
+    std::array<uint32_t, 4> ne{1, 1, 1, 1};
+    std::array<uint32_t, 4> nb{0, 0, 0, 0};
+};
+
+/// Converts a Shape into the shader's view of it.
+///
+/// Two conversions happen here and nowhere else:
+///   - extents are right-padded to rank 4 with 1s, so the shader's unrolled
+///     loop needs no rank parameter;
+///   - strides go from BYTES (host convention, matching NumPy) to ELEMENTS
+///     (shader convention, because it indexes a typed buffer reference).
+[[nodiscard]] GpuOperand to_gpu_operand(const Shape& shape, size_t itemsize) {
+    GpuOperand op;
+    const int nd = shape.ndim();
+    const int pad = kMaxDims - nd;
+
+    for (int i = 0; i < nd; ++i) {
+        op.ne[static_cast<size_t>(pad + i)] = static_cast<uint32_t>(shape.dim(i));
+        VKML_ASSERT(shape.stride(i) % static_cast<int64_t>(itemsize) == 0,
+                    "stride {} is not a multiple of the element size {}", shape.stride(i),
+                    itemsize);
+        op.nb[static_cast<size_t>(pad + i)] =
+            static_cast<uint32_t>(shape.stride(i) / static_cast<int64_t>(itemsize));
+    }
+    // Leading padded axes have extent 1, so their stride is never used; 0 is
+    // the honest value and matches how broadcasting is expressed elsewhere.
+    return op;
+}
+
+struct FillPush {
+    uint64_t dst;
+    uint32_t n;
+    float value;
+};
+
+struct UnaryPush {
+    uint64_t src;
+    uint64_t dst;
+    uint32_t n;
+    GpuOperand in_op;
+    GpuOperand out_op;
+};
+
+struct ReducePush {
+    uint64_t src;
+    uint64_t dst;
+    uint32_t n_out;
+    uint32_t n_red;
+    GpuOperand kept;
+    GpuOperand reduced;
+};
+
+static_assert(sizeof(ReducePush) <= 256, "reduce push constants exceed the device budget");
+
+/// Splits a shape into the axes a reduction keeps and the axes it collapses.
+///
+/// Mirrors vkml::cpu::make_reduce_plan. Duplicated rather than shared because
+/// backend/vulkan and backend/cpu are sibling layers and must not include each
+/// other; the two are kept in step by the validation suite, which compares
+/// their results directly.
+struct SplitShape {
+    Shape kept;
+    Shape reduced;
+};
+
+[[nodiscard]] SplitShape split_for_reduce(const Shape& in, uint32_t axes_mask) {
+    std::vector<int64_t> kd;
+    std::vector<int64_t> ks;
+    std::vector<int64_t> rd;
+    std::vector<int64_t> rs;
+
+    for (int i = 0; i < in.ndim(); ++i) {
+        const bool reduced = (axes_mask & (1U << static_cast<uint32_t>(i))) != 0;
+        if (reduced) {
+            rd.push_back(in.dim(i));
+            rs.push_back(in.stride(i));
+        } else {
+            kd.push_back(in.dim(i));
+            ks.push_back(in.stride(i));
+        }
+    }
+    return SplitShape{Shape::strided(kd, ks, in.itemsize()),
+                      Shape::strided(rd, rs, in.itemsize())};
+}
+
+struct SoftmaxPush {
+    uint64_t src;
+    uint64_t dst;
+    uint32_t n_out;
+    uint32_t n_axis;
+    GpuOperand in_kept;
+    GpuOperand in_axis;
+    GpuOperand out_kept;
+    GpuOperand out_axis;
+};
+
+static_assert(sizeof(SoftmaxPush) <= 256, "softmax push constants exceed the device budget");
+
+struct GemmPush {
+    uint64_t a;
+    uint64_t b;
+    uint64_t d;
+    uint32_t n_out;
+    uint32_t b1;
+    uint32_t m;
+    uint32_t n;
+    uint32_t k;
+    GpuOperand op_a;
+    GpuOperand op_b;
+};
+
+static_assert(sizeof(GemmPush) <= 256, "gemm push constants exceed the device budget");
+
+struct SplitKReducePush {
+    uint64_t src;
+    uint64_t dst;
+    uint32_t ne;
+    uint32_t splits;
+};
+
+static_assert(sizeof(SplitKReducePush) <= 256,
+              "split-k reduce push constants exceed the device budget");
+
+/// GEMV dispatch mode. AUTO is identical to OFF: M4-R1 implements and measures
+/// the kernel; enabling it by default is a separate decision with its own
+/// evidence requirement.
+enum class GemvMode : uint8_t { Auto, Off, Forced };
+
+[[nodiscard]] GemvMode gemv_mode() {
+    static const GemvMode mode = [] {
+        const char* v = std::getenv("VKML_GEMV");
+        const std::string_view sel = v != nullptr ? v : "";
+        if (sel == "FORCED" || sel == "forced") {
+            return GemvMode::Forced;
+        }
+        if (sel == "OFF" || sel == "off") {
+            return GemvMode::Off;
+        }
+        return GemvMode::Auto;
+    }();
+    return mode;
+}
+
+/// How split-K was requested. AUTO is deliberately identical to OFF: M3-03
+/// implements the mechanism, and the occupancy heuristic that would drive AUTO
+/// is a separate stage with its own evidence requirement.
+enum class SplitKMode : uint8_t { Auto, Off, Forced };
+
+[[nodiscard]] SplitKMode split_k_mode() {
+    static const SplitKMode mode = [] {
+        const char* v = std::getenv("VKML_GEMM_SPLITK");
+        const std::string_view sel = v != nullptr ? v : "";
+        if (sel == "FORCED" || sel == "forced") {
+            return SplitKMode::Forced;
+        }
+        if (sel == "OFF" || sel == "off") {
+            return SplitKMode::Off;
+        }
+        return SplitKMode::Auto;
+    }();
+    return mode;
+}
+
+/// Requested partition count when split-K is forced. The chunk is derived from
+/// it and rounded DOWN to a power of two, so the effective split count is
+/// generally >= this; correctness does not depend on which value is chosen
+/// (docs/SPLIT_K_DESIGN.md 2.4), only on the chunk being a power of two.
+[[nodiscard]] uint32_t split_k_requested() {
+    static const uint32_t n = [] {
+        const char* v = std::getenv("VKML_GEMM_SPLITK_SPLITS");
+        if (v == nullptr || v[0] == '\0') {
+            return 4U;
+        }
+        const int parsed = std::atoi(v);
+        return parsed > 1 ? static_cast<uint32_t>(parsed) : 4U;
+    }();
+    return n;
+}
+
+/// The split-K decision, isolated from dispatch so its rationale lives in one
+/// place and can be exercised without a GPU.
+struct SplitKPlan {
+    uint32_t splits = 1;  ///< 1 means "do not split"
+    uint32_t chunk = 0;   ///< K-tiles per partition; always a power of two
+};
+
+/// Chooses whether and how to partition K.
+///
+/// THE CORRECTNESS CONSTRAINT, first, because it is not negotiable: `chunk`
+/// must be a power of two. The alignment lemma (docs/SPLIT_K_DESIGN.md 2.3)
+/// needs every partition boundary at a multiple of 2^q so that no carry-stack
+/// fold crosses it; that is what makes split-K bit-identical to the unsplit
+/// kernel. This inverts the production ordering -- llama.cpp picks the split
+/// count and derives the chunk -- and the inversion is deliberate.
+///
+/// THE PROFITABILITY RULE: `ktiles >= tiles`.
+///
+/// Split-K trades reduction traffic and one extra dispatch for occupancy, so it
+/// pays only when output-tile parallelism is the scarce dimension and K is the
+/// abundant one. Measured over 16 shape/K combinations spanning tiles 4..2304
+/// and ktiles 8..512, this rule enables every case that gains more than 1.15x
+/// and declines every case that would lose, including the harmful ones
+/// (256x256x256 at 0.59x, 256x512x256 at 0.84x). Everything it forgoes is
+/// <= 1.23x. A tiles-only threshold cannot do this: at tiles=64 the outcome
+/// ranges from 0.59x to 1.99x depending on K alone.
+///
+/// THE PARTITION COUNT targets enough workgroups to fill the machine --
+/// `CU x 8` concurrent slots, the figure the fill curve in
+/// docs/PERFORMANCE-MODEL.md 5g is built on -- then clamps to [2, 16]. The cap
+/// follows llama.cpp's ("unless k is huge this is a lot of overhead") and is
+/// reinforced here by measurement: 32 partitions beat 8 on one shape and lost
+/// on another, so a larger cap buys nothing reliable.
+[[nodiscard]] SplitKPlan plan_split_k(uint32_t tiles, uint32_t ktiles, uint64_t out_elems,
+                                      uint32_t cu_count, uint32_t requested) {
+    // A single K-tile cannot be divided; a single output tile still can.
+    if (ktiles < 2 || tiles == 0) {
+        return {};
+    }
+    // No compute-unit count means no occupancy judgement is possible. Declining
+    // is the honest response -- never guess a device property.
+    if (cu_count == 0 && requested == 0) {
+        return {};
+    }
+
+    uint32_t target = requested;
+    if (target == 0) {
+        // AUTO. Profitability first.
+        if (ktiles < tiles) {
+            return {};
+        }
+        const uint32_t slots = cu_count * 8;
+        target = std::clamp(slots / std::max(tiles, 1U), 2U, 16U);
+    }
+
+    // Largest power-of-two chunk that yields at least `target` partitions.
+    uint32_t chunk = 1;
+    while (chunk * 2 <= ktiles / target) {
+        chunk *= 2;
+    }
+    // Below four K-tiles a partition is dominated by its own prologue, so raise
+    // the chunk and accept fewer partitions rather than declining. An earlier
+    // version rejected outright here and silently forfeited two measured wins
+    // (128x1024x128 at 2.10x, 64x512x64 at 2.05x), where the target partition
+    // count was simply more ambitious than K could support.
+    if (chunk < 4 && requested == 0) {
+        chunk = 4;
+    }
+    if (chunk >= ktiles) {
+        return {};
+    }
+
+    const uint32_t splits = (ktiles + chunk - 1) / chunk;
+    if (splits < 2) {
+        return {};
+    }
+    // Workspace is `splits` copies of the output. Bound it so a large-output
+    // shape cannot quietly allocate hundreds of megabytes; such shapes have
+    // ample tiles already and are declined by the profitability rule anyway.
+    constexpr uint64_t kMaxWorkspaceBytes = 64ULL * 1024 * 1024;
+    if (out_elems * splits * sizeof(float) > kMaxWorkspaceBytes) {
+        return {};
+    }
+    return SplitKPlan{splits, chunk};
+}
+
+struct CastPush {
+    uint64_t src;
+    uint64_t dst;
+    uint32_t n;
+};
+
+static_assert(sizeof(UnaryPush) <= 256, "unary push constants exceed the device budget");
+
+enum class UnaryOp : uint32_t { Copy = 0, Relu = 1, Neg = 2, Abs = 3, Exp = 4 };
+
+/// Per-dispatch tracing, enabled with VKML_VULKAN_DEBUG=1.
+///
+/// Zero cost when off: the flag is read once into a static, and every call site
+/// is a single predictable branch on it. Nothing is formatted unless enabled --
+/// which matters, because std::format of a dozen fields per dispatch would be
+/// far more expensive than the dispatch itself for small tensors.
+[[nodiscard]] bool debug_dispatch_enabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("VKML_VULKAN_DEBUG");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return on;
+}
+
+/// Dumps small tensors after a dispatch, with VKML_VULKAN_DUMP=<max_elements>.
+/// Off unless set; capped so a stray setting cannot print a 4M-element tensor.
+[[nodiscard]] int64_t debug_dump_limit() {
+    static const int64_t limit = [] -> int64_t {
+        const char* v = std::getenv("VKML_VULKAN_DUMP");
+        if (v == nullptr || v[0] == '\0') {
+            return 0;
+        }
+        const long parsed = std::strtol(v, nullptr, 10);
+        return parsed > 0 ? std::min<long>(parsed, 256) : 0;
+    }();
+    return limit;
+}
+
+void trace_dispatch(const Node& node, const char* kernel, const vk::KernelConfig& cfg,
+                    uint32_t push_bytes, uint64_t groups, uint32_t subgroup_default) {
+    std::string spec;
+    for (size_t i = 0; i < cfg.spec_constants.size(); ++i) {
+        spec += std::format("{}{}", i ? "," : "", cfg.spec_constants[i]);
+    }
+    VKML_LOG_INFO(
+        "dispatch op={} kernel={} groups={}x1x1 wg={} subgroup={} spec=[{}] push={}B shared={}B "
+        "shape={} dtype={}",
+        op_name(node.op), kernel, groups, cfg.workgroup_size,
+        cfg.required_subgroup_size != 0 ? std::to_string(cfg.required_subgroup_size)
+                                        : std::format("driver({})", subgroup_default),
+        spec, push_bytes, cfg.shared_memory_bytes, node.shape.str(), dtype_name(node.dtype));
+}
+
+[[nodiscard]] bool env_flag(const char* name, bool fallback) {
+    const char* v = std::getenv(name);
+    if (v == nullptr || v[0] == '\0') {
+        return fallback;
+    }
+    return v[0] != '0';
+}
+
+}  // namespace
+
+std::string VulkanStats::describe() const {
+    const double mib = 1024.0 * 1024.0;
+    return std::format(
+        "memory: {:.1f} MiB reserved in {} block(s), {:.1f} MiB in use (peak {:.1f}), "
+        "{} live / {} total allocations, {} device allocations, fragmentation {:.1f}%\n"
+        "execution: {} submissions, {} dispatches, {} pipelines",
+        static_cast<double>(reserved_bytes) / mib, block_count,
+        static_cast<double>(in_use_bytes) / mib, static_cast<double>(peak_in_use_bytes) / mib,
+        live_allocations, total_allocations, device_allocations, fragmentation * 100.0,
+        submissions,
+        dispatches, pipelines);
+}
+
+// ---------------------------------------------------------------------------
+
+struct VulkanBackend::Impl {
+    vk::Context ctx;
+    vk::Allocator allocator;
+    vk::PipelineCache pipelines;
+    vk::Recorder recorder;
+    vk::StagingBuffer staging;
+    DeviceCapabilities caps;
+
+    /// Adapts the Vulkan allocator to the backend-agnostic Allocator interface.
+    class StorageAllocator final : public vkml::Allocator {
+    public:
+        StorageAllocator(Impl& impl, Device dev) : impl_(impl), device_(dev) {}
+
+        [[nodiscard]] std::shared_ptr<Storage> allocate(size_t nbytes) override {
+            const vk::Allocation a =
+                impl_.allocator.allocate(nbytes, vk::MemoryKind::DeviceLocal);
+
+            // The device address is what a Storage's `data()` reports. It is
+            // NOT a host pointer and must never be dereferenced on the CPU --
+            // which is exactly what capabilities().host_accessible_buffers
+            // being false tells every layer above.
+            void* handle = reinterpret_cast<void*>(static_cast<uintptr_t>(a.address));
+
+            // A Storage carries only the address, but vkCmdCopyBuffer needs the
+            // block and offset behind it. Registering here is what lets
+            // copy_from_host/copy_to_host recover the full Allocation.
+            {
+                const std::lock_guard<std::mutex> lock(impl_.map_mutex);
+                impl_.live.emplace(a.address, a);
+            }
+
+            return std::make_shared<Storage>(
+                handle, nbytes, device_, [this, a](void*, size_t) {
+                    {
+                        const std::lock_guard<std::mutex> lock(impl_.map_mutex);
+                        impl_.live.erase(a.address);
+                    }
+                    impl_.allocator.free(a);
+                });
+        }
+
+        [[nodiscard]] std::string_view name() const noexcept override { return "vulkan"; }
+        [[nodiscard]] Device device() const noexcept override { return device_; }
+        [[nodiscard]] size_t live_bytes() const noexcept override {
+            return impl_.allocator.stats().in_use_bytes;
+        }
+
+    private:
+        Impl& impl_;
+        Device device_;
+    };
+
+    std::unique_ptr<StorageAllocator> storage_allocator;
+
+    /// 0 = use each kernel's default.
+    uint32_t subgroup_override = 0;
+
+    // Allocation lookup by device address, so a Storage (which only carries the
+    // address) can be turned back into a block+offset for buffer copies.
+    std::mutex map_mutex;
+    std::unordered_map<uint64_t, vk::Allocation> live;
+
+    /// Scratch for split-K partials: `splits` consecutive copies of the output.
+    ///
+    /// Backend-internal by design. It is not a tensor, never escapes to the
+    /// graph or the planner, and needs no public API -- which is what keeps
+    /// split-K from leaking into layers that have no business knowing about it.
+    /// Grown on demand and reused, so a training loop pays the allocation once;
+    /// the same lifetime strategy as llama.cpp's prealloc_split_k.
+    vk::Allocation splitk_ws{};
+
+    /// Returns a device address for at least `bytes` of split-K workspace.
+    [[nodiscard]] uint64_t splitk_workspace(uint64_t bytes) {
+        if (splitk_ws.valid() && splitk_ws.size >= bytes) {
+            return splitk_ws.address;
+        }
+        if (splitk_ws.valid()) {
+            allocator.free(splitk_ws);
+            splitk_ws = {};
+        }
+        splitk_ws = allocator.allocate(bytes, vk::MemoryKind::DeviceLocal);
+        return splitk_ws.address;
+    }
+
+    Impl(int index, bool validation, uint64_t staging_bytes)
+        : ctx(index, validation),
+          allocator(ctx),
+          pipelines(ctx),
+          recorder(ctx, allocator),
+          staging(ctx, allocator, recorder, staging_bytes),
+          caps(ctx.capabilities()) {}
+};
+
+VulkanBackend::VulkanBackend(int device_index, bool enable_validation) {
+    // 32 MiB of staging. Large enough that a typical tensor moves in one chunk,
+    // small enough not to waste host memory; transfers larger than this are
+    // chunked automatically.
+    constexpr uint64_t kStagingBytes = 32ULL * 1024 * 1024;
+    impl_ = std::make_unique<Impl>(device_index, enable_validation, kStagingBytes);
+    device_ = Device::vulkan(device_index);
+    name_ = std::format("vulkan:{}", device_index);
+    impl_->storage_allocator = std::make_unique<Impl::StorageAllocator>(*impl_, device_);
+}
+
+VulkanBackend::~VulkanBackend() {
+    if (impl_) {
+        impl_->recorder.wait_idle();
+    }
+}
+
+const DeviceCapabilities& VulkanBackend::capabilities() const noexcept {
+    return impl_->caps;
+}
+
+Allocator& VulkanBackend::allocator() {
+    return *impl_->storage_allocator;
+}
+
+bool VulkanBackend::supports(const Node& node) const {
+    if (is_view_op(node.op) || node.is_leaf()) {
+        return true;
+    }
+    // Only the M1 kernel set. Everything else falls back to the CPU, which is
+    // what makes incremental porting safe: an unported op is slow, not wrong.
+    switch (node.op) {
+        case OpKind::Full:
+            return node.dtype == DType::F32;
+        case OpKind::Contiguous:
+        case OpKind::Relu:
+        case OpKind::Neg:
+        case OpKind::Abs:
+        case OpKind::Exp:
+            return node.dtype == DType::F32;
+        case OpKind::Cast:
+            return true;
+        case OpKind::Sum:
+        case OpKind::Mean:
+        case OpKind::Max:
+        case OpKind::Min:
+            return node.dtype == DType::F32;
+        case OpKind::ArgMax:
+        case OpKind::ArgMin:
+            return node.dtype == DType::I64;
+        case OpKind::Softmax:
+        case OpKind::LogSoftmax:
+            return node.dtype == DType::F32;
+        case OpKind::Matmul:
+            // Operands arrive normalised to rank 4 by the graph builder, and
+            // the output is always freshly allocated and contiguous.
+            return node.dtype == DType::F32 && node.shape.ndim() == 4 &&
+                   node.shape.is_contiguous();
+        default:
+            return false;
+    }
+}
+
+void VulkanBackend::compute(std::span<Node* const> nodes) {
+    vk::Recorder& rec = impl_->recorder;
+    vk::PipelineCache& pipes = impl_->pipelines;
+
+    // Subgroup width is left to the driver for these kernels: they are purely
+    // bandwidth-bound elementwise work with no cross-lane communication, so the
+    // width does not matter. Reductions at M2 will pin it (llama.cpp uses
+    // wave64 for exactly those on RDNA1).
+    const uint32_t wg = 256;
+
+    std::vector<Node*> traced;
+
+    rec.begin();
+
+    // If a kernel throws, the recording must not be left open -- otherwise the
+    // next begin() asserts and hides the original error.
+    struct RecordingGuard {
+        vk::Recorder& rec;
+        ~RecordingGuard() { rec.abort_recording(); }
+    } guard{rec};
+
+    for (Node* node : nodes) {
+        if (node == nullptr || is_view_op(node->op) || node->is_leaf()) {
+            continue;
+        }
+        VKML_ASSERT(node->is_realized(), "node '{}' has no storage", op_name(node->op));
+
+        const auto address_of = [](const Node& n) {
+            return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(n.data()));
+        };
+        const auto n_elems = static_cast<uint32_t>(node->shape.numel());
+        if (n_elems == 0) {
+            continue;
+        }
+
+        switch (node->op) {
+            case OpKind::Full: {
+                const auto params = node->params.get<FullParams>();
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg};
+
+                const FillPush push{address_of(*node), n_elems,
+                                    static_cast<float>(params.value)};
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "fill", cfg, sizeof(FillPush),
+                                   (n_elems + wg - 1) / wg, impl_->caps.subgroup_size);
+                }
+                rec.dispatch(pipes.get("fill", spv::fill, spv::fill_size, sizeof(FillPush), cfg),
+                             &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::Contiguous:
+            case OpKind::Relu:
+            case OpKind::Neg:
+            case OpKind::Abs:
+            case OpKind::Exp: {
+                const Node& src = *node->src[0];
+                const size_t esz = dtype_size(node->dtype);
+
+                UnaryOp op = UnaryOp::Copy;
+                switch (node->op) {
+                    case OpKind::Relu: op = UnaryOp::Relu; break;
+                    case OpKind::Neg:  op = UnaryOp::Neg;  break;
+                    case OpKind::Abs:  op = UnaryOp::Abs;  break;
+                    case OpKind::Exp:  op = UnaryOp::Exp;  break;
+                    default:           op = UnaryOp::Copy; break;
+                }
+
+                const bool contiguous =
+                    src.shape.is_contiguous() && node->shape.is_contiguous();
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg, static_cast<uint32_t>(op),
+                                      contiguous ? 1U : 0U};
+
+                UnaryPush push{};
+                push.src = address_of(src);
+                push.dst = address_of(*node);
+                push.n = n_elems;
+                push.in_op = to_gpu_operand(src.shape, esz);
+                push.out_op = to_gpu_operand(node->shape, esz);
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "unary", cfg, sizeof(UnaryPush),
+                                   (n_elems + wg - 1) / wg, impl_->caps.subgroup_size);
+                }
+                rec.dispatch(
+                    pipes.get("unary", spv::unary, spv::unary_size, sizeof(UnaryPush), cfg),
+                    &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::Cast: {
+                const Node& src = *node->src[0];
+                VKML_CHECK(src.shape.is_contiguous() && node->shape.is_contiguous(), ShapeError,
+                           "vulkan cast requires contiguous operands");
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg, static_cast<uint32_t>(src.dtype),
+                                      static_cast<uint32_t>(node->dtype)};
+
+                const CastPush push{address_of(src), address_of(*node), n_elems};
+                rec.dispatch(pipes.get("cast", spv::cast, spv::cast_size, sizeof(CastPush), cfg),
+                             &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::Sum:
+            case OpKind::Mean:
+            case OpKind::Max:
+            case OpKind::Min:
+            case OpKind::ArgMax:
+            case OpKind::ArgMin: {
+                const Node& src = *node->src[0];
+                const auto rp = node->params.get<ReduceParams>();
+                const uint32_t mask =
+                    rp.axes_mask != 0
+                        ? rp.axes_mask
+                        : (src.shape.ndim() <= 0
+                               ? 0U
+                               : (1U << static_cast<uint32_t>(src.shape.ndim())) - 1U);
+
+                const SplitShape split = split_for_reduce(src.shape, mask);
+                const auto n_out = static_cast<uint32_t>(split.kept.numel());
+                const auto n_red = static_cast<uint32_t>(split.reduced.numel());
+                if (n_out == 0 || n_red == 0) {
+                    break;  // empty reduction; nothing defined to write
+                }
+
+                uint32_t op_id = 0;
+                switch (node->op) {
+                    case OpKind::Sum:    op_id = 0; break;
+                    case OpKind::Mean:   op_id = 1; break;
+                    case OpKind::Max:    op_id = 2; break;
+                    case OpKind::Min:    op_id = 3; break;
+                    case OpKind::ArgMax: op_id = 4; break;
+                    default:             op_id = 5; break;
+                }
+
+                // wave64 is pinned here. Reductions are the one kernel family
+                // where subgroup width matters, because the shared-memory tree
+                // is cross-lane work; llama.cpp's RDNA1 table selects 64 for
+                // exactly these ops on this chip. Left to the driver where
+                // subgroup size control is unavailable.
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.shared_memory_bytes = wg * (sizeof(float) + sizeof(uint32_t));
+                // Subgroup width is left to the driver by default.
+                //
+                // wave64 was pinned here initially, inherited from llama.cpp's
+                // RDNA1 table. Measuring it on OUR kernels (timestamp queries,
+                // 12 workload/op combinations) showed wave32 winning 8 of 12
+                // with every difference inside +/-7% -- not enough to justify a
+                // hardware-specific constant. The override remains for
+                // experimentation and future autotuning.
+                if (impl_->subgroup_override != 0) {
+                    cfg.required_subgroup_size = impl_->subgroup_override;
+                }
+                cfg.spec_constants = {wg, op_id, wg};
+
+                const size_t esz = dtype_size(src.dtype);
+                ReducePush push{};
+                push.src = address_of(src);
+                push.dst = address_of(*node);
+                push.n_out = n_out;
+                push.n_red = n_red;
+                push.kept = to_gpu_operand(split.kept, esz);
+                push.reduced = to_gpu_operand(split.reduced, esz);
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "reduce", cfg, sizeof(ReducePush), n_out,
+                                   impl_->caps.subgroup_size);
+                }
+                rec.dispatch_groups(
+                    pipes.get("reduce", spv::reduce, spv::reduce_size, sizeof(ReducePush), cfg),
+                    &push, sizeof(push), n_out);
+                break;
+            }
+
+            case OpKind::Softmax:
+            case OpKind::LogSoftmax: {
+                const Node& src = *node->src[0];
+                const auto ap = node->params.get<AxisParams>();
+                const uint32_t mask = 1U << static_cast<uint32_t>(ap.axis);
+
+                // The output is freshly allocated and so may not share the
+                // input's strides -- the input can be a transposed or broadcast
+                // view. Both layouts are split, and the shader indexes each
+                // with its own operands.
+                const SplitShape in_split = split_for_reduce(src.shape, mask);
+                const SplitShape out_split = split_for_reduce(node->shape, mask);
+
+                const auto n_out = static_cast<uint32_t>(in_split.kept.numel());
+                const auto n_axis = static_cast<uint32_t>(in_split.reduced.numel());
+                if (n_out == 0 || n_axis == 0) {
+                    break;
+                }
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.shared_memory_bytes = wg * sizeof(float);
+                if (impl_->subgroup_override != 0) {
+                    cfg.required_subgroup_size = impl_->subgroup_override;  // as reductions
+                }
+                // M4-R4 theory probe: raises LDS only, so P1'' can be tested on a
+                // kernel it was not derived from. 0 in production.
+                static const uint32_t sm_pad = [] {
+                    const char* v = std::getenv("VKML_SOFTMAX_PAD_KB");
+                    return v == nullptr ? 0U : static_cast<uint32_t>(std::atoi(v)) * 256U;
+                }();
+                cfg.shared_memory_bytes += sm_pad * sizeof(float);
+                cfg.spec_constants = {wg, node->op == OpKind::LogSoftmax ? 1U : 0U, wg,
+                                      sm_pad};
+
+                const size_t esz = dtype_size(src.dtype);
+                SoftmaxPush push{};
+                push.src = address_of(src);
+                push.dst = address_of(*node);
+                push.n_out = n_out;
+                push.n_axis = n_axis;
+                push.in_kept = to_gpu_operand(in_split.kept, esz);
+                push.in_axis = to_gpu_operand(in_split.reduced, esz);
+                push.out_kept = to_gpu_operand(out_split.kept, esz);
+                push.out_axis = to_gpu_operand(out_split.reduced, esz);
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "softmax", cfg, sizeof(SoftmaxPush), n_out,
+                                   impl_->caps.subgroup_size);
+                }
+                rec.dispatch_groups(
+                    pipes.get("softmax", spv::softmax, spv::softmax_size, sizeof(SoftmaxPush),
+                              cfg),
+                    &push, sizeof(push), n_out);
+                break;
+            }
+
+            case OpKind::Matmul: {
+                const Node& a = *node->src[0];
+                const Node& b = *node->src[1];
+
+                const auto b0 = static_cast<uint32_t>(node->shape.dim(0));
+                const auto b1 = static_cast<uint32_t>(node->shape.dim(1));
+                const auto m = static_cast<uint32_t>(node->shape.dim(2));
+                const auto n = static_cast<uint32_t>(node->shape.dim(3));
+                const auto k = static_cast<uint32_t>(a.shape.dim(3));
+
+                VKML_ASSERT(static_cast<uint32_t>(b.shape.dim(2)) == k,
+                            "matmul inner dimensions disagree: {} vs {}", k, b.shape.dim(2));
+
+                const uint32_t total = b0 * b1 * m * n;
+                if (total == 0 || k == 0) {
+                    break;
+                }
+
+                // -- GEMV ---------------------------------------------------
+                //
+                // One workgroup per OUTPUT ELEMENT. The tiled kernel collapses
+                // to ceil(M/32) workgroups at N=1 -- 128 against this GPU's 288
+                // concurrent slots, i.e. 44 % fill, where 5g says throughput
+                // falls off a cliff. This restores the grid to M*N.
+                //
+                // Bit-identical to the tiled kernel by the alignment lemma
+                // (docs/SPLIT_K_DESIGN.md 2.3) applied across LANES instead of
+                // across workgroups: each lane folds a contiguous run of 2^q
+                // K-tiles, and the cross-lane reduction folds adjacent pairs so
+                // it reproduces the carry stack's association exactly.
+                if (gemv_mode() == GemvMode::Forced) {
+                    const uint32_t ktiles = (k + 31) / 32;
+                    constexpr uint32_t kGemvWg = 64;
+                    // Smallest power-of-two chunk that lets WG lanes cover K.
+                    const uint32_t passes = (ktiles + kGemvWg - 1) / kGemvWg;
+                    uint32_t levels = 1;
+                    while ((1U << levels) < passes) {
+                        ++levels;
+                    }
+                    ++levels;
+                    for (const uint32_t bucket : {4U, 6U, 8U, 10U, 12U, 16U}) {
+                        if (levels <= bucket) {
+                            levels = bucket;
+                            break;
+                        }
+                    }
+
+                    vk::KernelConfig gcfg;
+                    gcfg.workgroup_size = kGemvWg;
+                    gcfg.shared_memory_bytes = (kGemvWg + 2 * kGemvWg * 32) * sizeof(float);
+                    // M4-R2: LDS padding, discriminator only. Default 0.
+                    static const uint32_t pad_floats = [] {
+                        const char* v = std::getenv("VKML_GEMV_PAD_KB");
+                        return v == nullptr ? 0U
+                                            : static_cast<uint32_t>(std::atoi(v)) * 256U;
+                    }();
+                    gcfg.shared_memory_bytes += pad_floats * sizeof(float);
+                    gcfg.spec_constants = {kGemvWg, levels, 1, kGemvWg, pad_floats};
+
+                    const size_t gesz = dtype_size(node->dtype);
+                    GemmPush gp{};
+                    gp.a = address_of(a);
+                    gp.b = address_of(b);
+                    gp.d = address_of(*node);
+                    gp.n_out = total;
+                    gp.b1 = b1;
+                    gp.m = m;
+                    gp.n = n;
+                    gp.k = k;
+                    gp.op_a = to_gpu_operand(a.shape, gesz);
+                    gp.op_b = to_gpu_operand(b.shape, gesz);
+
+                    const auto& gpipe = pipes.get("gemv", spv::gemv, spv::gemv_size,
+                                                  sizeof(GemmPush), gcfg);
+                    if (debug_dispatch_enabled()) {
+                        VKML_LOG_INFO("  gemv M={} N={} K={} ktiles={} passes={} levels={} "
+                                      "groups={} wg={} lds={}B",
+                                      m, n, k, ktiles, passes, levels, total, kGemvWg,
+                                      gcfg.shared_memory_bytes);
+                        if (gpipe.stats.available) {
+                            const auto& st = gpipe.stats;
+                            VKML_LOG_INFO("  gemv compiler: vgpr={} sgpr={} lds={}B "
+                                          "waves={} scratch={}B instr={}",
+                                          st.vgprs, st.sgprs, st.lds_bytes, st.max_waves,
+                                          st.scratch_bytes, st.instructions);
+                        }
+                    }
+                    rec.dispatch_groups(gpipe, &gp, sizeof(gp), total);
+                    break;
+                }
+
+                // Tile edge. 16 gives a 256-invocation workgroup and 2 KiB of
+                // shared memory -- comfortably inside this device's 64 KiB, and
+                // an arithmetic intensity of TILE/4 = 4.0 FLOP/byte against the
+                // naive kernel's 0.25.
+                //
+                // VKML_GEMM_NAIVE=1 selects the Stage 1 kernel instead, so the
+                // two can be compared in one process rather than by rebuilding.
+                // VKML_GEMM_KERNEL selects the implementation, so all three can
+                // be compared in one process: naive | tiled | reg (default).
+                static const int kernel_choice = [] {
+                    const char* v = std::getenv("VKML_GEMM_KERNEL");
+                    if (v == nullptr || v[0] == '\0') {
+                        return 2;
+                    }
+                    if (std::string_view(v) == "naive") {
+                        return 0;
+                    }
+                    if (std::string_view(v) == "tiled") {
+                        return 1;
+                    }
+                    return 2;
+                }();
+                // Double buffering is opt-IN: it is a SEPARATE pipeline, so the
+                // Stage 6 kernel stays byte-identical as the frozen control.
+                // Stage 6.5 produced a spurious 1.4x by modifying the control
+                // arm of its own A/B comparison; this avoids repeating that.
+                static const bool want_db = [] {
+                    const char* v = std::getenv("VKML_GEMM_DB");
+                    return v != nullptr && v[0] != '\0' && v[0] != '0';
+                }();
+
+                const bool use_naive = kernel_choice == 0;
+                const bool use_tiled = kernel_choice == 1;
+
+                constexpr uint32_t kTile = 16;
+                // Register-blocked geometry. 2x2 is the largest block for which
+                // the per-accumulator pairwise carry stack fits in registers
+                // without collapsing occupancy -- see the note in gemm_reg.comp.
+                // Register-block geometry, selectable for the Stage 8 experiment.
+                //
+                // BM and BN are chosen so the workgroup stays at 256
+                // invocations: (BM/RM) * (BN/RN) = 256. Holding the thread count
+                // fixed is what makes the three variants comparable -- otherwise
+                // a change in occupancy could not be attributed to register
+                // pressure rather than to workgroup size.
+                //
+                // Each geometry compiles to a genuinely independent pipeline
+                // (the values are specialisation constants), so the compiler
+                // reports separate statistics for each and they benchmark
+                // independently.
+                struct BlockGeom {
+                    uint32_t bm, bn, rm, rn;
+                };
+                static const BlockGeom forced_block = [] -> BlockGeom {
+                    const char* v = std::getenv("VKML_GEMM_BLOCK");
+                    const std::string_view sel = v != nullptr ? v : "";
+                    if (sel == "4x2") {
+                        return BlockGeom{64, 32, 4, 2};
+                    }
+                    if (sel == "4x4") {
+                        return BlockGeom{64, 64, 4, 4};
+                    }
+                    // 2x4 exists only to TEST the register model (M3-R3), not
+                    // as a performance candidate. It is the geometry that
+                    // discriminates between two fits of C(RM,RN) which agree on
+                    // every measured point and disagree by exactly 1 VGPR here:
+                    // a structural model (av[RM] + bv[RN] + acc[RM*RN] + 11)
+                    // predicts 25, a symmetric interpolation predicts 26.
+                    // (32/2) * (64/4) = 256 invocations, matching every other
+                    // geometry so the workgroup is not a second variable.
+                    if (sel == "2x4") {
+                        return BlockGeom{32, 64, 2, 4};
+                    }
+                    // 2x8 and 8x2 are the DISCRIMINATING pair for M3-R3's
+                    // refined model C = 2*RM + 0.5*RN + RM*RN + 9. They have
+                    // identical RM*RN and identical carry stacks, so any model
+                    // symmetric in RM and RN must predict identical resources.
+                    // The refined model predicts 97 VGPRs (clean) against 106
+                    // (spilled) -- opposite sides of the cliff. Test geometry
+                    // only; both are 256 invocations and ~20 KiB of LDS.
+                    if (sel == "2x8") {
+                        return BlockGeom{32, 128, 2, 8};
+                    }
+                    if (sel == "8x2") {
+                        return BlockGeom{128, 32, 8, 2};
+                    }
+                    // 4x2 again, but at 512 invocations instead of 256. Exists
+                    // to separate two readings of the scratch law that are
+                    // numerically identical everywhere else: every other
+                    // geometry has workgroup 256 AND subgroup 64, so
+                    // "scratch = stack * workgroup" and "scratch = stack * 4
+                    // bytes * 64 lanes" both give the same 256. Doubling the
+                    // workgroup while the subgroup stays 64 forces them apart.
+                    if (sel == "4x2w512") {
+                        return BlockGeom{64, 64, 4, 2};
+                    }
+                    return BlockGeom{32, 32, 2, 2};  // Stage 6 default
+                }();
+                const bool block_forced = std::getenv("VKML_GEMM_BLOCK") != nullptr;
+
+                // M3-01: shape-driven THREADBLOCK tile.
+                //
+                // Stage 8 established that the register block cannot grow: the
+                // pairwise carry stack costs RM*RN*STACK_LEVELS registers, so
+                // 4x4 spilled 24 KiB to scratch. BM and BN are the other axis --
+                // they set how much output a WORKGROUP owns, not a thread, so
+                // enlarging them raises arithmetic intensity
+                //
+                //     AI = 2*BM*BN*BK / ((BM*BK + BK*BN)*4)
+                //
+                // from 8.0 (32x32) to 16.0 (64x64) while leaving per-thread
+                // register pressure exactly where it is. Stage 8 could not see
+                // this because it deliberately pinned the workgroup at 256
+                // invocations to isolate register pressure.
+                //
+                // Each dimension decides independently, which llama.cpp's ladder
+                // cannot do: its `(m <= 32 || n <= 32)` test couples them, so a
+                // tall-thin matrix gives up the large-M tile because N is small.
+                // The 128 floor keeps at least 2x2 tiles in flight; a proper
+                // compute-unit-aware rule needs shader_core_count, which arrives
+                // with split-K (docs/M3_ROADMAP.md M3.4).
+                //
+                // MEASURED AND REJECTED (docs/M3-01-TILE-GEOMETRY.md).
+                //
+                // The arithmetic intensity gain is real -- 8.0 -> 16.0 FLOP/byte
+                // -- and every compiler statistic came out exactly as predicted:
+                // VGPR flat at 41, scratch 0, waves/SIMD still 16. It is still
+                // SLOWER at every shape measured, monotonically in workgroup
+                // size (256 -> 512 -> 1024 gives 1.00x -> 0.84x -> 0.77x at
+                // 1024^3).
+                //
+                // Cause: waves/SIMD is not a sufficient occupancy metric. A
+                // workgroup's waves all rendezvous at the same barrier, so they
+                // are not independent work. Concurrent workgroups per CU -- the
+                // number of INDEPENDENT barrier domains -- halves at each step
+                // (8 -> 4 -> 2), and that loss exceeds the intensity gain.
+                // Confirmed by double buffering, which removes one barrier per
+                // k-tile and recovers 1.42x at 64x64 but only 1.05x at 32x32.
+                //
+                // Production libraries all grow the tile through PER-THREAD work
+                // and hold the workgroup roughly constant: llama.cpp uses 128
+                // invocations for both its 64x64 and 128x128 tiles
+                // (ggml-vulkan.cpp:4030-4032); CLBlast's tuned gfx1010 entry
+                // uses 256 threads for 64x64; rocBLAS navi21 uses 128 for
+                // 128x64. That route is closed for vkML until the carry stack
+                // shortens -- see docs/M3_ROADMAP.md.
+                //
+                // Kept selectable so the experiment reproduces, exactly as
+                // VKML_GEMM_BLOCK preserves Stage 8. Default is the frozen
+                // Stage 6 geometry.
+                static const char* tile_force = std::getenv("VKML_GEMM_TILE");
+                const std::string_view tile_sel = tile_force != nullptr ? tile_force : "";
+                const uint32_t kBM = block_forced ? forced_block.bm
+                                     : (tile_sel == "m" || tile_sel == "l") ? 64U
+                                                                            : 32U;
+                const uint32_t kBN =
+                    block_forced ? forced_block.bn : (tile_sel == "l") ? 64U : 32U;
+                // BK=32, raised from 16 in Stage 5.75. Two reasons, both
+                // measured: it halves the K-tile count (one fewer carry-stack
+                // level, so fewer VGPRs), and it makes each block a 32-element
+                // sequential sum -- exactly matching kPairwiseBlock in
+                // src/backend/cpu/reduce.h, so the two backends fold K with the
+                // same structure. It costs LDS, which is in surplus (8 KiB of
+                // the device's 64 KiB).
+                const uint32_t kBK = 32;
+                const uint32_t kRM = forced_block.rm;
+                const uint32_t kRN = forced_block.rn;
+                const uint32_t kRegWg = (kBM / kRM) * (kBN / kRN);
+                VKML_ASSERT(kRegWg <= impl_->caps.max_workgroup_invocations,
+                            "gemm tile {}x{} at {}x{} needs {} invocations, device allows {}",
+                            kBM, kBN, kRM, kRN, kRegWg,
+                            impl_->caps.max_workgroup_invocations);
+
+                const uint32_t gemm_wg =
+                    use_naive ? wg : (use_tiled ? kTile * kTile : kRegWg);
+
+                // -- split-K decision ---------------------------------------
+                //
+                // Only the register-blocked kernel participates: the naive and
+                // tiled kernels are frozen comparison arms, and splitting them
+                // would change what they are a control for.
+                //
+                // The chunk is a power-of-two number of K-tiles. That single
+                // property is what makes the result bit-identical to the
+                // unsplit kernel -- no fold inside a partition can cross a
+                // boundary whose tile index has q low zero bits, so every
+                // partial is exactly a subtree of the unsplit carry stack
+                // (docs/SPLIT_K_DESIGN.md 2.3-2.4).
+                const uint32_t total_ktiles = (k + kBK - 1) / kBK;
+                const SplitKPlan sk = [&] -> SplitKPlan {
+                    if (use_naive || use_tiled || split_k_mode() == SplitKMode::Off) {
+                        return {};
+                    }
+                    const uint32_t out_tiles =
+                        ((m + kBM - 1) / kBM) * ((n + kBN - 1) / kBN) * b0 * b1;
+                    // FORCED passes an explicit partition count and bypasses the
+                    // profitability rule; AUTO passes 0 and lets it decide.
+                    const uint32_t requested = split_k_mode() == SplitKMode::Forced
+                                                   ? split_k_requested()
+                                                   : 0U;
+                    return plan_split_k(out_tiles, total_ktiles, total,
+                                        impl_->caps.shader_core_count, requested);
+                }();
+                const uint32_t split_chunk = sk.chunk;
+                const uint32_t splits = sk.splits;
+                const bool use_split_k = splits > 1;
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = gemm_wg;
+                if (use_naive) {
+                    cfg.shared_memory_bytes = 0;
+                    cfg.spec_constants = {gemm_wg};
+                } else if (use_tiled) {
+                    cfg.shared_memory_bytes = 2 * kTile * kTile * sizeof(float);
+                    cfg.spec_constants = {gemm_wg, kTile};
+                } else {
+                    // Stack depth from the actual K, bucketed so the pipeline
+                    // cache does not gain an entry per distinct K.
+                    //
+                    // Under split-K this is the depth ONE PARTITION needs, so a
+                    // partition covering `split_chunk` tiles gets a shorter
+                    // stack and fewer accumulator registers. Sized from the
+                    // chunk rather than from the last partition's possibly
+                    // smaller tile count, so every partition shares one
+                    // pipeline.
+                    const uint32_t ktiles = use_split_k ? split_chunk : total_ktiles;
+                    uint32_t levels = 1;
+                    while ((1U << levels) < ktiles) {
+                        ++levels;
+                    }
+                    ++levels;  // headroom for the final carry
+                    for (const uint32_t bucket : {4U, 6U, 8U, 10U, 12U, 16U}) {
+                        if (levels <= bucket) {
+                            levels = bucket;
+                            break;
+                        }
+                    }
+                    // Vectorised loads are enabled only when the host can PROVE
+                    // both operands are stride-1 in their innermost axis and the
+                    // tile widths divide by 4. A transposed or broadcast operand
+                    // fails this and silently takes the scalar path -- which is
+                    // why the validation suite covers both.
+                    //
+                    // VKML_GEMM_NOVEC=1 forces the scalar path so the two can be
+                    // compared in one process.
+                    static const bool novec = [] {
+                        const char* v = std::getenv("VKML_GEMM_NOVEC");
+                        return v != nullptr && v[0] != '\0' && v[0] != '0';
+                    }();
+                    const bool can_vec4 = !novec && (kBK % 4 == 0) && (kBN % 4 == 0) &&
+                                          a.shape.stride(3) ==
+                                              static_cast<int64_t>(dtype_size(a.dtype)) &&
+                                          b.shape.stride(3) ==
+                                              static_cast<int64_t>(dtype_size(b.dtype));
+
+                    cfg.load_vector_width = can_vec4 ? 4 : 1;
+                    // Double buffering doubles the tile storage.
+                    cfg.shared_memory_bytes =
+                        (want_db ? 2 : 1) * (kBM * kBK + kBK * kBN) * sizeof(float);
+                    // Widened LDS reads require RN == 2 so the vec2 index is
+                    // exact. VKML_GEMM_NOLDSVEC=1 forces the scalar path for
+                    // comparison in one process.
+                    static const bool no_ldsvec = [] {
+                        const char* v = std::getenv("VKML_GEMM_NOLDSVEC");
+                        return v != nullptr && v[0] != '\0' && v[0] != '0';
+                    }();
+                    const bool lds_vec = !no_ldsvec && kRN == 2;
+
+
+                    cfg.spec_constants = {gemm_wg,  kBM, kBN, kBK, kRM, kRN, levels,
+                                          can_vec4 ? 1U : 0U, lds_vec ? 1U : 0U};
+                }
+
+                const size_t esz = dtype_size(node->dtype);
+                GemmPush push{};
+                push.a = address_of(a);
+                push.b = address_of(b);
+                push.d = address_of(*node);
+                push.n_out = total;
+                push.b1 = b1;
+                push.m = m;
+                push.n = n;
+                push.k = k;
+                push.op_a = to_gpu_operand(a.shape, esz);
+                push.op_b = to_gpu_operand(b.shape, esz);
+
+                if (use_naive) {
+                    if (debug_dispatch_enabled()) {
+                        VKML_LOG_INFO("  gemm M={} N={} K={} batch={}x{} tile=none reg=1x1 "
+                                      "shared=0B AI=0.25", m, n, k, b0, b1);
+                        trace_dispatch(*node, "gemm_naive", cfg, sizeof(GemmPush),
+                                       (total + gemm_wg - 1) / gemm_wg,
+                                       impl_->caps.subgroup_size);
+                    }
+                    rec.dispatch(pipes.get("gemm_naive", spv::gemm_naive, spv::gemm_naive_size,
+                                           sizeof(GemmPush), cfg),
+                                 &push, sizeof(push), total);
+                    break;
+                }
+
+                const uint32_t tm = use_tiled ? kTile : kBM;
+                const uint32_t tn = use_tiled ? kTile : kBN;
+                const uint32_t tk = use_tiled ? kTile : kBK;
+                const uint32_t tiles_m = (m + tm - 1) / tm;
+                const uint32_t tiles_n = (n + tn - 1) / tn;
+                const uint32_t groups = tiles_m * tiles_n * b0 * b1;
+
+                // AI = 2*BM*BN*BK / ((BM*BK + BK*BN) * 4 bytes)
+                const double ai = 2.0 * tm * tn * tk /
+                                  ((static_cast<double>(tm) * tk + tk * tn) * 4.0);
+
+                if (debug_dispatch_enabled()) {
+                    VKML_LOG_INFO(
+                        "  gemm M={} N={} K={} batch={}x{} tile={}x{}x{} grid={}x{} ktiles={} "
+                        "reg={}x{} threads={} shared={}B AI={:.2f} "
+                        "owns_rows_per_thread={} owns_cols_per_thread={}",
+                        m, n, k, b0, b1, tm, tn, tk, tiles_m, tiles_n, (k + tk - 1) / tk,
+                        use_tiled ? 1 : kRM, use_tiled ? 1 : kRN, gemm_wg,
+                        cfg.shared_memory_bytes, ai, use_tiled ? 1 : kRM,
+                        use_tiled ? 1 : kRN);
+                    trace_dispatch(*node, use_tiled ? "gemm_tiled" : "gemm_reg", cfg,
+                                   sizeof(GemmPush), groups, impl_->caps.subgroup_size);
+                }
+
+                const bool use_db = !use_tiled && !use_naive && want_db;
+                const auto& gemm_pipe =
+                    use_tiled ? pipes.get("gemm_tiled", spv::gemm_tiled, spv::gemm_tiled_size,
+                                          sizeof(GemmPush), cfg)
+                              : (use_db ? pipes.get("gemm_db", spv::gemm_db, spv::gemm_db_size,
+                                                    sizeof(GemmPush), cfg)
+                                        : pipes.get("gemm_reg", spv::gemm_reg,
+                                                    spv::gemm_reg_size, sizeof(GemmPush), cfg));
+                if (debug_dispatch_enabled() && gemm_pipe.stats.available) {
+                    const auto& st = gemm_pipe.stats;
+                    VKML_LOG_INFO("  compiler: vgpr={} sgpr={} spilled_vgpr={} spilled_sgpr={} "
+                                  "scratch={}B lds={}B max_waves={}",
+                                  st.vgprs, st.sgprs, st.spilled_vgprs, st.spilled_sgprs,
+                                  st.scratch_bytes, st.lds_bytes, st.max_waves);
+                    for (const auto& [nm, val] : st.raw) {
+                        VKML_LOG_INFO("    stat {} = {}", nm, val);
+                    }
+                }
+
+                if (use_tiled) {
+                    rec.dispatch_groups(pipes.get("gemm_tiled", spv::gemm_tiled,
+                                                  spv::gemm_tiled_size, sizeof(GemmPush), cfg),
+                                        &push, sizeof(push), groups);
+                } else if (use_db) {
+                    rec.dispatch_groups(pipes.get("gemm_db", spv::gemm_db, spv::gemm_db_size,
+                                                  sizeof(GemmPush), cfg),
+                                        &push, sizeof(push), groups);
+                } else if (!use_split_k) {
+                    rec.dispatch_groups(pipes.get("gemm_reg", spv::gemm_reg,
+                                                  spv::gemm_reg_size, sizeof(GemmPush), cfg),
+                                        &push, sizeof(push), groups);
+                } else {
+                    // -- split-K -------------------------------------------
+                    //
+                    // The GEMM shader is UNCHANGED. A partition is expressed
+                    // entirely by moving the operand base addresses forward
+                    // along K, shortening `k`, and redirecting the output to a
+                    // workspace slice. Nothing inside the kernel knows split-K
+                    // exists, which is why its numerical behaviour cannot have
+                    // drifted.
+                    const uint64_t slice_elems =
+                        static_cast<uint64_t>(total) ;  // b0*b1*m*n
+                    const uint64_t ws_bytes =
+                        slice_elems * splits * static_cast<uint64_t>(esz);
+                    const uint64_t ws = impl_->splitk_workspace(ws_bytes);
+
+                    const auto& part_pipe = pipes.get("gemm_reg", spv::gemm_reg,
+                                                      spv::gemm_reg_size, sizeof(GemmPush), cfg);
+                    for (uint32_t s = 0; s < splits; ++s) {
+                        const uint32_t k_begin = s * split_chunk * kBK;
+                        const uint32_t k_len = std::min(split_chunk * kBK, k - k_begin);
+
+                        GemmPush sp = push;
+                        // Strides are in ELEMENTS; addresses are in bytes.
+                        sp.a = push.a + static_cast<uint64_t>(k_begin) *
+                                            push.op_a.nb[3] * esz;
+                        sp.b = push.b + static_cast<uint64_t>(k_begin) *
+                                            push.op_b.nb[2] * esz;
+                        sp.d = ws + static_cast<uint64_t>(s) * slice_elems * esz;
+                        sp.k = k_len;
+                        // No barrier between partitions: they write disjoint
+                        // workspace slices, so the driver is free to overlap
+                        // them. That overlap is the entire point.
+                        rec.dispatch_groups(part_pipe, &sp, sizeof(sp), groups);
+                    }
+
+                    // Partials must be complete before the fold reads them.
+                    rec.barrier();
+
+                    uint32_t split_levels = 1;
+                    while ((1U << split_levels) < splits) {
+                        ++split_levels;
+                    }
+                    ++split_levels;
+
+                    vk::KernelConfig rcfg;
+                    rcfg.workgroup_size = wg;
+                    rcfg.spec_constants = {wg, split_levels};
+
+                    SplitKReducePush rp{};
+                    rp.src = ws;
+                    rp.dst = address_of(*node);
+                    rp.ne = total;
+                    rp.splits = splits;
+
+                    const auto& red_pipe =
+                        pipes.get("gemm_split_k_reduce", spv::gemm_split_k_reduce,
+                                  spv::gemm_split_k_reduce_size, sizeof(SplitKReducePush), rcfg);
+
+                    if (debug_dispatch_enabled()) {
+                        VKML_LOG_INFO("  split-k splits={} chunk={} ktiles/part={} "
+                                      "stack_levels={} workspace={}KiB reduce_levels={}",
+                                      splits, split_chunk, split_chunk,
+                                      cfg.spec_constants[6], ws_bytes / 1024, split_levels);
+                        if (red_pipe.stats.available) {
+                            const auto& st = red_pipe.stats;
+                            VKML_LOG_INFO("  reduce compiler: vgpr={} sgpr={} spilled_vgpr={} "
+                                          "scratch={}B lds={}B max_waves={}",
+                                          st.vgprs, st.sgprs, st.spilled_vgprs,
+                                          st.scratch_bytes, st.lds_bytes, st.max_waves);
+                        }
+                    }
+
+                    rec.dispatch(red_pipe, &rp, sizeof(rp), total);
+                }
+                break;
+            }
+
+            default:
+                throw NotImplementedError(
+                    std::format("vulkan backend: no kernel for op '{}'", op_name(node->op)));
+        }
+
+        // Between every pair of dispatches. Conservative: the executor gives no
+        // aliasing information yet, so any node may read what the previous one
+        // wrote. See the strategy note in vk_command.h.
+        rec.barrier();
+        traced.push_back(node);
+    }
+
+    const uint64_t ticket = rec.submit();
+    // M1 is synchronous: wait here rather than returning a handle. Overlapping
+    // host and device work is a performance change and needs the execution
+    // graph to know what is safe to defer.
+    rec.wait(ticket);
+
+    if (debug_dispatch_enabled()) {
+        const auto& profile = rec.profile();
+        for (size_t i = 0; i < profile.size() && i < traced.size(); ++i) {
+            VKML_LOG_INFO("  timing op={} gpu={:.4f}ms", op_name(traced[i]->op),
+                          profile[i].gpu_ms);
+        }
+    }
+
+    if (const int64_t limit = debug_dump_limit(); limit > 0) {
+        for (Node* node : traced) {
+            if (node->shape.numel() > limit || node->dtype != DType::F32) {
+                continue;
+            }
+            std::vector<float> host(static_cast<size_t>(node->shape.numel()));
+            copy_to_host(host.data(), *node->storage, node->storage_offset,
+                         host.size() * sizeof(float));
+            std::string body;
+            for (size_t i = 0; i < host.size(); ++i) {
+                body += std::format("{}{:g}", i ? ", " : "", host[i]);
+            }
+            VKML_LOG_INFO("  dump op={} shape={} [{}]", op_name(node->op), node->shape.str(),
+                          body);
+        }
+    }
+}
+
+void VulkanBackend::copy_from_host(Storage& dst, int64_t dst_offset, const void* src,
+                                   size_t nbytes) {
+    if (nbytes == 0) {
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(impl_->map_mutex);
+    const auto addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(dst.data()));
+    const auto it = impl_->live.find(addr);
+    VKML_ASSERT(it != impl_->live.end(), "unknown device address in copy_from_host");
+    impl_->staging.upload(src, it->second, static_cast<uint64_t>(dst_offset), nbytes);
+}
+
+void VulkanBackend::copy_to_host(void* dst, const Storage& src, int64_t src_offset,
+                                 size_t nbytes) {
+    if (nbytes == 0) {
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(impl_->map_mutex);
+    const auto addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(src.data()));
+    const auto it = impl_->live.find(addr);
+    VKML_ASSERT(it != impl_->live.end(), "unknown device address in copy_to_host");
+    impl_->staging.download(dst, it->second, static_cast<uint64_t>(src_offset), nbytes);
+}
+
+std::vector<PipelineStats> VulkanBackend::pipeline_stats() const {
+    std::vector<PipelineStats> out;
+    for (const auto& [key, st] : impl_->pipelines.all_stats()) {
+        PipelineStats p;
+        p.name = key;
+        p.available = st.available;
+        p.vgprs = st.vgprs;
+        p.sgprs = st.sgprs;
+        p.spilled_vgprs = st.spilled_vgprs;
+        p.spilled_sgprs = st.spilled_sgprs;
+        p.scratch_bytes = st.scratch_bytes;
+        p.lds_bytes = st.lds_bytes;
+        p.waves_per_simd = st.max_waves;
+        p.instructions = st.instructions;
+        p.code_bytes = st.code_bytes;
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+void VulkanBackend::set_profiling(bool enabled) {
+    impl_->recorder.set_profiling(enabled);
+}
+
+std::vector<std::pair<std::string, double>> VulkanBackend::last_profile() const {
+    std::vector<std::pair<std::string, double>> out;
+    for (const vk::ProfileEntry& e : impl_->recorder.profile()) {
+        out.emplace_back(e.label, e.gpu_ms);
+    }
+    return out;
+}
+
+void VulkanBackend::set_subgroup_override(uint32_t size) {
+    impl_->subgroup_override = size;
+}
+
+void VulkanBackend::synchronize() {
+    impl_->recorder.wait_idle();
+}
+
+void VulkanBackend::trim() {
+    impl_->allocator.trim();
+}
+
+VulkanStats VulkanBackend::stats() const {
+    const vk::AllocatorStats a = impl_->allocator.stats();
+    VulkanStats s;
+    s.reserved_bytes = a.reserved_bytes;
+    s.in_use_bytes = a.in_use_bytes;
+    s.peak_in_use_bytes = a.peak_in_use_bytes;
+    s.block_count = a.block_count;
+    s.live_allocations = a.live_allocations;
+    s.total_allocations = a.total_allocations;
+    s.device_allocations = a.device_allocations;
+    s.fragmentation = a.fragmentation();
+    s.submissions = impl_->recorder.submitted_count();
+    s.dispatches = impl_->recorder.dispatch_count();
+    s.pipelines = impl_->pipelines.pipeline_count();
+    return s;
+}
+
+bool vulkan_available() {
+    return vk::enumerate_device_count() > 0;
+}
+
+int vulkan_device_count() {
+    return vk::enumerate_device_count();
+}
+
+std::vector<std::string> vulkan_device_names() {
+    return vk::enumerate_device_names();
+}
+
+namespace {
+
+std::mutex& backend_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+/// Deliberately leaked, and the leak is load-bearing.
+///
+/// If these were owned by a static unique_ptr, they would be destroyed during
+/// static destruction at process exit -- but the Vulkan loader and validation
+/// layer tear down their own statics at the same stage, and the ordering
+/// between translation units is unspecified. Destroying a VkDevice after the
+/// layer has gone produces "The VkDevice dispatch handle was not found and
+/// Validation will crash", which is exactly what happened before this change.
+///
+/// The OS reclaims the memory and the driver's resources at exit regardless, so
+/// leaking here costs nothing real. Anything that genuinely needs a clean
+/// teardown -- a test asserting the allocator has no live blocks, for instance
+/// -- calls vulkan_shutdown() explicitly while the loader is still alive.
+std::unordered_map<int, VulkanBackend*>& backend_registry() {
+    static auto* registry = new std::unordered_map<int, VulkanBackend*>();
+    return *registry;
+}
+
+}  // namespace
+
+Backend& vulkan_backend(int index) {
+    const std::lock_guard<std::mutex> lock(backend_mutex());
+    auto& registry = backend_registry();
+
+    if (const auto it = registry.find(index); it != registry.end()) {
+        return *it->second;
+    }
+
+    const bool validation = env_flag("VKML_VULKAN_VALIDATION", true);
+    auto* backend = new VulkanBackend(index, validation);
+    registry.emplace(index, backend);
+    register_backend(*backend);
+    return *backend;
+}
+
+void vulkan_shutdown() {
+    const std::lock_guard<std::mutex> lock(backend_mutex());
+    auto& registry = backend_registry();
+    for (auto& [index, backend] : registry) {
+        backend->synchronize();
+        delete backend;
+    }
+    registry.clear();
+}
+
+}  // namespace vkml

@@ -1,0 +1,82 @@
+#version 450
+
+// Split-K reduction: folds S partial GEMM results into the final output.
+//
+// WHY THIS IS NOT A SEQUENTIAL SUM
+// --------------------------------
+// llama.cpp, CUTLASS and Tensile all reduce split-K partials with a flat
+// sequential loop -- `result += partial[i]` -- which is deterministic but
+// produces the association ((p0+p1)+p2)+... For them that costs nothing,
+// because they make no promise about reduction order.
+//
+// vkml does make that promise. gemm_reg.comp folds K-tiles with a binary-
+// counter carry stack, and the whole point of the M3-02 analysis is that
+// split-K can reproduce that EXACT tree -- bit for bit, not merely to within a
+// tolerance -- provided two conditions hold:
+//
+//   1. every partition covers exactly 2^q K-tiles (the host guarantees this;
+//      the last partition may be shorter);
+//   2. the partials are folded with the SAME push/drain algorithm, which is
+//      what this shader does.
+//
+// Substituting a sequential sum here breaks condition 2 and loses bit-identity
+// in 126 of the simulated cases (docs/SPLIT_K_DESIGN.md 3). The loop below
+// therefore mirrors gemm_reg.comp's phases 5 and 6 exactly, including the
+// operand order of the accumulate (`block += stack[level]`) and the ascending
+// drain into a zero-initialised total.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// Carry-stack depth. ceil(log2(splits)) + 1 is sufficient; the host sizes it
+// from the actual split count so the private array does not cost registers it
+// cannot use. Five covers the 16-way maximum the dispatch rules allow.
+layout(constant_id = 1) const uint SPLIT_LEVELS = 5;
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;   // workspace base: `splits` consecutive M*N*batch slices
+    uint64_t dst;
+    uint     ne;    // elements per slice, i.e. one full output
+    uint     splits;
+} p;
+
+void main() {
+    const uint idx = gl_GlobalInvocationID.x;
+    if (idx >= p.ne) { return; }
+
+    // One invocation owns one output element for the whole reduction, so no
+    // cross-invocation communication is needed and no atomics are involved.
+    // Determinism is structural rather than enforced.
+    float stack[SPLIT_LEVELS];
+    uint count = 0;
+
+    for (uint s = 0; s < p.splits; ++s) {
+        // The slice offset is applied to the ADDRESS, not the index: ne*splits
+        // overflows 32 bits for a large output with a high split count, and a
+        // buffer_reference array must be indexed by a 32-bit scalar. Advancing
+        // the pointer keeps the arithmetic 64-bit, as load4() does in
+        // gemm_reg.comp.
+        float block = F32Buf(p.src + uint64_t(s) * uint64_t(p.ne) * 4ul).v[idx];
+
+        uint c = count;
+        uint level = 0;
+        while ((c & 1u) == 1u) {
+            block += stack[level];
+            c >>= 1u;
+            ++level;
+        }
+        stack[level] = block;
+        ++count;
+    }
+
+    float total = 0.0;
+    for (uint level = 0; level < SPLIT_LEVELS; ++level) {
+        if (((count >> level) & 1u) == 1u) {
+            total += stack[level];
+        }
+    }
+
+    F32Buf(p.dst).v[idx] = total;
+}

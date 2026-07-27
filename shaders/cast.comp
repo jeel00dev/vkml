@@ -1,0 +1,53 @@
+#version 450
+
+// Dtype conversion. Source and destination types are specialisation constants,
+// so one module covers every supported pair without a combinatorial explosion
+// of shader files.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+layout(constant_id = 1) const uint SRC_TYPE = 0;
+layout(constant_id = 2) const uint DST_TYPE = 0;
+
+// Mirrors vkml::DType.
+#define T_F32  0
+#define T_F16  1
+#define T_I32  2
+#define T_I64  3
+#define T_BOOL 4
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;
+    uint64_t dst;
+    uint     n;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    // Everything funnels through double-width float. i64 values beyond 2^24
+    // would lose precision through a 32-bit float, so the intermediate is
+    // float (not double, which this GPU handles poorly) and i64 <-> i32 is the
+    // only pair where that is a real constraint -- documented, and matching
+    // what the CPU backend's static_cast chain does.
+    float value;
+    switch (SRC_TYPE) {
+        case T_F16:  value = float(F16Buf(p.src).v[i]); break;
+        case T_I32:  value = float(I32Buf(p.src).v[i]); break;
+        case T_I64:  value = float(I64Buf(p.src).v[i]); break;
+        case T_BOOL: value = U8Buf(p.src).v[i] != uint8_t(0) ? 1.0 : 0.0; break;
+        default:     value = F32Buf(p.src).v[i]; break;
+    }
+
+    switch (DST_TYPE) {
+        case T_F16:  F16Buf(p.dst).v[i] = float16_t(value); break;
+        case T_I32:  I32Buf(p.dst).v[i] = int(value); break;
+        case T_I64:  I64Buf(p.dst).v[i] = int64_t(value); break;
+        case T_BOOL: U8Buf(p.dst).v[i]  = value != 0.0 ? uint8_t(1) : uint8_t(0); break;
+        default:     F32Buf(p.dst).v[i] = value; break;
+    }
+}

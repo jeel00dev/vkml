@@ -1,0 +1,292 @@
+#version 450
+
+// Stage 7: double-buffered K-tile pipeline.
+//
+// Derived from gemm_reg.comp, which is left UNTOUCHED as the frozen Stage 6
+// baseline -- Stage 6.5 produced a spurious 1.4x by modifying the control arm
+// of its own A/B comparison, so the two kernels are separate pipelines here.
+//
+// WHAT CHANGES
+// ------------
+// Two LDS tile buffers instead of one. While the compute phase consumes tile
+// kt from buffer kt%2, the load phase issues global reads for tile kt+1 into
+// buffer (kt+1)%2. The global-load latency of the next tile is then overlapped
+// with the arithmetic of the current one, instead of the workgroup stalling at
+// a barrier waiting for memory.
+//
+// It also halves the barriers: the single-buffered loop needs one after the
+// loads (tiles visible) and one after the compute (no invocation may overwrite
+// a tile another is still reading). With two buffers the second hazard cannot
+// occur -- writer and reader touch different buffers -- so one barrier per
+// K-tile suffices.
+//
+// Costs 8 KiB more LDS, the resource this device has in surplus (16 KiB of 64).
+//
+// Stage 5: shared-memory tiling plus register blocking.
+//
+// Each invocation owns an RM x RN sub-block of the output tile instead of a
+// single element. Every value loaded from shared memory is then reused RN (for
+// A) or RM (for B) times in registers, which is what raises arithmetic
+// intensity:
+//
+//     Stage 4 (1x1): AI = TILE/4          = 4.0 FLOP/byte
+//     Stage 5 (2x2): AI = BM*BN*BK*2 / ((BM*BK + BK*BN)*4)
+//                       = 32*32*16*2 / (2*32*16*4) = 8.0 FLOP/byte
+//
+// WHY 2x2 AND NOT 4x4 -- a numerical constraint, not a performance one
+// -------------------------------------------------------------------
+// The pairwise carry stack is PER ACCUMULATOR, so its register cost scales with
+// the register block:
+//
+//     2x2 ->  4 accumulators x 12 levels =  52 VGPRs
+//     4x4 -> 16 accumulators x 12 levels = 208 VGPRs
+//
+// RDNA1 has 256 VGPRs per lane, and anything above ~128 collapses occupancy to
+// one or two waves per SIMD. 4x4 is therefore unavailable *while the pairwise
+// guarantee holds*.
+//
+// Dropping to sequential accumulation over K-tiles would free the registers,
+// and it is not an option: at K=4096 with BK=16 that is 272*eps of error
+// against a 156*eps budget under the BACKWARD policy. Loosening the tolerance
+// to buy a bigger register tile is exactly the trade this project forbids.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(constant_id = 1) const uint BM = 32;  // output tile rows per workgroup
+layout(constant_id = 2) const uint BN = 32;  // output tile cols per workgroup
+layout(constant_id = 3) const uint BK = 16;  // K-tile depth
+layout(constant_id = 4) const uint RM = 2;   // rows per invocation
+layout(constant_id = 5) const uint RN = 2;   // cols per invocation
+
+// Carry-stack depth, specialised per dispatch.
+//
+// The stack needs ceil(log2(K/BK)) + 1 levels and no more. Fixing it at a
+// worst-case 12 cost 4 accumulators x 12 = 48 VGPRs -- 57% of this kernel's
+// register budget, spent on numerical bookkeeping rather than arithmetic, and
+// the direct cause of the occupancy loss measured in Stage 5.5 (20 -> 12
+// waves/SIMD). Sizing it from the actual K reclaims most of that WITHOUT
+// touching the numerical guarantee: a shorter stack that still covers the
+// K-tile count folds in exactly the same order.
+layout(constant_id = 6) const uint STACK_LEVELS = 12;
+
+// Vectorised tile loading, enabled by the host only when it can prove the
+// innermost stride of BOTH operands is 1 and the tile widths divide by 4.
+// A transposed or broadcast operand fails that test and takes the scalar path.
+layout(constant_id = 7) const uint VEC4 = 0;
+
+// Widen the compute phase's shared-memory reads of B from scalar to vec2.
+//
+// Only B can be widened without changing the tile layout. Per kk:
+//   A: As[(ty*RM + i)*BK + kk]  -- stride BK between i, NOT contiguous
+//   B: Bs[kk*BN + tx*RN + j]    -- stride 1 between j, contiguous
+// Widening A would require storing the tile transposed with padding, which
+// complicates the load phase; that is deliberately left for a follow-up once
+// this measurement says whether LDS issue rate matters at all.
+//
+// Bank conflicts: the vec2 read is indexed by tx alone, so 16 threads cover
+// banks 0,2,...,30 with a 2-wide access -- 32 distinct banks, conflict-free.
+// The A read depends only on ty, so threads sharing a ty broadcast.
+layout(constant_id = 8) const uint LDS_VEC = 0;
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t a;
+    uint64_t b;
+    uint64_t d;
+    uint     n_out;
+    uint     b1;
+    uint     m;
+    uint     n;
+    uint     k;
+    Operand  op_a;
+    Operand  op_b;
+} p;
+
+shared float As[2 * BM * BK];
+// The B tile, stored at vec2 granularity so the compute phase can read two
+// floats per instruction. Same total LDS as a float array of BK*BN.
+shared vec2 Bs2[2 * ((BK * BN) / 2)];
+
+/// Loads 4 consecutive floats starting at `elem` elements past `base`.
+vec4 load4(uint64_t base, uint elem) {
+    return F32Vec4Buf(base + uint64_t(elem) * 4ul).v[0];
+}
+
+// Loads one K-tile into buffer `buf`. Identical to the single-buffered load
+// phase; only the destination buffer index is new.
+void load_tile(uint buf, uint k_base, uint lid, uint threads, uint tile_r, uint tile_c,
+               uint a_batch, uint b_batch) {
+    for (uint idx4 = lid * 4u; idx4 < BM * BK; idx4 += threads * 4u) {
+        const uint r = idx4 / BK;
+        const uint c = idx4 % BK;
+        const uint gr = tile_r * BM + r;
+        const uint gc = k_base + c;
+
+        if (VEC4 == 1u && gr < p.m && gc + 3u < p.k) {
+            const vec4 v = load4(p.a, a_batch + gr * p.op_a.nb[2] + gc);
+            As[buf * BM * BK + idx4 + 0u] = v.x;
+            As[buf * BM * BK + idx4 + 1u] = v.y;
+            As[buf * BM * BK + idx4 + 2u] = v.z;
+            As[buf * BM * BK + idx4 + 3u] = v.w;
+        } else {
+            for (uint t = 0u; t < 4u; ++t) {
+                const uint cc = c + t;
+                As[buf * BM * BK + idx4 + t] =
+                    (gr < p.m && k_base + cc < p.k)
+                        ? F32Buf(p.a).v[a_batch + gr * p.op_a.nb[2] +
+                                        (k_base + cc) * p.op_a.nb[3]]
+                        : 0.0;
+            }
+        }
+    }
+
+    for (uint idx4 = lid * 4u; idx4 < BK * BN; idx4 += threads * 4u) {
+        const uint r = idx4 / BN;
+        const uint c = idx4 % BN;
+        const uint gr = k_base + r;
+        const uint gc = tile_c * BN + c;
+
+        if (VEC4 == 1u && gr < p.k && gc + 3u < p.n) {
+            const vec4 v = load4(p.b, b_batch + gr * p.op_b.nb[2] + gc);
+            Bs2[buf * ((BK * BN) / 2u) + idx4 / 2u]      = v.xy;
+            Bs2[buf * ((BK * BN) / 2u) + idx4 / 2u + 1u] = v.zw;
+        } else {
+            for (uint t = 0u; t < 4u; ++t) {
+                const uint cc = tile_c * BN + c + t;
+                const float value = (gr < p.k && cc < p.n)
+                                        ? F32Buf(p.b).v[b_batch + gr * p.op_b.nb[2] +
+                                                        cc * p.op_b.nb[3]]
+                                        : 0.0;
+                Bs2[buf * ((BK * BN) / 2u) + (idx4 + t) / 2u][(idx4 + t) % 2u] = value;
+            }
+        }
+    }
+}
+
+void main() {
+    const uint tiles_n = (p.n + BN - 1u) / BN;
+    const uint tiles_m = (p.m + BM - 1u) / BM;
+
+    const uint wg_id  = gl_WorkGroupID.x;
+    const uint tile_c = wg_id % tiles_n;
+    const uint rest0  = wg_id / tiles_n;
+    const uint tile_r = rest0 % tiles_m;
+    const uint rest1  = rest0 / tiles_m;
+    const uint i1     = rest1 % p.b1;
+    const uint i0     = rest1 / p.b1;
+
+    const uint threads_x = BN / RN;   // invocations spanning the tile's columns
+    const uint lid = gl_LocalInvocationID.x;
+    const uint tx  = lid % threads_x;
+    const uint ty  = lid / threads_x;
+
+    // This invocation's first output row/column within the whole matrix.
+    const uint row0 = tile_r * BM + ty * RM;
+    const uint col0 = tile_c * BN + tx * RN;
+
+    const uint a_batch = i0 * p.op_a.nb[0] + i1 * p.op_a.nb[1];
+    const uint b_batch = i0 * p.op_b.nb[0] + i1 * p.op_b.nb[1];
+
+    // One carry stack per owned output. Flattened because GLSL cannot index a
+    // 2-D array of arrays with a dynamic level.
+    // Sized from the specialisation constants, NOT from a fixed maximum.
+    // An earlier version declared these as MAX_REG(4) squared, allocating 192
+    // floats per lane while RM=RN=2 uses only 48 -- 144 wasted VGPRs against a
+    // 256-VGPR budget, which collapsed occupancy and made the register-blocked
+    // kernel SLOWER than the unblocked one. Private arrays may be sized by spec
+    // constants, so the declaration tracks the actual block.
+    float stack[RM * RN * STACK_LEVELS];
+    uint  count = 0;
+
+    const uint n_ktiles = (p.k + BK - 1u) / BK;
+    const uint threads = gl_WorkGroupSize.x;
+
+    // Prologue: fetch the first tile. Nothing to overlap it with yet.
+    load_tile(0u, 0u, lid, threads, tile_r, tile_c, a_batch, b_batch);
+
+    for (uint kt = 0; kt < n_ktiles; ++kt) {
+        const uint cur = kt & 1u;
+        const uint nxt = cur ^ 1u;
+
+        // BARRIER 1 of 1 -- required.
+        //
+        // Makes the tile written by the previous iteration's load_tile visible
+        // to every invocation before any of them reads it. Without it an
+        // invocation may compute on a tile another has not finished writing.
+        //
+        // The single-buffered kernel needs a SECOND barrier after the compute
+        // phase, to stop an invocation overwriting a tile another is still
+        // reading. That hazard cannot arise here: the writer targets buffer
+        // `nxt` while readers touch `cur`. Halving the barrier count is the
+        // second effect of double buffering, alongside the overlap itself.
+        barrier();
+
+        // Issue the next tile's global loads BEFORE computing on the current
+        // one, with no barrier between. The memory latency of these reads is
+        // then covered by the arithmetic below rather than stalling on it.
+        if (kt + 1u < n_ktiles) {
+            load_tile(nxt, (kt + 1u) * BK, lid, threads, tile_r, tile_c, a_batch, b_batch);
+        }
+
+        float acc[RM * RN];
+        for (uint i = 0; i < RM * RN; ++i) { acc[i] = 0.0; }
+
+        for (uint kk = 0; kk < BK; ++kk) {
+            float av[RM];
+            float bv[RN];
+            for (uint i = 0; i < RM; ++i) {
+                av[i] = As[cur * BM * BK + (ty * RM + i) * BK + kk];
+            }
+            if (LDS_VEC == 1u) {
+                const vec2 b2 = Bs2[cur * ((BK * BN) / 2u) + (kk * BN) / 2u + tx];
+                bv[0] = b2.x;
+                bv[1] = b2.y;
+            } else {
+                for (uint j = 0; j < RN; ++j) {
+                    const uint e = kk * BN + tx * RN + j;
+                    bv[j] = Bs2[cur * ((BK * BN) / 2u) + e / 2u][e % 2u];
+                }
+            }
+            for (uint i = 0; i < RM; ++i) {
+                for (uint j = 0; j < RN; ++j) {
+                    acc[i * RN + j] += av[i] * bv[j];
+                }
+            }
+        }
+
+        // Pairwise carry stack, unchanged: one block per K-tile, same fold
+        // order as the single-buffered kernel and as the CPU backend.
+        const uint c0 = count++;
+        for (uint o = 0; o < RM * RN; ++o) {
+            float block = acc[o];
+            uint c = c0;
+            uint level = 0;
+            while ((c & 1u) == 1u) {
+                block += stack[o * STACK_LEVELS + level];
+                c >>= 1u;
+                ++level;
+            }
+            stack[o * STACK_LEVELS + level] = block;
+        }
+    }
+
+    // -- phase 6: drain each stack and store, guarding partial blocks --------
+    for (uint i = 0; i < RM; ++i) {
+        for (uint j = 0; j < RN; ++j) {
+            const uint o = i * RN + j;
+            float total = 0.0;
+            for (uint level = 0; level < STACK_LEVELS; ++level) {
+                if (((count >> level) & 1u) == 1u) {
+                    total += stack[o * STACK_LEVELS + level];
+                }
+            }
+            const uint row = row0 + i;
+            const uint col = col0 + j;
+            if (row < p.m && col < p.n) {
+                F32Buf(p.d).v[((i0 * p.b1 + i1) * p.m + row) * p.n + col] = total;
+            }
+        }
+    }
+}

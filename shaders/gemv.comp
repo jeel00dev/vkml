@@ -1,0 +1,195 @@
+#version 450
+
+// GEMV: one workgroup per OUTPUT ELEMENT.
+//
+// WHY A SEPARATE KERNEL
+// ---------------------
+// gemm_reg.comp tiles the output 32x32. At N=1 that tile computes 31 columns of
+// padding for every real one, and -- more importantly -- the grid collapses to
+// ceil(M/32) workgroups. At M=4096 that is 128 workgroups against 288
+// concurrent slots on this GPU: 44 % fill, and docs/PERFORMANCE-MODEL.md 5g
+// shows throughput falling off a cliff below ~90 %. One workgroup per output
+// element restores the grid to M.
+//
+// WHY THE CROSS-LANE FOLD IS ADJACENT-PAIR AND NOT STRIDE-HALVING
+// ---------------------------------------------------------------
+// This is forced by the numerics, not chosen for convenience. The usual GPU
+// reduction halves the stride:
+//
+//     stride = W/2, W/4, ... 1:   v[t] += v[t + stride]
+//         W=4  ->  (v0+v2) + (v1+v3)
+//
+// vkml's carry stack folds adjacent pairs first:
+//
+//     carry_fold(v0..v3) = (v0+v1) + (v2+v3)
+//
+// Those are different associations, so the stride-halving version would give
+// numerically different -- and therefore NON-BIT-IDENTICAL -- results from
+// gemm_reg. Doubling the stride instead reproduces the carry stack exactly:
+//
+//     stride = 1, 2, 4, ...:      if (t % (2*stride) == 0) v[t] += v[t + stride]
+//         W=4  ->  (v0+v1) + (v2+v3)   == carry_fold
+//
+// WHY THE ROW IS STAGED THROUGH SHARED MEMORY
+// -------------------------------------------
+// A first version had each lane fold a contiguous run of K-tiles straight from
+// global memory. It was bit-exact and 5.6x SLOWER than the tiled kernel it was
+// meant to beat, because at a fixed step every lane read an address 256 bytes
+// from its neighbour's -- 64 distinct cache lines per instruction.
+//
+// That exposed a three-way conflict the theory had not accounted for:
+//
+//   N2  wants blocks of 32 summed SEQUENTIALLY
+//   N1  wants each lane to own a CONTIGUOUS run of tiles
+//   the memory system wants consecutive LANES to read consecutive ADDRESSES
+//
+// Any two are satisfiable together; all three are not, when folding directly
+// from global memory. Shared memory is what breaks the deadlock: the LOAD order
+// and the FOLD order become independent, so the load can be coalesced while the
+// fold stays in the order the numerics require.
+//
+// The pass structure preserves the alignment lemma (docs/SPLIT_K_DESIGN.md 2.3)
+// at a coarser grain. Pass p covers tiles [p*WG, (p+1)*WG) -- an aligned run of
+// WG = 2^6 tiles. Within a pass lane t owns exactly tile p*WG + t, and the
+// adjacent-pair cross-lane fold reassembles those into precisely the canonical
+// subtree for that run. Across passes, a carry stack folds the pass-subtrees in
+// index order. Tiles past the end contribute all-zero blocks, which a balanced
+// tree absorbs without changing the value.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(constant_id = 1) const uint STACK_LEVELS = 8;
+// K-tiles per lane. A power of two, chosen by the host so that WG * CHUNK
+// covers every tile. Power-of-two is the correctness condition, not a
+// convenience: the alignment lemma needs each lane's first tile index to have
+// q low zero bits.
+layout(constant_id = 2) const uint CHUNK = 1;
+layout(constant_id = 3) const uint WG = 64;
+// M4-R2 discriminator. A dummy shared array whose ONLY effect is to raise the
+// workgroup's LDS footprint. Same instructions, same barriers, same memory
+// pattern, same fold order -- so it separates "occupancy limited by LDS" from
+// "cost of the cross-lane reduction", which otherwise predict identically.
+// Zero in production; nothing reads a meaningful value out of it.
+layout(constant_id = 4) const uint PAD_FLOATS = 0;
+const uint PAD_ALLOC = PAD_FLOATS > 0u ? PAD_FLOATS : 1u;
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t a;
+    uint64_t b;
+    uint64_t d;
+    uint     n_out;
+    uint     b1;
+    uint     m;
+    uint     n;
+    uint     k;
+    Operand  op_a;
+    Operand  op_b;
+} p;
+
+shared float part[WG];
+// One K-tile per lane per pass: WG * 32 elements of each operand.
+shared float As[WG * 32];
+shared float Bs[WG * 32];
+shared float pad_buf[PAD_ALLOC];
+
+void main() {
+    // One workgroup owns one output element of a (b0, b1, m, n) tensor.
+    const uint out_id = gl_WorkGroupID.x;
+    if (out_id >= p.n_out) { return; }
+
+    const uint col   = out_id % p.n;
+    const uint rest0 = out_id / p.n;
+    const uint row   = rest0 % p.m;
+    const uint rest1 = rest0 / p.m;
+    const uint i1    = rest1 % p.b1;
+    const uint i0    = rest1 / p.b1;
+
+    const uint a_batch = i0 * p.op_a.nb[0] + i1 * p.op_a.nb[1];
+    const uint b_batch = i0 * p.op_b.nb[0] + i1 * p.op_b.nb[1];
+
+    const uint t        = gl_LocalInvocationID.x;
+    const uint ktiles   = (p.k + 31u) / 32u;
+    const uint per_pass = WG * 32u;
+    const uint passes   = (ktiles + WG - 1u) / WG;
+
+    // Touch the pad so the driver cannot eliminate it. The guard depends on a
+    // runtime push constant, so the compiler cannot prove it dead, but p.k is
+    // never 0xFFFFFFFF for a real dispatch.
+    if (PAD_FLOATS > 0u) {
+        for (uint idx = t; idx < PAD_ALLOC; idx += WG) {
+            pad_buf[idx] = float(p.k + idx);
+        }
+        barrier();
+    }
+
+    float stack[STACK_LEVELS];
+    uint count = 0;
+
+    for (uint pass = 0; pass < passes; ++pass) {
+        const uint base = pass * per_pass;
+
+        // -- coalesced staging: lane t takes elements t, t+WG, t+2*WG, ... ----
+        // Consecutive lanes read consecutive addresses, so a wave's request
+        // covers one contiguous span rather than WG scattered lines.
+        for (uint idx = t; idx < per_pass; idx += WG) {
+            const uint kk = base + idx;
+            const bool live = kk < p.k;
+            As[idx] = live ? F32Buf(p.a).v[a_batch + row * p.op_a.nb[2] + kk * p.op_a.nb[3]]
+                           : 0.0;
+            Bs[idx] = live ? F32Buf(p.b).v[b_batch + kk * p.op_b.nb[2] + col * p.op_b.nb[3]]
+                           : 0.0;
+        }
+        barrier();
+
+        // -- fold in the order the numerics require, now from LDS ------------
+        // Lane t owns tile pass*WG + t: a sequential sum of 32 products, exactly
+        // as gemm_reg.comp does it.
+        float block = 0.0;
+        for (uint j = 0; j < 32u; ++j) {
+            block += As[t * 32u + j] * Bs[t * 32u + j];
+        }
+
+        part[t] = block;
+        barrier();
+
+        // Adjacent pairs, so the tree matches the carry stack rather than the
+        // usual stride-halving reduction.
+        for (uint stride = 1u; stride < WG; stride <<= 1u) {
+            if ((t & ((stride << 1u) - 1u)) == 0u) {
+                part[t] += part[t + stride];
+            }
+            barrier();
+        }
+
+        // part[0] is now the canonical subtree over this pass's WG tiles.
+        // Push it onto the carry stack, which every lane maintains identically
+        // so no broadcast is needed.
+        float pass_sum = part[0];
+        uint c2 = count;
+        uint level = 0;
+        while ((c2 & 1u) == 1u) {
+            pass_sum += stack[level];
+            c2 >>= 1u;
+            ++level;
+        }
+        stack[level] = pass_sum;
+        ++count;
+        barrier();
+    }
+
+    if (t == 0u) {
+        float total = 0.0;
+        if (PAD_FLOATS > 0u && p.k == 0xFFFFFFFFu) {
+            total += pad_buf[0];  // unreachable; keeps pad_buf live
+        }
+        for (uint level = 0; level < STACK_LEVELS; ++level) {
+            if (((count >> level) & 1u) == 1u) {
+                total += stack[level];
+            }
+        }
+        F32Buf(p.d).v[out_id] = total;
+    }
+}

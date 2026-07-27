@@ -1,0 +1,55 @@
+#version 450
+
+// Unary elementwise, covering Copy, Identity and ReLU.
+//
+// One module, many pipelines: the operation is a specialisation constant, so
+// the driver folds the switch away at pipeline creation and each variant is as
+// tight as a dedicated shader. This is why specialisation constants are
+// preferred over #define variants (docs/ARCHITECTURE.md 5.4) -- llama.cpp
+// compiles thousands of blobs largely because its quantised types force it to.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+// Operation selector.
+layout(constant_id = 1) const uint OP = 0;
+// Set when both operands are contiguous, which removes the per-element stride
+// arithmetic entirely. Measured 31x on the CPU (docs/BASELINE-CPU.md); a GPU
+// integer divide is proportionally more expensive still.
+layout(constant_id = 2) const bool CONTIGUOUS = false;
+
+#define OP_COPY 0
+#define OP_RELU 1
+#define OP_NEG  2
+#define OP_ABS  3
+#define OP_EXP  4
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;
+    uint64_t dst;
+    uint     n;
+    Operand  in_op;
+    Operand  out_op;
+} p;
+
+float apply_op(float x) {
+    switch (OP) {
+        case OP_RELU: return x > 0.0 ? x : 0.0;
+        case OP_NEG:  return -x;
+        case OP_ABS:  return abs(x);
+        case OP_EXP:  return exp(x);
+        default:      return x;
+    }
+}
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    const uint si = CONTIGUOUS ? i : operand_offset(i, p.in_op);
+    const uint di = CONTIGUOUS ? i : operand_offset(i, p.out_op);
+
+    F32Buf(p.dst).v[di] = apply_op(F32Buf(p.src).v[si]);
+}

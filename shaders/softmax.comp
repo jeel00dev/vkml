@@ -1,0 +1,138 @@
+#version 450
+
+// Softmax and LogSoftmax over one axis.
+//
+// STRUCTURE: one workgroup per row, three passes inside it
+// -------------------------------------------------------
+// Reuses the reduction pattern from reduce.comp -- one workgroup per output
+// position, shared-memory tree, no global atomics -- but folds three passes
+// into a single dispatch:
+//
+//   1. max over the axis        (tree)
+//   2. sum of exp(x - max)      (tree, pairwise)
+//   3. write the normalised row
+//
+// All three share one workgroup, so the two reductions synchronise with
+// barrier() rather than needing separate dispatches and a global barrier. That
+// is the whole reason softmax is one kernel and not three.
+//
+// NUMERICAL STABILITY
+// -------------------
+// Subtracting the row max before exp() is not an optimisation, it is what makes
+// the kernel usable: exp() overflows to +inf above x = 88 in fp32, and the
+// subsequent division yields NaN. The subtraction cancels exactly in the ratio,
+// so it changes nothing mathematically and costs one extra pass.
+//
+// LogSoftmax returns (x - max) - log(sum) rather than log(softmax(x)). The
+// latter loses everything once exp() underflows to zero -- log(0) = -inf -- and
+// that is precisely the regime where log_softmax is wanted. This mirrors the
+// CPU implementation exactly.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+layout(constant_id = 1) const uint LOG = 0;  // 0 = softmax, 1 = log_softmax
+layout(constant_id = 2) const uint WG = 256;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;
+    uint64_t dst;
+    uint     n_out;      // rows == workgroups
+    uint     n_axis;     // length of the normalised axis
+    Operand  in_kept;
+    Operand  in_axis;
+    Operand  out_kept;
+    Operand  out_axis;
+} p;
+
+shared float s_red[gl_WorkGroupSize.x];
+
+// M4-R4 theory probe. Raises the workgroup's LDS footprint and nothing else,
+// so P1'' can be tested on a kernel it was not derived from. Zero in
+// production; the guard below depends on a runtime value so it is not elided.
+layout(constant_id = 3) const uint PAD_FLOATS = 0;
+const uint PAD_ALLOC = PAD_FLOATS > 0u ? PAD_FLOATS : 1u;
+shared float pad_buf[PAD_ALLOC];
+
+#define STACK_LEVELS 24
+
+void main() {
+    const uint row = gl_WorkGroupID.x;
+    if (row >= p.n_out) { return; }
+
+    const uint lane = gl_LocalInvocationID.x;
+    const uint in_base  = operand_offset(row, p.in_kept);
+    const uint out_base = operand_offset(row, p.out_kept);
+
+    // -- pass 1: row maximum ------------------------------------------------
+    float peak = -1.0 / 0.0;
+    for (uint k = lane; k < p.n_axis; k += WG) {
+        peak = max(peak, F32Buf(p.src).v[in_base + operand_offset(k, p.in_axis)]);
+    }
+    s_red[lane] = peak;
+    barrier();
+
+    for (uint stride = gl_WorkGroupSize.x / 2u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) { s_red[lane] = max(s_red[lane], s_red[lane + stride]); }
+        barrier();
+    }
+    peak = s_red[0];
+    barrier();
+
+    // -- pass 2: sum of exp(x - max), pairwise ------------------------------
+    // Same carry-stack construction as reduce.comp, for the same reason: a flat
+    // accumulator would drift ~n*eps and miss the project's tolerance gate on
+    // long rows.
+    if (PAD_FLOATS > 0u) {
+        for (uint q = gl_LocalInvocationID.x; q < PAD_ALLOC; q += gl_WorkGroupSize.x) {
+            pad_buf[q] = float(p.n_axis + q);
+        }
+        barrier();
+        // Unreachable for any real dispatch, but the compiler cannot prove it,
+        // so pad_buf must be allocated. Without a READ the stores are dead and
+        // the whole array is eliminated -- which silently makes the experiment
+        // vacuous, as a first version of this probe did.
+        if (p.n_axis == 0xFFFFFFFFu) {
+            s_red[gl_LocalInvocationID.x] += pad_buf[gl_LocalInvocationID.x % PAD_ALLOC];
+        }
+    }
+
+    float stack[STACK_LEVELS];
+    uint count = 0;
+    {
+        uint k = lane;
+        while (k < p.n_axis) {
+            float block = 0.0;
+            for (uint b = 0; b < 32u && k < p.n_axis; ++b, k += WG) {
+                block += exp(F32Buf(p.src).v[in_base + operand_offset(k, p.in_axis)] - peak);
+            }
+            uint c = count++;
+            uint level = 0;
+            while ((c & 1u) == 1u) { block += stack[level]; c >>= 1u; ++level; }
+            stack[level] = block;
+        }
+    }
+
+    float acc = 0.0;
+    for (uint level = 0; level < STACK_LEVELS; ++level) {
+        if (((count >> level) & 1u) == 1u) { acc += stack[level]; }
+    }
+
+    s_red[lane] = acc;
+    barrier();
+    for (uint stride = gl_WorkGroupSize.x / 2u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) { s_red[lane] += s_red[lane + stride]; }
+        barrier();
+    }
+    const float denom = s_red[0];
+    const float log_denom = log(denom);
+
+    // -- pass 3: normalise --------------------------------------------------
+    for (uint k = lane; k < p.n_axis; k += WG) {
+        const float shifted = F32Buf(p.src).v[in_base + operand_offset(k, p.in_axis)] - peak;
+        const float v = (LOG == 1u) ? (shifted - log_denom) : (exp(shifted) / denom);
+        F32Buf(p.dst).v[out_base + operand_offset(k, p.out_axis)] = v;
+    }
+}

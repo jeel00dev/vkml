@@ -1,0 +1,29 @@
+# build output
+build/
+build-*/
+out/
+install/
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.hypothesis/
+*.so
+*.pyd
+
+# editors / tools
+.cache/
+compile_commands.json
+.vscode/
+.idea/
+*.swp
+
+# benchmark + test artifacts
+bench/results/*.json
+tests/data/
+
+# third-party reference clones (read-only study material, not vendored)
+third_party/reference/

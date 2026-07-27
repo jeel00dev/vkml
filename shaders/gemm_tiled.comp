@@ -1,0 +1,141 @@
+#version 450
+
+// Stage 4: shared-memory tiled GEMM.
+//
+// WHY TILING, IN ONE NUMBER
+// -------------------------
+// The naive kernel measured 0.25 FLOP/byte of arithmetic intensity: every
+// thread reads 2K floats from global memory to produce one output. It sustained
+// 683 GB/s of global *requests* against a 288 GB/s device -- the excess was L2
+// serving shared columns, which is precisely the reuse tiling makes explicit.
+//
+// A TILE-wide tile loads 2*TILE^2 floats and performs TILE^3 MACs, so
+//
+//     AI = 2*TILE^3 / (2*TILE^2 * 4 bytes) = TILE/4 FLOP/byte
+//
+// At TILE=16 that is 4.0 FLOP/byte, a 16x reduction in global traffic. If the
+// measured speedup falls far short of that, the tile is not being reused and
+// the cause is an indexing bug, not a tuning problem.
+//
+// STRUCTURE: strictly phased, as specified
+//   1. load A tile   2. load B tile   3. barrier
+//   4. compute       5. barrier       6. advance K
+// Loading and computing are deliberately NOT interleaved; double buffering is a
+// later stage and needs a measurement to justify it.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// Tile edge. A specialisation constant, not a #define: Stage 8 tunes this
+// through KernelConfig without recompiling the source, and the shared arrays
+// below are sized from it (legal for spec constants in Vulkan GLSL).
+layout(constant_id = 1) const uint TILE = 16;
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t a;
+    uint64_t b;
+    uint64_t d;
+    uint     n_out;
+    uint     b1;
+    uint     m;
+    uint     n;
+    uint     k;
+    Operand  op_a;   // [B0, B1, M, K]
+    Operand  op_b;   // [B0, B1, K, N]
+} p;
+
+shared float As[TILE * TILE];
+shared float Bs[TILE * TILE];
+
+#define STACK_LEVELS 24
+
+void main() {
+    const uint tiles_n = (p.n + TILE - 1u) / TILE;
+    const uint tiles_m = (p.m + TILE - 1u) / TILE;
+
+    // One workgroup per output tile, per batch element.
+    const uint wg_id   = gl_WorkGroupID.x;
+    const uint tile_c  = wg_id % tiles_n;
+    const uint rest0   = wg_id / tiles_n;
+    const uint tile_r  = rest0 % tiles_m;
+    const uint rest1   = rest0 / tiles_m;
+    const uint i1      = rest1 % p.b1;
+    const uint i0      = rest1 / p.b1;
+
+    const uint lid = gl_LocalInvocationID.x;
+    const uint tx  = lid % TILE;   // column within the tile
+    const uint ty  = lid / TILE;   // row within the tile
+
+    const uint row = tile_r * TILE + ty;
+    const uint col = tile_c * TILE + tx;
+
+    const uint a_batch = i0 * p.op_a.nb[0] + i1 * p.op_a.nb[1];
+    const uint b_batch = i0 * p.op_b.nb[0] + i1 * p.op_b.nb[1];
+
+    // Pairwise carry stack, as in reduce.comp and gemm_naive.comp. Each K tile
+    // contributes one block, so the fold order stays logarithmic in K/TILE and
+    // the BACKWARD tolerance bound continues to hold unchanged.
+    float stack[STACK_LEVELS];
+    uint  count = 0;
+
+    const uint n_ktiles = (p.k + TILE - 1u) / TILE;
+
+    for (uint kt = 0; kt < n_ktiles; ++kt) {
+        const uint k_base = kt * TILE;
+
+        // -- phase 1: load the A tile -------------------------------------
+        // Out-of-range elements load 0.0 rather than being skipped: a zero
+        // contributes nothing to the dot product, so partial edge tiles need no
+        // special case in the compute loop.
+        {
+            const uint a_row = row;
+            const uint a_col = k_base + tx;
+            As[ty * TILE + tx] =
+                (a_row < p.m && a_col < p.k)
+                    ? F32Buf(p.a).v[a_batch + a_row * p.op_a.nb[2] + a_col * p.op_a.nb[3]]
+                    : 0.0;
+        }
+
+        // -- phase 2: load the B tile -------------------------------------
+        {
+            const uint b_row = k_base + ty;
+            const uint b_col = col;
+            Bs[ty * TILE + tx] =
+                (b_row < p.k && b_col < p.n)
+                    ? F32Buf(p.b).v[b_batch + b_row * p.op_b.nb[2] + b_col * p.op_b.nb[3]]
+                    : 0.0;
+        }
+
+        // -- phase 3: both tiles visible to every invocation ---------------
+        barrier();
+
+        // -- phase 4: compute ----------------------------------------------
+        // As[ty][*] is broadcast across the row and Bs[*][tx] is unit-stride,
+        // so neither access pattern conflicts on shared-memory banks.
+        float block = 0.0;
+        for (uint kk = 0; kk < TILE; ++kk) {
+            block += As[ty * TILE + kk] * Bs[kk * TILE + tx];
+        }
+
+        uint c = count++;
+        uint level = 0;
+        while ((c & 1u) == 1u) { block += stack[level]; c >>= 1u; ++level; }
+        stack[level] = block;
+
+        // -- phase 5: no invocation may overwrite a tile still being read ---
+        barrier();
+    }
+
+    float acc = 0.0;
+    for (uint level = 0; level < STACK_LEVELS; ++level) {
+        if (((count >> level) & 1u) == 1u) { acc += stack[level]; }
+    }
+
+    // -- phase 6: write, guarding the partial tiles on the M and N edges ----
+    if (row < p.m && col < p.n) {
+        const uint out_idx = ((i0 * p.b1 + i1) * p.m + row) * p.n + col;
+        F32Buf(p.d).v[out_idx] = acc;
+    }
+}

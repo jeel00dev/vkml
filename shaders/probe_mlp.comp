@@ -1,0 +1,81 @@
+#version 450
+
+// THEORY PROBE (M4-R5). Nothing dispatches this in production.
+//
+// It exists to answer the last open question in the performance model: why
+// different kernels stop hiding latency at different resident-wave counts.
+// GEMV degrades below ~2 waves, softmax below ~4-12, and P1'' predicts the
+// regime but not where its boundary sits.
+//
+// Three hypotheses were live. This shader discriminates all of them at once by
+// varying MEMORY-LEVEL PARALLELISM -- the number of loads a wave has in flight
+// before it consumes any of them -- while holding constant:
+//
+//   * total bytes touched      (the stride pattern covers the same range)
+//   * arithmetic per byte      (exactly one add per element loaded)
+//   * barrier count            (there are none in the main loop)
+//   * private array size       (MLP <= 8 floats, far under A1's 256 B budget)
+//
+// So if the crossover moves with MLP, H2 (arithmetic) and H3 (synchronisation)
+// are excluded, because neither varies here.
+//
+// PAD_FLOATS is the independent knob for resident waves, working exactly as in
+// gemv.comp: it raises the workgroup's LDS footprint and nothing else, so
+// resident workgroups per CU = floor(LDS_budget / LDS_per_workgroup).
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// Loads issued before any is consumed. The whole point of the probe.
+layout(constant_id = 1) const uint MLP = 4;
+// Resident-wave knob. See gemv.comp for why a dead store is not enough.
+layout(constant_id = 2) const uint PAD_FLOATS = 0;
+const uint PAD_ALLOC = PAD_FLOATS > 0u ? PAD_FLOATS : 1u;
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;
+    uint64_t dst;
+    uint     n;
+} p;
+
+shared float pad_buf[PAD_ALLOC];
+
+void main() {
+    const uint tid = gl_GlobalInvocationID.x;
+    const uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+    if (PAD_FLOATS > 0u) {
+        for (uint q = gl_LocalInvocationID.x; q < PAD_ALLOC; q += gl_WorkGroupSize.x) {
+            pad_buf[q] = float(p.n + q);
+        }
+        barrier();
+    }
+
+    float acc = 0.0;
+
+    // MLP independent loads, then MLP consumes. The loads have no dependency on
+    // one another, so the hardware may keep all MLP requests outstanding; the
+    // consumes cannot begin until the first returns. Raising MLP raises bytes
+    // in flight per wave without changing how many bytes are read in total.
+    for (uint i = tid; i < p.n; i += stride * MLP) {
+        float v[MLP];
+        for (uint m = 0; m < MLP; ++m) {
+            const uint idx = i + m * stride;
+            v[m] = idx < p.n ? F32Buf(p.src).v[idx] : 0.0;
+        }
+        for (uint m = 0; m < MLP; ++m) {
+            acc += v[m];
+        }
+    }
+
+    if (PAD_FLOATS > 0u && p.n == 0xFFFFFFFFu) {
+        acc += pad_buf[0];  // unreachable; keeps pad_buf live
+    }
+
+    // One store per invocation, so the write traffic is identical for every MLP.
+    if (tid < p.n) {
+        F32Buf(p.dst).v[tid] = acc;
+    }
+}

@@ -1,0 +1,580 @@
+// Python extension entry point.
+//
+// Exposes Tensor, dtypes, devices and the operator surface. Deliberately does
+// NOT expose Node, Backend, Storage or Allocator: per guardrail 1 in
+// docs/adr/0001-graph-ownership-and-ir.md, the internal representation must be
+// replaceable without breaking Python callers.
+//
+// NumPy and DLPack interop both live here, in one place, because of a trap
+// worth stating once loudly: DLPack (and therefore nanobind's ndarray) measures
+// strides in ELEMENTS, while NumPy and vkml measure them in BYTES. The
+// conversion happens at this boundary and nowhere else.
+
+#include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
+#include <nanobind/stl/function.h>
+#include <nanobind/stl/optional.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/string_view.h>
+#include <nanobind/stl/pair.h>
+#include <nanobind/stl/vector.h>
+
+#include "vkml/api/ops.h"
+#include "vkml/api/tensor.h"
+#include "vkml/autograd/autograd.h"
+#include "vkml/backend/api/backend.h"
+#ifdef VKML_HAS_VULKAN
+#    include "vkml/backend/vulkan/vulkan_backend.h"
+#endif
+#include "vkml/dispatch/executor.h"
+#include "vkml/util/error.h"
+#include "vkml/util/log.h"
+
+#include <cstring>
+#include <memory>
+#include <optional>
+#include <vector>
+
+namespace nb = nanobind;
+using namespace nb::literals;
+using vkml::Device;
+using vkml::DType;
+using vkml::Tensor;
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// dtype bridging
+// ---------------------------------------------------------------------------
+
+nb::dlpack::dtype to_dlpack_dtype(DType dt) {
+    switch (dt) {
+        case DType::F32:  return nb::dtype<float>();
+        case DType::F16:  return nb::dlpack::dtype{static_cast<uint8_t>(nb::dlpack::dtype_code::Float), 16, 1};
+        case DType::I32:  return nb::dtype<int32_t>();
+        case DType::I64:  return nb::dtype<int64_t>();
+        case DType::Bool: return nb::dtype<bool>();
+    }
+    throw vkml::DTypeError("unknown dtype");
+}
+
+DType from_dlpack_dtype(nb::dlpack::dtype dt) {
+    const auto code = static_cast<nb::dlpack::dtype_code>(dt.code);
+    if (dt.lanes != 1) {
+        throw vkml::DTypeError("vectorised dlpack dtypes are not supported");
+    }
+    if (code == nb::dlpack::dtype_code::Float) {
+        if (dt.bits == 32) return DType::F32;
+        if (dt.bits == 16) return DType::F16;
+    } else if (code == nb::dlpack::dtype_code::Int) {
+        if (dt.bits == 32) return DType::I32;
+        if (dt.bits == 64) return DType::I64;
+    } else if (code == nb::dlpack::dtype_code::Bool) {
+        return DType::Bool;
+    }
+    throw vkml::DTypeError("unsupported array dtype; vkml handles f32, f16, i32, i64 and bool");
+}
+
+// ---------------------------------------------------------------------------
+// NumPy / DLPack bridge
+// ---------------------------------------------------------------------------
+
+using AnyArray = nb::ndarray<nb::c_contig, nb::device::cpu>;
+
+Tensor tensor_from_array(const AnyArray& arr, std::optional<DType> dtype, Device device) {
+    std::vector<int64_t> dims;
+    dims.reserve(arr.ndim());
+    for (size_t i = 0; i < arr.ndim(); ++i) {
+        dims.push_back(static_cast<int64_t>(arr.shape(i)));
+    }
+
+    const DType src = from_dlpack_dtype(arr.dtype());
+    Tensor t = Tensor::from_host(arr.data(), dims, src, device);
+    if (dtype.has_value() && *dtype != src) {
+        t = t.to(*dtype);
+    }
+    return t;
+}
+
+/// Copies a tensor out into a fresh buffer that Python owns.
+///
+/// The copy is not avoidable in general: a vkml tensor may be a strided view,
+/// may live on a device, and may not be evaluated yet. Materialising a
+/// contiguous host buffer and handing over ownership via a capsule is the
+/// simple, always-correct answer, and export is not on any hot path.
+nb::ndarray<nb::numpy> tensor_to_numpy(const Tensor& t) {
+    const Tensor c = t.contiguous();
+    c.realize();
+
+    const size_t n = static_cast<size_t>(c.numel());
+    const size_t esz = vkml::dtype_size(c.dtype());
+    const size_t nbytes = n * esz;
+
+    auto* buf = new std::byte[nbytes == 0 ? 1 : nbytes];
+    if (nbytes > 0) {
+        c.to_host(buf);
+    }
+
+    nb::capsule owner(buf, [](void* p) noexcept { delete[] static_cast<std::byte*>(p); });
+
+    const std::vector<int64_t> shape_i64 = c.shape();
+    std::vector<size_t> shape(shape_i64.begin(), shape_i64.end());
+
+    // Strides omitted: the buffer above is contiguous by construction, so
+    // nanobind derives them. This is exactly where a byte/element stride mix-up
+    // would otherwise creep in.
+    return nb::ndarray<nb::numpy>(buf, shape.size(), shape.data(), owner, nullptr,
+                                  to_dlpack_dtype(c.dtype()), nb::device::cpu::value, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Indexing
+// ---------------------------------------------------------------------------
+
+/// Basic __getitem__: integers, slices, and tuples of them.
+///
+/// Integers drop the axis, slices keep it -- NumPy's rule. Advanced indexing
+/// (boolean masks, index arrays) is deliberately absent: it needs gather
+/// kernels that do not exist yet, and silently supporting a subset would be
+/// worse than a clear error.
+Tensor tensor_getitem(const Tensor& self, nb::object key) {
+    std::vector<nb::object> items;
+    if (nb::isinstance<nb::tuple>(key)) {
+        for (nb::handle h : nb::cast<nb::tuple>(key)) {
+            items.emplace_back(nb::borrow(h));
+        }
+    } else {
+        items.push_back(key);
+    }
+
+    if (static_cast<int>(items.size()) > self.ndim()) {
+        throw vkml::IndexError("too many indices for tensor of rank " +
+                               std::to_string(self.ndim()));
+    }
+
+    Tensor out = self;
+    int axis = 0;  // tracks the axis in `out`, which shifts as integers drop axes
+
+    for (nb::object& item : items) {
+        if (nb::isinstance<nb::slice>(item)) {
+            const auto sl = nb::cast<nb::slice>(item);
+            const auto [start, stop, step, len] = sl.compute(static_cast<size_t>(out.size(axis)));
+            if (static_cast<int64_t>(step) <= 0) {
+                throw vkml::IndexError("negative or zero slice steps are not supported");
+            }
+            out = out.slice(axis, static_cast<int64_t>(start), static_cast<int64_t>(stop),
+                            static_cast<int64_t>(step));
+            ++axis;
+        } else if (nb::isinstance<nb::int_>(item)) {
+            int64_t i = nb::cast<int64_t>(item);
+            const int64_t extent = out.size(axis);
+            if (i < 0) {
+                i += extent;
+            }
+            if (i < 0 || i >= extent) {
+                throw vkml::IndexError("index " + std::to_string(nb::cast<int64_t>(item)) +
+                                       " is out of range for axis " + std::to_string(axis) +
+                                       " with extent " + std::to_string(extent));
+            }
+            out = out.slice(axis, i, i + 1).squeeze(axis);
+            // axis is NOT incremented: squeezing removed it, so the next index
+            // applies to what is now this position.
+        } else if (item.is_none()) {
+            out = out.unsqueeze(axis);
+            ++axis;
+        } else {
+            throw vkml::IndexError(
+                "unsupported index type; vkml supports integers, slices and None "
+                "(advanced indexing is not implemented)");
+        }
+    }
+    return out;
+}
+
+std::vector<int> to_axes(const nb::object& obj, int ndim) {
+    if (obj.is_none()) {
+        return {};
+    }
+    if (nb::isinstance<nb::int_>(obj)) {
+        return {nb::cast<int>(obj)};
+    }
+    std::vector<int> axes;
+    for (nb::handle h : nb::cast<nb::sequence>(obj)) {
+        axes.push_back(nb::cast<int>(h));
+    }
+    (void)ndim;
+    return axes;
+}
+
+}  // namespace
+
+NB_MODULE(_vkml_core, m) {
+    m.doc() = "vkml core (C++20 / Vulkan-native deep learning framework)";
+    m.attr("__version__") = "0.1.0";
+
+    // Registration order matters and is counter-intuitive: nanobind tries
+    // exception translators in REVERSE order of registration, so the LAST one
+    // registered is tried FIRST. The base class must therefore go first, or it
+    // catches every derived type and Python only ever sees a bare RuntimeError.
+    nb::exception<vkml::Error>(m, "Error", PyExc_RuntimeError);
+    nb::exception<vkml::InternalError>(m, "InternalError", PyExc_RuntimeError);
+    nb::exception<vkml::NotImplementedError>(m, "NotImplementedError", PyExc_NotImplementedError);
+    nb::exception<vkml::OutOfMemoryError>(m, "OutOfMemoryError", PyExc_MemoryError);
+    nb::exception<vkml::DeviceError>(m, "DeviceError", PyExc_RuntimeError);
+    nb::exception<vkml::IndexError>(m, "IndexError", PyExc_IndexError);
+    nb::exception<vkml::DTypeError>(m, "DTypeError", PyExc_TypeError);
+    nb::exception<vkml::ShapeError>(m, "ShapeError", PyExc_ValueError);
+
+    // -- logging ------------------------------------------------------------
+    nb::enum_<vkml::LogLevel>(m, "LogLevel")
+        .value("TRACE", vkml::LogLevel::Trace)
+        .value("DEBUG", vkml::LogLevel::Debug)
+        .value("INFO", vkml::LogLevel::Info)
+        .value("WARN", vkml::LogLevel::Warn)
+        .value("ERROR", vkml::LogLevel::Error)
+        .value("OFF", vkml::LogLevel::Off);
+
+    m.def("set_log_level", &vkml::set_log_level, "level"_a);
+    m.def("log_level", &vkml::log_level);
+    m.def(
+        "set_log_callback",
+        [](std::function<void(vkml::LogLevel, std::string)> fn) {
+            if (!fn) {
+                vkml::set_log_callback(nullptr);
+                return;
+            }
+            vkml::set_log_callback([fn = std::move(fn)](vkml::LogLevel lvl, std::string_view msg) {
+                const nb::gil_scoped_acquire gil;
+                fn(lvl, std::string(msg));
+            });
+        },
+        "callback"_a.none());
+
+    // -- dtype --------------------------------------------------------------
+    nb::enum_<DType>(m, "dtype")
+        .value("float32", DType::F32)
+        .value("float16", DType::F16)
+        .value("int32", DType::I32)
+        .value("int64", DType::I64)
+        .value("bool", DType::Bool);
+
+    m.def("dtype_size", &vkml::dtype_size, "dtype"_a);
+    m.def("dtype_name", [](DType d) { return std::string(vkml::dtype_name(d)); }, "dtype"_a);
+
+    // -- device -------------------------------------------------------------
+    nb::class_<Device>(m, "device")
+        .def(nb::init<>())
+        .def("__init__",
+             [](Device* self, std::string_view spec) { new (self) Device(Device::parse(spec)); },
+             "spec"_a)
+        .def_prop_ro("index", &Device::index)
+        .def_prop_ro("is_cpu", &Device::is_cpu)
+        .def("__repr__", [](const Device& d) { return "device('" + d.str() + "')"; })
+        .def("__str__", &Device::str)
+        .def("__eq__", [](const Device& a, const Device& b) { return a == b; }, nb::is_operator())
+        .def("__hash__", [](const Device& d) {
+            return static_cast<size_t>(d.index()) * 31U + static_cast<size_t>(d.kind());
+        });
+
+    m.def("cpu_device", &Device::cpu);
+    m.def("available_devices", &vkml::available_devices);
+
+    // -- execution mode -----------------------------------------------------
+    m.def("set_eager", &vkml::set_eager, "enabled"_a,
+          "Realize after every operation. Same results, easier debugging.");
+    m.def("is_eager", &vkml::eager);
+
+    // -- Tensor -------------------------------------------------------------
+    nb::class_<Tensor> tensor(m, "Tensor");
+
+    tensor.def(nb::init<>())
+        .def_prop_ro("shape", [](const Tensor& t) { return nb::tuple(nb::cast(t.shape())); })
+        .def_prop_ro("ndim", &Tensor::ndim)
+        .def_prop_ro("size", &Tensor::numel)
+        .def_prop_ro("dtype", &Tensor::dtype)
+        .def_prop_ro("device", &Tensor::device)
+        .def_prop_ro("strides", &Tensor::strides,
+                     "Strides in BYTES, following NumPy. DLPack uses elements; the "
+                     "conversion happens only at the DLPack boundary.")
+        .def_prop_ro("is_contiguous", &Tensor::is_contiguous)
+        .def("defined", &Tensor::defined,
+             "False for a default-constructed / cleared tensor (e.g. after zero_grad).")
+        .def("__bool__", &Tensor::defined)
+        .def("__len__",
+             [](const Tensor& t) {
+                 if (t.ndim() == 0) {
+                     throw vkml::IndexError("len() of a 0-dimensional tensor");
+                 }
+                 return t.size(0);
+             })
+        .def("__repr__", &Tensor::str)
+        .def("__str__", &Tensor::str);
+
+    // evaluation
+    tensor.def("realize", [](const Tensor& t) { t.realize(); return t; })
+        .def("item", &Tensor::item)
+        .def("numpy", &tensor_to_numpy, "Copy to a new NumPy array.")
+        .def("__dlpack__", [](const Tensor& t, nb::kwargs) { return tensor_to_numpy(t); },
+             "Export via DLPack. Note strides are reported in elements, not bytes.")
+        .def("__dlpack_device__",
+             [](const Tensor&) { return nb::make_tuple(nb::device::cpu::value, 0); });
+
+    // views
+    tensor.def("reshape", [](const Tensor& t, std::vector<int64_t> d) { return t.reshape(d); },
+               "shape"_a)
+        .def("view", [](const Tensor& t, std::vector<int64_t> d) { return t.reshape(d); },
+             "shape"_a)
+        .def("permute", [](const Tensor& t, std::vector<int> p) { return t.permute(p); },
+             "dims"_a)
+        .def("transpose", &Tensor::transpose, "dim0"_a, "dim1"_a)
+        .def_prop_ro("T", [](const Tensor& t) { return t.transpose(-2, -1); })
+        .def("squeeze", &Tensor::squeeze, "dim"_a)
+        .def("unsqueeze", &Tensor::unsqueeze, "dim"_a)
+        .def("broadcast_to",
+             [](const Tensor& t, std::vector<int64_t> d) { return t.broadcast_to(d); }, "shape"_a)
+        .def("contiguous", &Tensor::contiguous)
+        .def("to", &Tensor::to, "dtype"_a)
+        .def("astype", &Tensor::to, "dtype"_a)
+        .def("__getitem__", &tensor_getitem, "key"_a);
+
+    // autograd
+    tensor.def_prop_rw("requires_grad", &Tensor::requires_grad,
+                       [](Tensor& t, bool v) { t.set_requires_grad(v); })
+        .def_prop_rw("grad", &Tensor::grad, [](Tensor& t, const Tensor& g) { t.set_grad(g); })
+        .def("backward", [](const Tensor& t) { vkml::backward(t); },
+             "Accumulate gradients into every leaf that requires grad.")
+        .def("assign_", &Tensor::assign_, "src"_a,
+             "In-place overwrite. Used by optimizers; see the C++ docs for the "
+             "mid-graph hazard.")
+        .def("detach", [](const Tensor& t) { return vkml::detach(t); },
+             "A view of the same data that carries no gradient history.");
+
+    // arithmetic
+    tensor.def("__add__", [](const Tensor& a, const Tensor& b) { return a + b; }, nb::is_operator())
+        .def("__add__", [](const Tensor& a, double s) { return a + s; }, nb::is_operator())
+        .def("__radd__", [](const Tensor& a, double s) { return a + s; }, nb::is_operator())
+        .def("__sub__", [](const Tensor& a, const Tensor& b) { return a - b; }, nb::is_operator())
+        .def("__sub__", [](const Tensor& a, double s) { return a - s; }, nb::is_operator())
+        .def("__rsub__", [](const Tensor& a, double s) { return vkml::add(vkml::neg(a), s); },
+             nb::is_operator())
+        .def("__mul__", [](const Tensor& a, const Tensor& b) { return a * b; }, nb::is_operator())
+        .def("__mul__", [](const Tensor& a, double s) { return a * s; }, nb::is_operator())
+        .def("__rmul__", [](const Tensor& a, double s) { return a * s; }, nb::is_operator())
+        .def("__truediv__", [](const Tensor& a, const Tensor& b) { return a / b; },
+             nb::is_operator())
+        .def("__truediv__", [](const Tensor& a, double s) { return a / s; }, nb::is_operator())
+        .def("__rtruediv__",
+             [](const Tensor& a, double s) { return vkml::mul(vkml::reciprocal(a), s); },
+             nb::is_operator())
+        .def("__pow__", [](const Tensor& a, double s) { return vkml::pow(a, s); },
+             nb::is_operator())
+        .def("__neg__", [](const Tensor& a) { return -a; }, nb::is_operator())
+        .def("__matmul__", [](const Tensor& a, const Tensor& b) { return vkml::matmul(a, b); },
+             nb::is_operator())
+        .def("__lt__", [](const Tensor& a, const Tensor& b) { return vkml::less(a, b); },
+             nb::is_operator())
+        .def("__gt__", [](const Tensor& a, const Tensor& b) { return vkml::greater(a, b); },
+             nb::is_operator())
+        .def("__le__", [](const Tensor& a, const Tensor& b) { return vkml::less_equal(a, b); },
+             nb::is_operator())
+        .def("__ge__", [](const Tensor& a, const Tensor& b) { return vkml::greater_equal(a, b); },
+             nb::is_operator());
+
+    // method forms of common ops, so `x.relu()` works like `vkml.relu(x)`
+    tensor.def("sum", [](const Tensor& t, nb::object ax, bool keep) {
+                   return vkml::sum(t, to_axes(ax, t.ndim()), keep);
+               }, "dim"_a = nb::none(), "keepdim"_a = false)
+        .def("mean", [](const Tensor& t, nb::object ax, bool keep) {
+                 return vkml::mean(t, to_axes(ax, t.ndim()), keep);
+             }, "dim"_a = nb::none(), "keepdim"_a = false)
+        .def("max", [](const Tensor& t, nb::object ax, bool keep) {
+                 return vkml::max(t, to_axes(ax, t.ndim()), keep);
+             }, "dim"_a = nb::none(), "keepdim"_a = false)
+        .def("min", [](const Tensor& t, nb::object ax, bool keep) {
+                 return vkml::min(t, to_axes(ax, t.ndim()), keep);
+             }, "dim"_a = nb::none(), "keepdim"_a = false)
+        .def("relu", &vkml::relu)
+        .def("exp", &vkml::exp)
+        .def("log", &vkml::log)
+        .def("sqrt", &vkml::sqrt)
+        .def("tanh", &vkml::tanh)
+        .def("sigmoid", &vkml::sigmoid)
+        .def("gelu", &vkml::gelu)
+        .def("silu", &vkml::silu)
+        .def("abs", &vkml::abs)
+        .def("softmax", &vkml::softmax, "dim"_a = -1)
+        .def("log_softmax", &vkml::log_softmax, "dim"_a = -1)
+        .def("matmul", &vkml::matmul, "other"_a);
+
+    // -- construction -------------------------------------------------------
+    m.def("from_numpy", &tensor_from_array, "array"_a, "dtype"_a = nb::none(),
+          "device"_a = Device::cpu(),
+          "Create a tensor by copying a C-contiguous CPU array.");
+
+    m.def("zeros", [](std::vector<int64_t> d, DType dt, Device dev) {
+              return Tensor::zeros(d, dt, dev);
+          }, "shape"_a, "dtype"_a = DType::F32, "device"_a = Device::cpu());
+    m.def("ones", [](std::vector<int64_t> d, DType dt, Device dev) {
+              return Tensor::ones(d, dt, dev);
+          }, "shape"_a, "dtype"_a = DType::F32, "device"_a = Device::cpu());
+    m.def("full", [](std::vector<int64_t> d, double v, DType dt, Device dev) {
+              return Tensor::full(d, v, dt, dev);
+          }, "shape"_a, "value"_a, "dtype"_a = DType::F32, "device"_a = Device::cpu());
+    m.def("arange", &Tensor::arange, "start"_a, "stop"_a, "step"_a = 1.0,
+          "dtype"_a = DType::F32, "device"_a = Device::cpu());
+
+    // -- free functions -----------------------------------------------------
+    m.def("add", nb::overload_cast<const Tensor&, const Tensor&>(&vkml::add));
+    m.def("sub", nb::overload_cast<const Tensor&, const Tensor&>(&vkml::sub));
+    m.def("mul", nb::overload_cast<const Tensor&, const Tensor&>(&vkml::mul));
+    m.def("div", nb::overload_cast<const Tensor&, const Tensor&>(&vkml::div));
+    m.def("pow", nb::overload_cast<const Tensor&, const Tensor&>(&vkml::pow));
+    m.def("maximum", &vkml::maximum);
+    m.def("minimum", &vkml::minimum);
+
+    m.def("equal", &vkml::equal);
+    m.def("less", &vkml::less);
+    m.def("greater", &vkml::greater);
+    m.def("less_equal", &vkml::less_equal);
+    m.def("greater_equal", &vkml::greater_equal);
+    m.def("not_equal", &vkml::not_equal);
+
+    m.def("neg", &vkml::neg);
+    m.def("abs", &vkml::abs);
+    m.def("sign", &vkml::sign);
+    m.def("square", &vkml::square);
+    m.def("sqrt", &vkml::sqrt);
+    m.def("rsqrt", &vkml::rsqrt);
+    m.def("reciprocal", &vkml::reciprocal);
+    m.def("exp", &vkml::exp);
+    m.def("log", &vkml::log);
+    m.def("sin", &vkml::sin);
+    m.def("cos", &vkml::cos);
+    m.def("tanh", &vkml::tanh);
+    m.def("sigmoid", &vkml::sigmoid);
+    m.def("relu", &vkml::relu);
+    m.def("gelu", &vkml::gelu);
+    m.def("silu", &vkml::silu);
+    m.def("clamp", &vkml::clamp, "input"_a, "min"_a, "max"_a);
+    m.def("clamp_min", &vkml::clamp_min, "input"_a, "min"_a);
+    m.def("clamp_max", &vkml::clamp_max, "input"_a, "max"_a);
+    m.def("where", &vkml::where, "condition"_a, "x"_a, "y"_a);
+
+    m.def("sum", [](const Tensor& t, nb::object ax, bool k) {
+              return vkml::sum(t, to_axes(ax, t.ndim()), k);
+          }, "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
+    m.def("mean", [](const Tensor& t, nb::object ax, bool k) {
+              return vkml::mean(t, to_axes(ax, t.ndim()), k);
+          }, "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
+    m.def("prod", [](const Tensor& t, nb::object ax, bool k) {
+              return vkml::prod(t, to_axes(ax, t.ndim()), k);
+          }, "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
+    m.def("amax", [](const Tensor& t, nb::object ax, bool k) {
+              return vkml::max(t, to_axes(ax, t.ndim()), k);
+          }, "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
+    m.def("amin", [](const Tensor& t, nb::object ax, bool k) {
+              return vkml::min(t, to_axes(ax, t.ndim()), k);
+          }, "input"_a, "dim"_a = nb::none(), "keepdim"_a = false);
+    m.def("argmax", &vkml::argmax, "input"_a, "dim"_a, "keepdim"_a = false);
+    m.def("argmin", &vkml::argmin, "input"_a, "dim"_a, "keepdim"_a = false);
+
+    m.def("softmax", &vkml::softmax, "input"_a, "dim"_a = -1);
+    m.def("log_softmax", &vkml::log_softmax, "input"_a, "dim"_a = -1);
+    m.def("matmul", &vkml::matmul, "a"_a, "b"_a);
+
+    // -- vulkan -------------------------------------------------------------
+    //
+    // Compiled out entirely when the backend is not built, so the Python layer
+    // can ask `has_vulkan()` and skip rather than fail on a CPU-only build.
+#ifdef VKML_HAS_VULKAN
+    m.attr("has_vulkan") = true;
+    m.def("vulkan_available", &vkml::vulkan_available);
+    m.def("vulkan_device_count", &vkml::vulkan_device_count);
+    m.def("vulkan_device_names", &vkml::vulkan_device_names);
+    m.def(
+        "init_vulkan",
+        [](int index) {
+            // Creating the backend also registers it, so device('vulkan:N')
+            // resolves afterwards.
+            vkml::Backend& b = vkml::vulkan_backend(index);
+            return std::string(b.name());
+        },
+        "index"_a = 0, "Create and register the Vulkan backend for a device.");
+    m.def("vulkan_stats", [](int index) {
+        auto& b = static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index));
+        const vkml::VulkanStats s = b.stats();
+        nb::dict d;
+        d["reserved_bytes"] = s.reserved_bytes;
+        d["in_use_bytes"] = s.in_use_bytes;
+        d["peak_in_use_bytes"] = s.peak_in_use_bytes;
+        d["block_count"] = s.block_count;
+        d["live_allocations"] = s.live_allocations;
+        d["total_allocations"] = s.total_allocations;
+        d["device_allocations"] = s.device_allocations;
+        d["fragmentation"] = s.fragmentation;
+        d["submissions"] = s.submissions;
+        d["dispatches"] = s.dispatches;
+        d["pipelines"] = s.pipelines;
+        return d;
+    }, "index"_a = 0);
+    m.def("vulkan_set_profiling", [](bool on, int index) {
+        static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index)).set_profiling(on);
+    }, "enabled"_a, "index"_a = 0);
+    m.def("vulkan_last_profile", [](int index) {
+        return static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index)).last_profile();
+    }, "index"_a = 0);
+    m.def("vulkan_set_subgroup_override", [](uint32_t size, int index) {
+        static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index))
+            .set_subgroup_override(size);
+    }, "size"_a, "index"_a = 0);
+    m.def("vulkan_pipeline_stats", [](int index) {
+        auto& b = static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index));
+        nb::list out;
+        for (const vkml::PipelineStats& p : b.pipeline_stats()) {
+            nb::dict d;
+            d["name"] = p.name;
+            d["available"] = p.available;
+            d["vgprs"] = p.vgprs;
+            d["sgprs"] = p.sgprs;
+            d["spilled_vgprs"] = p.spilled_vgprs;
+            d["spilled_sgprs"] = p.spilled_sgprs;
+            d["scratch_bytes"] = p.scratch_bytes;
+            d["lds_bytes"] = p.lds_bytes;
+            d["waves_per_simd"] = p.waves_per_simd;
+            d["instructions"] = p.instructions;
+            d["code_bytes"] = p.code_bytes;
+            out.append(d);
+        }
+        return out;
+    }, "index"_a = 0,
+       "Compiler-reported resource usage per compiled pipeline. Empty entries have "
+       "available=False when the driver does not report statistics.");
+    m.def("vulkan_capabilities", [](int index) {
+        const vkml::DeviceCapabilities& c = vkml::vulkan_backend(index).capabilities();
+        nb::dict d;
+        d["fp16_compute"] = c.fp16_compute;
+        d["subgroup_size"] = c.subgroup_size;
+        d["min_subgroup_size"] = c.min_subgroup_size;
+        d["max_subgroup_size"] = c.max_subgroup_size;
+        d["global_float_atomics"] = c.global_float_atomics;
+        d["shared_float_atomics"] = c.shared_float_atomics;
+        d["cooperative_matrix"] = c.cooperative_matrix;
+        d["max_workgroup_invocations"] = c.max_workgroup_invocations;
+        d["max_shared_memory_bytes"] = c.max_shared_memory_bytes;
+        d["total_memory_bytes"] = c.total_memory_bytes;
+        return d;
+    }, "index"_a = 0);
+#else
+    m.attr("has_vulkan") = false;
+    m.def("vulkan_available", [] { return false; });
+    m.def("vulkan_device_count", [] { return 0; });
+#endif
+
+    // -- autograd -----------------------------------------------------------
+    m.def("backward", [](const Tensor& t) { vkml::backward(t); }, "tensor"_a);
+    m.def("backward", [](const Tensor& t, const Tensor& g) { vkml::backward(t, g); },
+          "tensor"_a, "gradient"_a);
+    m.def("detach", &vkml::detach, "tensor"_a);
+    m.def("set_grad_enabled", &vkml::set_grad_enabled, "enabled"_a);
+    m.def("is_grad_enabled", &vkml::grad_enabled);
+}

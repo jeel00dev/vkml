@@ -1,0 +1,97 @@
+#version 450
+
+// THEORY PROBE. Not a compute kernel -- nothing dispatches this in production.
+//
+// It exists to answer one question that gemm_reg.comp cannot: is the register
+// allocator's spill threshold a property of the ALLOCATOR, or of that specific
+// kernel's structure?
+//
+// gemm_reg.comp couples the private carry stack to shared memory, barriers,
+// tile loads and accumulators, so a spill observed there could be caused by any
+// of them. This shader has exactly one private array and nothing else, so a
+// spill can only be attributed to the array.
+//
+// It also reaches array sizes the GEMM kernel cannot. There the stack is
+// RM*RN*STACK_LEVELS with RM*RN in {4,8,16} and STACK_LEVELS bucketed to
+// {4,6,8,10,12,16}, which skips every value between 64 and 80 -- exactly the
+// interval the threshold lies in.
+//
+// The index expression is deliberately dynamic and data-dependent. A constant
+// index would let the compiler promote the array to scalar registers and
+// dissolve the thing being measured.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(constant_id = 1) const uint ASIZE = 16;
+// Second array, for O2: is the 64-float budget per ARRAY or per KERNEL?
+// BSIZE = 0 disables it, so every earlier measurement is reproduced exactly.
+layout(constant_id = 2) const uint BSIZE = 0;
+// A spec constant of 0 cannot size an array, so allocate at least one element
+// and guard the use. At BSIZE = 0 the array is dead and eliminated, which is
+// what makes the single-array measurements reproduce byte for byte.
+const uint BSIZE_ALLOC = BSIZE > 0u ? BSIZE : 1u;
+
+// S1 scope test: a vec4 array, to ask whether the budget counts BYTES or array
+// ELEMENTS. VSIZE vec4s occupy 4*VSIZE floats' worth of registers.
+layout(constant_id = 3) const uint VSIZE = 0;
+const uint VSIZE_ALLOC = VSIZE > 0u ? VSIZE : 1u;
+
+// S2 scope test: 0 selects a CONSTANT index, so the compiler may scalarise the
+// array out of existence rather than allocating it.
+layout(constant_id = 4) const uint DYNAMIC = 1;
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t dst;
+    uint     n;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+
+    float a[ASIZE];
+    for (uint j = 0; j < ASIZE; ++j) {
+        a[j] = float(i + j);
+    }
+
+    // Dynamic, invocation-dependent index: the compiler cannot prove which
+    // element is read, so the array must stay a real indexed array.
+    float s = 0.0;
+    if (DYNAMIC == 1u) {
+        for (uint j = 0; j < ASIZE; ++j) {
+            s += a[(j * 7u + i) % ASIZE];
+        }
+    } else {
+        // Loop-constant index: after unrolling every access is a fixed slot.
+        for (uint j = 0; j < ASIZE; ++j) {
+            s += a[j];
+        }
+    }
+
+    if (VSIZE > 0u) {
+        vec4 v[VSIZE_ALLOC];
+        for (uint j = 0; j < VSIZE; ++j) {
+            v[j] = vec4(float(i + j), float(i), float(j), 1.0);
+        }
+        for (uint j = 0; j < VSIZE; ++j) {
+            const vec4 e = v[(j * 7u + i) % VSIZE];
+            s += e.x + e.y + e.z + e.w;
+        }
+    }
+
+    if (BSIZE > 0u) {
+        float b[BSIZE_ALLOC];
+        for (uint j = 0; j < BSIZE; ++j) {
+            b[j] = float(i * 3u + j);
+        }
+        for (uint j = 0; j < BSIZE; ++j) {
+            s += b[(j * 5u + i) % BSIZE];
+        }
+    }
+
+    if (i < p.n) {
+        F32Buf(p.dst).v[i] = s;
+    }
+}
