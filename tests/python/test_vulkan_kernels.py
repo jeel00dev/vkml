@@ -86,6 +86,19 @@ UNARY = [
     ("neg", V.neg, "any"),
     ("abs", V.abs, "any"),
     ("exp", V.exp, "bounded"),
+    ("sign", V.sign, "any"),
+    ("square", V.square, "any"),
+    ("sqrt", V.sqrt, "positive"),
+    ("rsqrt", V.rsqrt, "positive"),
+    ("reciprocal", V.reciprocal, "nonzero"),
+    ("log", V.log, "positive"),
+    ("erf", V.erf, "any"),
+    ("sin", V.sin, "any"),
+    ("cos", V.cos, "any"),
+    ("tanh", V.tanh, "any"),
+    ("sigmoid", V.sigmoid, "any"),
+    ("gelu", V.gelu, "any"),
+    ("silu", V.silu, "any"),
 ]
 
 
@@ -93,6 +106,55 @@ UNARY = [
 def test_unary(name, fn, domain, layouts):
     n = run_unary(name, fn, layouts, SEED, domain)
     assert n == len(layouts)
+
+
+CLAMP = [
+    ("both", lambda t: V.clamp(t, -1.0, 1.0)),
+    ("min-only", lambda t: V.clamp_min(t, 0.0)),
+    ("max-only", lambda t: V.clamp_max(t, 0.5)),
+]
+
+
+@pytest.mark.parametrize("name,fn", CLAMP, ids=[c[0] for c in CLAMP])
+def test_clamp(name, fn, layouts):
+    """Clamp carries its bounds in push constants rather than in a
+    specialisation constant, and a one-sided clamp sends the absent bound as an
+    infinity -- so the min-only and max-only cases are what exercise that path.
+    """
+    n = run_unary("clamp", fn, layouts, SEED, "any")
+    assert n == len(layouts)
+
+
+def test_clamp_rejects_inverted_bounds():
+    """The shader orders its two comparisons low-then-high, which would resolve
+    an inverted range to the upper bound. That case is unreachable because the
+    API rejects it first; this pins that guarantee, since the shader's comment
+    depends on it."""
+    t = V.tensor(np.zeros((4,), dtype=np.float32), device=gpu_device())
+    with pytest.raises(V.ShapeError):
+        V.clamp(t, 2.0, -2.0)
+
+
+def test_gelu_negative_tail_is_relatively_accurate():
+    """The reason gelu is computed through erfc rather than erf.
+
+    At x = -3, gelu is -4.1e-3, but `1 + erf(x/sqrt2)` forms it by cancelling
+    1.0 against -0.9973 and loses most of the significand. Asserted directly
+    because the layout sweep draws from a uniform distribution over [-3, 3] and
+    would rarely land deep enough in the tail to notice.
+    """
+    x = np.linspace(-6.0, -3.0, 512, dtype=np.float32)
+
+    gpu = V.gelu(V.tensor(x, device=gpu_device())).numpy()
+    cpu = V.gelu(V.tensor(x, device=V.cpu)).numpy()
+
+    ctx = Context(op="gelu", layout=Layout(x.shape), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, gpu, cpu)
+
+    # Guards against passing vacuously: if the domain were ever widened, these
+    # would stop being the small cancelled values the test exists to cover.
+    assert np.abs(cpu).max() < 5e-3
+    assert np.abs(cpu).max() > 0.0
 
 
 def test_exp_ulp_bound_is_the_binding_constraint():

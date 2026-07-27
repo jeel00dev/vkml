@@ -26,7 +26,9 @@
 #include <string_view>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -78,6 +80,11 @@ struct UnaryPush {
     uint64_t src;
     uint64_t dst;
     uint32_t n;
+    // Clamp bounds only. Carried unconditionally rather than behind a separate
+    // pipeline: eight bytes in a 256-byte budget costs nothing, and a spec
+    // constant per bound would double the variant count of every other op.
+    float clamp_lo;
+    float clamp_hi;
     GpuOperand in_op;
     GpuOperand out_op;
 };
@@ -312,7 +319,78 @@ struct CastPush {
 
 static_assert(sizeof(UnaryPush) <= 256, "unary push constants exceed the device budget");
 
-enum class UnaryOp : uint32_t { Copy = 0, Relu = 1, Neg = 2, Abs = 3, Exp = 4 };
+/// Mirrors the OP_* codes in shaders/unary.comp. Codes 0-4 are frozen; adding
+/// an operation appends.
+enum class UnaryOp : uint32_t {
+    Copy       = 0,
+    Relu       = 1,
+    Neg        = 2,
+    Abs        = 3,
+    Exp        = 4,
+    Sign       = 5,
+    Square     = 6,
+    Sqrt       = 7,
+    Rsqrt      = 8,
+    Reciprocal = 9,
+    Log        = 10,
+    Erf        = 11,
+    Sin        = 12,
+    Cos        = 13,
+    Tanh       = 14,
+    Sigmoid    = 15,
+    Gelu       = 16,
+    Silu       = 17,
+    Clamp      = 18,
+};
+
+/// OpKind -> shader code. Returns nullopt for anything this shader does not
+/// implement, so a caller cannot silently get a copy: the previous form used a
+/// `default: Copy` arm, which would have turned a forgotten entry here into
+/// wrong output rather than a loud failure.
+[[nodiscard]] std::optional<UnaryOp> to_unary_op(OpKind k) {
+    switch (k) {
+        case OpKind::Contiguous:
+            return UnaryOp::Copy;
+        case OpKind::Relu:
+            return UnaryOp::Relu;
+        case OpKind::Neg:
+            return UnaryOp::Neg;
+        case OpKind::Abs:
+            return UnaryOp::Abs;
+        case OpKind::Exp:
+            return UnaryOp::Exp;
+        case OpKind::Sign:
+            return UnaryOp::Sign;
+        case OpKind::Square:
+            return UnaryOp::Square;
+        case OpKind::Sqrt:
+            return UnaryOp::Sqrt;
+        case OpKind::Rsqrt:
+            return UnaryOp::Rsqrt;
+        case OpKind::Reciprocal:
+            return UnaryOp::Reciprocal;
+        case OpKind::Log:
+            return UnaryOp::Log;
+        case OpKind::Erf:
+            return UnaryOp::Erf;
+        case OpKind::Sin:
+            return UnaryOp::Sin;
+        case OpKind::Cos:
+            return UnaryOp::Cos;
+        case OpKind::Tanh:
+            return UnaryOp::Tanh;
+        case OpKind::Sigmoid:
+            return UnaryOp::Sigmoid;
+        case OpKind::Gelu:
+            return UnaryOp::Gelu;
+        case OpKind::Silu:
+            return UnaryOp::Silu;
+        case OpKind::Clamp:
+            return UnaryOp::Clamp;
+        default:
+            return std::nullopt;
+    }
+}
 
 /// Per-dispatch tracing, enabled with VKML_VULKAN_DEBUG=1.
 ///
@@ -504,16 +582,33 @@ bool VulkanBackend::supports(const Node& node) const {
     if (is_view_op(node.op) || node.is_leaf()) {
         return true;
     }
-    // Only the M1 kernel set. Everything else falls back to the CPU, which is
-    // what makes incremental porting safe: an unported op is slow, not wrong.
+    // Everything not listed falls back to the CPU, which is what makes
+    // incremental porting safe: an unported op is slow, not wrong. That safety
+    // is also why the gap here went unnoticed for so long -- see
+    // docs/PHASE2-MANIFESTO.md, "starting position".
     switch (node.op) {
         case OpKind::Full:
             return node.dtype == DType::F32;
+        // Unary elementwise: one shader, one specialisation constant per op.
         case OpKind::Contiguous:
         case OpKind::Relu:
         case OpKind::Neg:
         case OpKind::Abs:
         case OpKind::Exp:
+        case OpKind::Sign:
+        case OpKind::Square:
+        case OpKind::Sqrt:
+        case OpKind::Rsqrt:
+        case OpKind::Reciprocal:
+        case OpKind::Log:
+        case OpKind::Erf:
+        case OpKind::Sin:
+        case OpKind::Cos:
+        case OpKind::Tanh:
+        case OpKind::Sigmoid:
+        case OpKind::Gelu:
+        case OpKind::Silu:
+        case OpKind::Clamp:
             return node.dtype == DType::F32;
         case OpKind::Cast:
             return true;
@@ -595,31 +690,54 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
             case OpKind::Relu:
             case OpKind::Neg:
             case OpKind::Abs:
-            case OpKind::Exp: {
+            case OpKind::Exp:
+            case OpKind::Sign:
+            case OpKind::Square:
+            case OpKind::Sqrt:
+            case OpKind::Rsqrt:
+            case OpKind::Reciprocal:
+            case OpKind::Log:
+            case OpKind::Erf:
+            case OpKind::Sin:
+            case OpKind::Cos:
+            case OpKind::Tanh:
+            case OpKind::Sigmoid:
+            case OpKind::Gelu:
+            case OpKind::Silu:
+            case OpKind::Clamp: {
                 const Node& src = *node->src[0];
                 const size_t esz = dtype_size(node->dtype);
 
-                UnaryOp op = UnaryOp::Copy;
-                switch (node->op) {
-                    case OpKind::Relu: op = UnaryOp::Relu; break;
-                    case OpKind::Neg:  op = UnaryOp::Neg;  break;
-                    case OpKind::Abs:  op = UnaryOp::Abs;  break;
-                    case OpKind::Exp:  op = UnaryOp::Exp;  break;
-                    default:           op = UnaryOp::Copy; break;
-                }
+                const std::optional<UnaryOp> op = to_unary_op(node->op);
+                VKML_ASSERT(op.has_value(),
+                            "unary dispatch reached for '{}', which to_unary_op "
+                            "does not map -- supports() and this switch disagree",
+                            op_name(node->op));
 
-                const bool contiguous =
-                    src.shape.is_contiguous() && node->shape.is_contiguous();
+                const bool contiguous = src.shape.is_contiguous() && node->shape.is_contiguous();
 
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg, static_cast<uint32_t>(op),
-                                      contiguous ? 1U : 0U};
+                cfg.spec_constants = {wg, static_cast<uint32_t>(*op), contiguous ? 1U : 0U};
 
                 UnaryPush push{};
                 push.src = address_of(src);
                 push.dst = address_of(*node);
                 push.n = n_elems;
+                // An absent bound becomes an infinity, so the shader needs no
+                // has_lo/has_hi flags and NaN still passes through: neither
+                // `NaN < -inf` nor `NaN > +inf` is true.
+                push.clamp_lo = -std::numeric_limits<float>::infinity();
+                push.clamp_hi = std::numeric_limits<float>::infinity();
+                if (node->op == OpKind::Clamp) {
+                    const auto cp = node->params.get<ClampParams>();
+                    if (cp.has_lo) {
+                        push.clamp_lo = cp.lo;
+                    }
+                    if (cp.has_hi) {
+                        push.clamp_hi = cp.hi;
+                    }
+                }
                 push.in_op = to_gpu_operand(src.shape, esz);
                 push.out_op = to_gpu_operand(node->shape, esz);
 

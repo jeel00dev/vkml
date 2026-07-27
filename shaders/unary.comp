@@ -1,12 +1,15 @@
 #version 450
 
-// Unary elementwise, covering Copy, Identity and ReLU.
+// Unary elementwise. One module, many pipelines: the operation is a
+// specialisation constant, so the driver folds the switch away at pipeline
+// creation and each variant is as tight as a dedicated shader. This is why
+// specialisation constants are preferred over #define variants
+// (docs/ARCHITECTURE.md 5.4) -- llama.cpp compiles thousands of blobs largely
+// because its quantised types force it to.
 //
-// One module, many pipelines: the operation is a specialisation constant, so
-// the driver folds the switch away at pipeline creation and each variant is as
-// tight as a dedicated shader. This is why specialisation constants are
-// preferred over #define variants (docs/ARCHITECTURE.md 5.4) -- llama.cpp
-// compiles thousands of blobs largely because its quantised types force it to.
+// Every operation here must agree with src/backend/cpu/kernels_elementwise.cpp
+// to within the bound declared in tests/python/tolerance.py. Where the two
+// implementations could diverge, the reason is stated at the function.
 
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
@@ -20,27 +23,143 @@ layout(constant_id = 1) const uint OP = 0;
 // integer divide is proportionally more expensive still.
 layout(constant_id = 2) const bool CONTIGUOUS = false;
 
-#define OP_COPY 0
-#define OP_RELU 1
-#define OP_NEG  2
-#define OP_ABS  3
-#define OP_EXP  4
+// Codes 0-4 are frozen: they are what the M1 pipelines were built with, and
+// renumbering would silently change which kernel an existing cache entry runs.
+#define OP_COPY       0
+#define OP_RELU       1
+#define OP_NEG        2
+#define OP_ABS        3
+#define OP_EXP        4
+#define OP_SIGN       5
+#define OP_SQUARE     6
+#define OP_SQRT       7
+#define OP_RSQRT      8
+#define OP_RECIPROCAL 9
+#define OP_LOG        10
+#define OP_ERF        11
+#define OP_SIN        12
+#define OP_COS        13
+#define OP_TANH       14
+#define OP_SIGMOID    15
+#define OP_GELU       16
+#define OP_SILU       17
+#define OP_CLAMP      18
 
 layout(push_constant, scalar) uniform Params {
     uint64_t src;
     uint64_t dst;
     uint     n;
+    // Clamp bounds. An absent bound arrives as -inf / +inf rather than as a
+    // flag, so the comparison below is unconditional and NaN still passes
+    // through untouched -- both `NaN < -inf` and `NaN > +inf` are false.
+    float    clamp_lo;
+    float    clamp_hi;
     Operand  in_op;
     Operand  out_op;
 } p;
 
+const float kInvSqrt2   = 0.70710678118654752440;
+const float kTwoOverSqrtPi = 1.12837916709551257390;
+
+/// Complementary error function for x >= 0. Relative error < 1.2e-7 everywhere
+/// (Numerical Recipes 6.2, `erfcc`).
+///
+/// RELATIVE accuracy is the property that matters and the reason this is not
+/// the more familiar Abramowitz & Stegun 7.1.26. A&S bounds the *absolute*
+/// error of erf at 1.5e-7, which is worthless here: erfc(2.12) is 2.7e-3, so
+/// the same absolute error is a 5.5e-5 relative error, and gelu's tolerance in
+/// that tail is 1.4e-7. The form below keeps full relative accuracy as erfc
+/// decays, which is exactly what gelu needs.
+float erfc_pos(float x) {
+    const float t = 1.0 / (1.0 + 0.5 * x);
+    return t * exp(-x * x - 1.26551223 +
+           t * (1.00002368 + t * (0.37409196 + t * (0.09678418 +
+           t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 +
+           t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+}
+
+/// erf, split at |x| = 0.5.
+///
+/// Above the split, `1 - erfc` is accurate because both terms are O(1). Below
+/// it that subtraction cancels -- erf(0.01) is 1.1e-2 against erfc = 0.989 --
+/// so the Maclaurin series is used instead, where every term carries the
+/// factor x and no cancellation occurs. Seven terms leave a truncation error
+/// of ~3e-8 relative at the split point, below the 1 ULP the policy allows.
+float erf_op(float x) {
+    if (abs(x) < 0.5) {
+        const float z = x * x;
+        const float s = x * (1.0 + z * (-1.0 / 3.0 + z * (1.0 / 10.0 +
+                        z * (-1.0 / 42.0 + z * (1.0 / 216.0 +
+                        z * (-1.0 / 1320.0 + z * (1.0 / 9360.0)))))));
+        return kTwoOverSqrtPi * s;
+    }
+    const float r = 1.0 - erfc_pos(abs(x));
+    return x < 0.0 ? -r : r;
+}
+
+/// Logistic function, in the same two-branch form the CPU kernel uses.
+///
+/// The textbook 1/(1+exp(-x)) relies on exp() overflowing to inf and 1/inf
+/// giving 0 for large negative x. That happens to be right, but the branch
+/// keeps the argument to exp() bounded above by 0 in both tails and does not
+/// depend on the driver's overflow behaviour.
+float sigmoid_op(float x) {
+    if (x >= 0.0) {
+        return 1.0 / (1.0 + exp(-x));
+    }
+    const float e = exp(x);
+    return e / (1.0 + e);
+}
+
+/// Exact GELU: 0.5x(1 + erf(x/sqrt2)), matching torch's default
+/// approximate='none'. The tanh approximation differs by up to ~1e-3, far
+/// outside the 1e-5 gate, and would look like a bug rather than a choice.
+///
+/// Written through erfc rather than erf because `1 + erf(u)` cancels for
+/// u < 0: at x = -3 the true value is 2.7e-3 formed from 1 and -0.997, losing
+/// most of the significand. `1 + erf(u) == erfc(-u)` computes it directly.
+float gelu_op(float x) {
+    const float u = x * kInvSqrt2;
+    const float w = x < 0.0 ? erfc_pos(-u) : 2.0 - erfc_pos(u);
+    return 0.5 * x * w;
+}
+
+/// sign, preserving -0.0 and NaN as torch.sign does. GLSL's built-in sign()
+/// maps -0.0 to +0.0 and is undefined for NaN; the tolerance for this op is
+/// EXACT, so returning x itself in the fall-through is not a detail.
+float sign_op(float x) {
+    if (x > 0.0) { return 1.0; }
+    if (x < 0.0) { return -1.0; }
+    return x;
+}
+
 float apply_op(float x) {
     switch (OP) {
-        case OP_RELU: return x > 0.0 ? x : 0.0;
-        case OP_NEG:  return -x;
-        case OP_ABS:  return abs(x);
-        case OP_EXP:  return exp(x);
-        default:      return x;
+        case OP_RELU:       return x > 0.0 ? x : 0.0;
+        case OP_NEG:        return -x;
+        case OP_ABS:        return abs(x);
+        case OP_EXP:        return exp(x);
+        case OP_SIGN:       return sign_op(x);
+        case OP_SQUARE:     return x * x;
+        case OP_SQRT:       return sqrt(x);
+        case OP_RSQRT:      return inversesqrt(x);
+        case OP_RECIPROCAL: return 1.0 / x;
+        case OP_LOG:        return log(x);
+        case OP_ERF:        return erf_op(x);
+        case OP_SIN:        return sin(x);
+        case OP_COS:        return cos(x);
+        case OP_TANH:       return tanh(x);
+        case OP_SIGMOID:    return sigmoid_op(x);
+        case OP_GELU:       return gelu_op(x);
+        case OP_SILU:       return x * sigmoid_op(x);
+        // Two sequential comparisons rather than the built-in clamp(), which
+        // is undefined when lo > hi and does not say what it does with NaN.
+        // This form passes NaN through, as torch.clamp does. An inverted range
+        // would resolve to the upper bound, but cannot arise: vkml::clamp
+        // rejects it (pinned by test_clamp_rejects_inverted_bounds).
+        case OP_CLAMP:      return x < p.clamp_lo ? p.clamp_lo
+                                 : (x > p.clamp_hi ? p.clamp_hi : x);
+        default:            return x;
     }
 }
 

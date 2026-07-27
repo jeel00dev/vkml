@@ -61,6 +61,7 @@ rsqrt = _C.rsqrt
 reciprocal = _C.reciprocal
 exp = _C.exp
 log = _C.log
+erf = _C.erf
 sin = _C.sin
 cos = _C.cos
 tanh = _C.tanh

@@ -116,6 +116,7 @@ POLICY: dict[str, Tolerance] = {
     "add": Tolerance(Kind.EXACT, note="IEEE-754 correctly rounded"),
     "sub": Tolerance(Kind.EXACT, note="IEEE-754 correctly rounded"),
     "mul": Tolerance(Kind.EXACT, note="IEEE-754 correctly rounded"),
+    "square": Tolerance(Kind.EXACT, note="x*x is a single IEEE-754 multiply"),
     # -- ULP: Vulkan spec allowances ----------------------------------------
     "div": Tolerance(Kind.ULP, ulp=3, note="Vulkan: 2.5 ULP for OpFDiv"),
     "sqrt": Tolerance(Kind.ULP, ulp=3, note="Vulkan: 2.5 ULP"),
@@ -125,6 +126,14 @@ POLICY: dict[str, Tolerance] = {
     "sin": Tolerance(Kind.ULP, ulp=0, atol=2.0**-11,
                      note="Vulkan gives an ABSOLUTE bound 2^-11 inside [-pi, pi], not ULP"),
     "cos": Tolerance(Kind.ULP, ulp=0, atol=2.0**-11, note="as sin"),
+    # No Vulkan built-in exists, so the GPU evaluates its own approximation:
+    # a Maclaurin series below |x|=0.5 and 1-erfc above it, where erfc is the
+    # Numerical Recipes 6.2 form with relative error < 1.2e-7. glibc's erf is
+    # near-correctly-rounded, so the difference is dominated by our truncation
+    # rather than by either library. 1e-6 leaves an order of magnitude of
+    # margin over the 1.2e-7 bound.
+    "erf": Tolerance(Kind.RELATIVE, rtol=1e-6, atol=1e-7,
+                     note="NR 6.2 erfc, rel err < 1.2e-7; series below |x|=0.5"),
     "tanh": Tolerance(Kind.RELATIVE, rtol=1e-5, note="composite of exp and div"),
     "sigmoid": Tolerance(Kind.RELATIVE, rtol=1e-5, note="composite of exp and div"),
     "gelu": Tolerance(Kind.RELATIVE, rtol=1e-5, note="erf-based; libm and GPU erf differ"),
