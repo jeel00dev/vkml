@@ -131,7 +131,6 @@ enum class OpKind : uint16_t {
 
     // -- misc --------------------------------------------------------------
     Where,
-    MaskedFill,
     Dropout,
     Triu,
     Tril,

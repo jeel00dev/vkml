@@ -459,6 +459,45 @@ def test_triu_tril_partition_the_tensor():
         assert np.allclose(total, x), f"triu(d={d}) + tril(d={d - 1}) != x"
 
 
+@pytest.mark.parametrize("mask_shape", [(4, 5), (1, 5), (5,), (4, 1)])
+def test_masked_fill(mask_shape):
+    """Also covers mask broadcasting, which is where the composition earns its
+    keep: `where` already broadcasts all three operands, so masked_fill gets it
+    without implementing a rule of its own."""
+    x = make_input((4, 5), seed=43)
+    m = make_input(mask_shape, seed=44) > 0.0
+
+    v, t = pair(x)
+    vm = V.tensor(m)
+    tm = torch.from_numpy(m.copy())
+
+    assert_close("masked_fill", V.masked_fill(v, vm, -1e9),
+                 torch.masked_fill(t, tm, -1e9), inputs=[x])
+
+
+def test_masked_fill_gradient_skips_filled_positions():
+    """The filled value is a constant, so gradient must reach only the
+    unmasked elements. This is the property attention masking depends on."""
+    x = make_input((3, 4), seed=45)
+    m = np.zeros((3, 4), dtype=bool)
+    m[:, 2:] = True
+
+    v = V.tensor(x, requires_grad=True)
+    t = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    V.sum(V.masked_fill(v, V.tensor(m), 0.0)).backward()
+    torch.masked_fill(t, torch.from_numpy(m.copy()), 0.0).sum().backward()
+
+    assert_close("masked_fill grad", v.grad, t.grad, inputs=[x])
+    assert np.allclose(v.grad.numpy()[:, 2:], 0.0), "filled positions received gradient"
+
+
+def test_masked_fill_rejects_non_bool_mask():
+    v = V.tensor(make_input((3, 3), seed=46))
+    with pytest.raises(V.DTypeError):
+        V.masked_fill(v, V.tensor(make_input((3, 3), seed=47)), 0.0)
+
+
 def test_triu_requires_rank_two():
     v = V.tensor(make_input((5,), seed=42))
     with pytest.raises(V.ShapeError):

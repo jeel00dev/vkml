@@ -93,7 +93,6 @@ constexpr std::array<std::string_view, kNumOps> kOpNames = {
     "adam_step",
 
     "where",
-    "masked_fill",
     "dropout",
     "triu",
     "tril",

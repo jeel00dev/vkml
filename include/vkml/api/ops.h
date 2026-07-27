@@ -63,6 +63,14 @@ namespace vkml {
 /// Elementwise select. `cond` must be Bool; all three broadcast together.
 [[nodiscard]] Tensor where(const Tensor& cond, const Tensor& a, const Tensor& b);
 
+/// Replaces every element where `mask` is true with `value`, following
+/// torch.masked_fill. `mask` must be Bool and broadcastable to `a`'s shape.
+///
+/// Composed from `where` rather than given its own kernel: the replacement is a
+/// rank-0 tensor broadcast with stride 0, so the "fused" version would save one
+/// graph node and four bytes. See the commit that added it.
+[[nodiscard]] Tensor masked_fill(const Tensor& a, const Tensor& mask, double value);
+
 /// Zeroes everything below the `diagonal`-th diagonal of the last two axes,
 /// keeping the upper triangle. `diagonal = 0` keeps the main diagonal;
 /// positive values move the boundary toward the upper-right. Rank must be at

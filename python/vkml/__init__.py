@@ -73,6 +73,7 @@ clamp = _C.clamp
 clamp_min = _C.clamp_min
 clamp_max = _C.clamp_max
 where = _C.where
+masked_fill = _C.masked_fill
 triu = _C.triu
 tril = _C.tril
 

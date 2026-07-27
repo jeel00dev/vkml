@@ -266,6 +266,15 @@ Tensor tri_impl(const Tensor& a, int64_t diagonal, OpKind kind) {
 
 }  // namespace
 
+Tensor masked_fill(const Tensor& a, const Tensor& mask, double value) {
+    VKML_CHECK(mask.dtype() == DType::Bool, DTypeError, "masked_fill() mask must be Bool, got {}",
+               dtype_name(mask.dtype()));
+    check_same_device(a, mask, OpKind::Where);
+    // where() broadcasts all three operands and already rejects incompatible
+    // shapes, so no separate shape check is needed here.
+    return where(mask, scalar_like(a, value), a);
+}
+
 Tensor triu(const Tensor& a, int64_t diagonal) { return tri_impl(a, diagonal, OpKind::Triu); }
 
 Tensor tril(const Tensor& a, int64_t diagonal) { return tri_impl(a, diagonal, OpKind::Tril); }
