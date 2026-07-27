@@ -266,6 +266,50 @@ Tensor tri_impl(const Tensor& a, int64_t diagonal, OpKind kind) {
 
 }  // namespace
 
+Tensor cat(const Tensor& a, const Tensor& b, int axis) {
+    check_same_dtype(a, b, OpKind::Cat);
+    check_same_device(a, b, OpKind::Cat);
+    VKML_CHECK(a.ndim() == b.ndim(), ShapeError, "cat() operands have different ranks: {} and {}",
+               a.ndim(), b.ndim());
+
+    const int ax = normalize_dim(axis, a.ndim());
+    for (int i = 0; i < a.ndim(); ++i) {
+        VKML_CHECK(i == ax || a.size(i) == b.size(i), ShapeError,
+                   "cat() operands differ on axis {} ({} vs {}); only the concatenated axis "
+                   "may differ",
+                   i, a.size(i), b.size(i));
+    }
+
+    // Bound to a named value: shape() returns by value, so calling it twice in
+    // one expression would take begin() and end() from two different
+    // temporaries, both destroyed at the semicolon.
+    std::vector<int64_t> dims = a.shape();
+    dims[static_cast<size_t>(ax)] = a.size(ax) + b.size(ax);
+
+    auto n = make_node(OpKind::Cat, Shape::contiguous(dims, dtype_size(a.dtype())), a.dtype(),
+                       a.device());
+    n->src[0] = a.node();
+    n->src[1] = b.node();
+    n->n_src = 2;
+    n->params.set(AxisParams{.axis = ax});
+    n->requires_grad = grad_enabled() && (a.requires_grad() || b.requires_grad());
+    return finish(std::move(n));
+}
+
+Tensor cat(std::span<const Tensor> tensors, int axis) {
+    VKML_CHECK(!tensors.empty(), ShapeError, "cat() needs at least one tensor");
+    if (tensors.size() == 1) {
+        return tensors[0];
+    }
+    // Left fold. The axis is normalised against the first operand's rank, which
+    // every operand shares, so re-normalising per step cannot change it.
+    Tensor acc = cat(tensors[0], tensors[1], axis);
+    for (size_t i = 2; i < tensors.size(); ++i) {
+        acc = cat(acc, tensors[i], axis);
+    }
+    return acc;
+}
+
 Tensor masked_fill(const Tensor& a, const Tensor& mask, double value) {
     VKML_CHECK(mask.dtype() == DType::Bool, DTypeError, "masked_fill() mask must be Bool, got {}",
                dtype_name(mask.dtype()));

@@ -252,6 +252,23 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
                            sub(Tensor::ones(node.shape.dims(), node.dtype, node.device), out()));
             return;
 
+        // Concatenation is a permutation of elements, so its adjoint is the
+        // inverse permutation: each operand takes back exactly the slice of the
+        // gradient it contributed. Slice is a view, so this allocates nothing
+        // and needs no new kernel.
+        case OpKind::Cat: {
+            const int axis = node.params.get<AxisParams>().axis;
+            const int64_t split = node.src[0]->shape.dim(axis);
+            const int64_t total = node.shape.dim(axis);
+            if (node.src[0]->requires_grad) {
+                accumulate(grads, node.src[0], grad.slice(axis, 0, split));
+            }
+            if (node.src[1]->requires_grad) {
+                accumulate(grads, node.src[1], grad.slice(axis, split, total));
+            }
+            return;
+        }
+
         // A triangular mask is linear and idempotent, so its own transpose is
         // itself: whatever the mask zeroed contributed nothing to the output
         // and must receive no gradient. Applying the same mask to `grad` is the

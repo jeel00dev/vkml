@@ -413,3 +413,40 @@ TEST_CASE("requires_grad propagates through operations") {
     // Comparisons produce Bool, which is not differentiable.
     CHECK_FALSE(vkml::less(a, b).requires_grad());
 }
+
+TEST_CASE("cat infers the joined extent and validates the others") {
+    // Runs here rather than only in the Python suite because this is where the
+    // sanitizers are: the ASan preset covers tests/cpp, and the first version
+    // of cat's shape inference read from two destroyed temporaries -- valid
+    // C++ syntax, garbage results, and invisible to a Python-only test.
+    const Tensor a = t2({2, 3}, {1, 2, 3, 4, 5, 6});
+    const Tensor b = t2({2, 5}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+
+    const Tensor joined = vkml::cat(a, b, 1);
+    CHECK(joined.ndim() == 2);
+    CHECK(joined.size(0) == 2);
+    CHECK(joined.size(1) == 8);
+
+    // Negative axes normalise.
+    CHECK(vkml::cat(a, b, -1).size(1) == 8);
+
+    // Only the joined axis may differ.
+    CHECK_THROWS_AS(discard(vkml::cat(a, b, 0)), vkml::ShapeError);
+    // Ranks must match.
+    const Tensor r1 = t2({2}, {1, 2});
+    CHECK_THROWS_AS(discard(vkml::cat(a, r1, 0)), vkml::ShapeError);
+}
+
+TEST_CASE("cat values land in the right places") {
+    const Tensor a = t2({2, 2}, {1, 2, 3, 4});
+    const Tensor b = t2({2, 1}, {5, 6});
+
+    // Row-major, so the joined axis interleaves: [[1, 2, 5], [3, 4, 6]].
+    // Interleaving is what a naive "append the second buffer" implementation
+    // gets wrong, and it only shows up when the axis is not the outermost.
+    check_close(host(vkml::cat(a, b, 1)), {1, 2, 5, 3, 4, 6});
+
+    // Along axis 0 the operands stay contiguous blocks.
+    const Tensor c = t2({1, 2}, {7, 8});
+    check_close(host(vkml::cat(a, c, 0)), {1, 2, 3, 4, 7, 8});
+}

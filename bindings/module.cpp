@@ -516,6 +516,9 @@ NB_MODULE(_vkml_core, m) {
     m.def("clamp_min", &vkml::clamp_min, "input"_a, "min"_a);
     m.def("clamp_max", &vkml::clamp_max, "input"_a, "max"_a);
     m.def("where", &vkml::where, "condition"_a, "x"_a, "y"_a);
+    m.def(
+        "cat", [](const std::vector<vkml::Tensor>& ts, int axis) { return vkml::cat(ts, axis); },
+        "tensors"_a, "axis"_a = 0);
     m.def("masked_fill", &vkml::masked_fill, "input"_a, "mask"_a, "value"_a);
     m.def("triu", &vkml::triu, "input"_a, "diagonal"_a = 0);
     m.def("tril", &vkml::tril, "input"_a, "diagonal"_a = 0);

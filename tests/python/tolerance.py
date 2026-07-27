@@ -90,6 +90,7 @@ POLICY: dict[str, Tolerance] = {
     # -- exact: bit movement or selection only ------------------------------
     "fill": Tolerance(Kind.EXACT, note="writes a constant; no arithmetic"),
     "copy": Tolerance(Kind.EXACT, note="moves bits"),
+    "cat": Tolerance(Kind.EXACT, note="moves bits; no arithmetic"),
     "contiguous": Tolerance(Kind.EXACT, note="moves bits"),
     "identity": Tolerance(Kind.EXACT),
     "relu": Tolerance(Kind.EXACT, note="max(x, 0): a select, not an operation"),

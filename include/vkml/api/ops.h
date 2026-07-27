@@ -63,6 +63,19 @@ namespace vkml {
 /// Elementwise select. `cond` must be Bool; all three broadcast together.
 [[nodiscard]] Tensor where(const Tensor& cond, const Tensor& a, const Tensor& b);
 
+/// Joins tensors along `axis`. Every input must share the same rank, dtype,
+/// device and extents on every axis except `axis`.
+///
+/// The graph node is binary, so a list of N is folded left into N-1 nodes.
+/// That copies O(N^2) bytes for equal-sized inputs where O(N) is achievable
+/// with an n-ary node. Deferred deliberately: N is 2 for every use in scope
+/// (residual joins, UNet skips), and an n-ary node needs per-source extents in
+/// push constants for a case that does not yet exist.
+[[nodiscard]] Tensor cat(std::span<const Tensor> tensors, int axis = 0);
+
+/// Two-input form, which is what the graph node actually is.
+[[nodiscard]] Tensor cat(const Tensor& a, const Tensor& b, int axis = 0);
+
 /// Replaces every element where `mask` is true with `value`, following
 /// torch.masked_fill. `mask` must be Bool and broadcastable to `a`'s shape.
 ///

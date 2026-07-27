@@ -228,9 +228,67 @@ void k_slice_backward(Node& out) {
     }
 }
 
+/// Joins two operands along one axis.
+///
+/// The linear index is split into (outer, along, inner) around the
+/// concatenated axis: `inner` is the product of the extents after it, `outer`
+/// everything before, so an element's position along the axis is
+/// `(i / inner) % extent`. Positions below the first operand's extent come from
+/// it, the rest from the second with the offset subtracted.
+///
+/// Each source index is rebuilt using the *source's* own axis extent, which is
+/// what makes this correct when the two differ -- reusing the output's extent
+/// would read past the end of the shorter operand.
+///
+/// Byte-wise rather than typed: concatenation moves elements without
+/// interpreting them, so one implementation serves every dtype.
+void k_cat(Node& out) {
+    const Node& a = *out.src[0];
+    const Node& b = *out.src[1];
+    VKML_ASSERT(out.dtype == a.dtype && out.dtype == b.dtype, "cat must not change dtype");
+
+    const int64_t n = out.shape.numel();
+    if (n == 0) {
+        return;
+    }
+
+    const int axis = out.params.get<AxisParams>().axis;
+    const int nd = out.shape.ndim();
+
+    int64_t inner = 1;
+    for (int i = axis + 1; i < nd; ++i) {
+        inner *= out.shape.dim(i);
+    }
+    const int64_t out_extent = out.shape.dim(axis);
+    const int64_t a_extent = a.shape.dim(axis);
+    const int64_t b_extent = b.shape.dim(axis);
+
+    const size_t esz = dtype_size(out.dtype);
+    auto* dst = static_cast<std::byte*>(out.data());
+    const auto* a_src = static_cast<const std::byte*>(a.data());
+    const auto* b_src = static_cast<const std::byte*>(b.data());
+
+    for (int64_t i = 0; i < n; ++i) {
+        const int64_t rest = i % inner;
+        const int64_t along = (i / inner) % out_extent;
+        const int64_t outer = i / (inner * out_extent);
+
+        const bool from_a = along < a_extent;
+        const int64_t extent = from_a ? a_extent : b_extent;
+        const int64_t pos = from_a ? along : along - a_extent;
+        const int64_t linear = (outer * extent + pos) * inner + rest;
+
+        const Node& src = from_a ? a : b;
+        const std::byte* base = from_a ? a_src : b_src;
+        std::memcpy(dst + linear_to_offset(i, out.shape),
+                    base + linear_to_offset(linear, src.shape), esz);
+    }
+}
+
 }  // namespace
 
 void register_movement_kernels(KernelTable& t) {
+    t[static_cast<size_t>(OpKind::Cat)] = k_cat;
     t[static_cast<size_t>(OpKind::SliceBackward)] = k_slice_backward;
     t[static_cast<size_t>(OpKind::Contiguous)] = k_contiguous;
     t[static_cast<size_t>(OpKind::Cast)] = k_cast;

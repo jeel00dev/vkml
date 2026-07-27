@@ -268,6 +268,54 @@ def test_pow_returns_nan_for_negative_base_with_fractional_exponent():
 
 
 # ---------------------------------------------------------------------------
+# Concatenation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape_a,shape_b,axis", [
+    ((2, 3), (2, 3), 0),
+    ((2, 3), (2, 3), 1),      # inner axis: the interleaving case
+    ((2, 3), (2, 5), 1),      # unequal extents on the joined axis
+    ((4, 2), (1, 2), 0),
+    ((2, 3, 4), (2, 3, 4), 1),
+    ((2, 3, 4), (2, 3, 2), 2),
+    ((1,), (7,), 0),
+    ((2, 3), (0, 3), 0),      # empty operand
+])
+def test_cat_on_gpu(shape_a, shape_b, axis):
+    """Joining on an inner axis is the case that separates a correct kernel
+    from one that just appends buffers: the operands interleave, and each
+    source index must be rebuilt with its own extent rather than the output's."""
+    rng = np.random.default_rng(SEED)
+    a = make_data(rng, shape_a, "any")
+    b = make_data(rng, shape_b, "any")
+
+    def run(dev):
+        return V.cat([V.tensor(a, device=dev), V.tensor(b, device=dev)], axis).numpy()
+
+    ctx = Context(op="cat", layout=Layout(shape_a, "broadcast", shape_b),
+                  dtype="f32", seed=SEED, inputs=[a, b])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+def test_cat_of_strided_operands_on_gpu():
+    """Both operands transposed, so the kernel resolves two independent stride
+    sets while also remapping the index across the join."""
+    rng = np.random.default_rng(SEED)
+    a = make_data(rng, (4, 3), "any")
+    b = make_data(rng, (4, 5), "any")
+
+    def run(dev):
+        ta = V.tensor(a, device=dev).transpose(0, 1)   # (3, 4)
+        tb = V.tensor(b, device=dev).transpose(0, 1)   # (5, 4)
+        return V.cat([ta, tb], 0).numpy()
+
+    ctx = Context(op="cat", layout=Layout((4, 3), "transpose", (0, 1)),
+                  dtype="f32", seed=SEED, inputs=[a, b])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+# ---------------------------------------------------------------------------
 # Triangular masks
 # ---------------------------------------------------------------------------
 

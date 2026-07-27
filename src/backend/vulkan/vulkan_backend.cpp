@@ -7,6 +7,7 @@
 
 #include "vkml/spv/binary.h"
 #include "vkml/spv/cast.h"
+#include "vkml/spv/cat.h"
 #include "vkml/spv/fill.h"
 #include "vkml/spv/gemm_naive.h"
 #include "vkml/spv/gemm_db.h"
@@ -130,6 +131,22 @@ struct TriPush {
 };
 
 static_assert(sizeof(TriPush) <= 256, "tri push constants exceed the device budget");
+
+struct CatPush {
+    uint64_t a;
+    uint64_t b;
+    uint64_t dst;
+    uint32_t n;
+    uint32_t inner;
+    uint32_t out_extent;
+    uint32_t a_extent;
+    uint32_t b_extent;
+    GpuOperand a_op;
+    GpuOperand b_op;
+    GpuOperand out_op;
+};
+
+static_assert(sizeof(CatPush) <= 256, "cat push constants exceed the device budget");
 
 struct ReducePush {
     uint64_t src;
@@ -694,6 +711,9 @@ bool VulkanBackend::supports(const Node& node) const {
         // rather than trusted across a layer boundary.
         case OpKind::Triu:
         case OpKind::Tril: return node.dtype == DType::F32 && node.shape.ndim() >= 2;
+        // The CPU kernel is byte-wise and so dtype-generic; the shader reads
+        // through F32Buf, so it claims only F32 and everything else falls back.
+        case OpKind::Cat: return node.dtype == DType::F32 && binary_srcs_are_f32(node);
         case OpKind::Cast: return true;
         case OpKind::Sum:
         case OpKind::Mean:
@@ -883,6 +903,47 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 rec.dispatch(
                     pipes.get("binary", spv::binary, spv::binary_size, sizeof(BinaryPush), cfg),
                     &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::Cat: {
+                const Node& a = *node->src[0];
+                const Node& b = *node->src[1];
+                const size_t esz = dtype_size(node->dtype);
+                const int axis = node->params.get<AxisParams>().axis;
+                const int nd = node->shape.ndim();
+
+                uint32_t inner = 1;
+                for (int i = axis + 1; i < nd; ++i) {
+                    inner *= static_cast<uint32_t>(node->shape.dim(i));
+                }
+
+                const bool contiguous = a.shape.is_contiguous() && b.shape.is_contiguous() &&
+                                        node->shape.is_contiguous();
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg, contiguous ? 1U : 0U};
+
+                CatPush push{};
+                push.a = address_of(a);
+                push.b = address_of(b);
+                push.dst = address_of(*node);
+                push.n = n_elems;
+                push.inner = inner;
+                push.out_extent = static_cast<uint32_t>(node->shape.dim(axis));
+                push.a_extent = static_cast<uint32_t>(a.shape.dim(axis));
+                push.b_extent = static_cast<uint32_t>(b.shape.dim(axis));
+                push.a_op = to_gpu_operand(a.shape, esz);
+                push.b_op = to_gpu_operand(b.shape, esz);
+                push.out_op = to_gpu_operand(node->shape, esz);
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "cat", cfg, sizeof(CatPush), (n_elems + wg - 1) / wg,
+                                   impl_->caps.subgroup_size);
+                }
+                rec.dispatch(pipes.get("cat", spv::cat, spv::cat_size, sizeof(CatPush), cfg), &push,
+                             sizeof(push), n_elems);
                 break;
             }
 

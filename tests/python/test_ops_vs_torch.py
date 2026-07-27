@@ -459,6 +459,58 @@ def test_triu_tril_partition_the_tensor():
         assert np.allclose(total, x), f"triu(d={d}) + tril(d={d - 1}) != x"
 
 
+@pytest.mark.parametrize("axis", [0, 1, -1])
+@pytest.mark.parametrize("shapes", [
+    [(2, 3), (2, 3)],
+    [(2, 3), (2, 5)],          # unequal along the joined axis
+    [(1, 4), (3, 4)],
+    [(2, 3), (2, 3), (2, 3)],  # three operands: exercises the left fold
+    [(2, 3, 4), (2, 3, 4)],
+])
+def test_cat(shapes, axis):
+    if axis >= len(shapes[0]):
+        pytest.skip("axis out of range for this rank")
+
+    arrays = [make_input(s, seed=50 + i) for i, s in enumerate(shapes)]
+    try:
+        want = torch.cat([torch.from_numpy(a.copy()) for a in arrays], dim=axis)
+    except RuntimeError:
+        pytest.skip("shape combination is not concatenable on this axis")
+
+    got = V.cat([V.tensor(a) for a in arrays], axis)
+    assert_close(f"cat(axis={axis})", got, want, inputs=arrays)
+
+
+@pytest.mark.parametrize("axis", [0, 1])
+def test_cat_gradients_split_back(axis):
+    """Concatenation is a permutation, so each operand must take back exactly
+    the slice it contributed. Different-sized operands and a non-uniform
+    upstream gradient are what make a swapped or mis-offset slice visible."""
+    a = make_input((3, 4), seed=60)
+    b = make_input((5, 4) if axis == 0 else (3, 2), seed=61)
+
+    va = V.tensor(a, requires_grad=True)
+    vb = V.tensor(b, requires_grad=True)
+    ta = torch.from_numpy(a.copy()).requires_grad_(True)
+    tb = torch.from_numpy(b.copy()).requires_grad_(True)
+
+    # Weight by position so a mis-offset slice cannot cancel out.
+    vw = V.cat([va, vb], axis)
+    tw = torch.cat([ta, tb], dim=axis)
+    V.sum(V.mul(vw, vw)).backward()
+    (tw * tw).sum().backward()
+
+    assert_close("cat grad a", va.grad, ta.grad, inputs=[a])
+    assert_close("cat grad b", vb.grad, tb.grad, inputs=[b])
+
+
+def test_cat_rejects_mismatched_non_joined_axis():
+    a = V.tensor(make_input((2, 3), seed=62))
+    b = V.tensor(make_input((2, 4), seed=63))
+    with pytest.raises(V.ShapeError):
+        V.cat([a, b], 0)  # differs on axis 1, which is not the joined axis
+
+
 @pytest.mark.parametrize("mask_shape", [(4, 5), (1, 5), (5,), (4, 1)])
 def test_masked_fill(mask_shape):
     """Also covers mask broadcasting, which is where the composition earns its

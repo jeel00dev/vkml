@@ -1,0 +1,61 @@
+#version 450
+
+// Joins two operands along one axis.
+//
+// The output index is split into (outer, along, inner) around the concatenated
+// axis: `inner` is the product of the extents after it, `outer` everything
+// before, so an element's position along the axis is `(i / inner) % extent`.
+// Positions below the first operand's extent come from it, the rest from the
+// second with the offset subtracted.
+//
+// Each source index is rebuilt with the *source's* own axis extent. Reusing the
+// output's extent would read past the end of the shorter operand -- the same
+// trap the CPU kernel documents, and the reason both compute it the same way.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+// Only removes the operand-offset mapping. The index arithmetic below is
+// required either way, because a source position is never equal to the output
+// position except in the degenerate case of an empty second operand.
+layout(constant_id = 1) const bool CONTIGUOUS = false;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t a;
+    uint64_t b;
+    uint64_t dst;
+    uint     n;
+    uint     inner;       // product of extents after the joined axis
+    uint     out_extent;  // joined axis extent of the output
+    uint     a_extent;    // joined axis extent of the first operand
+    uint     b_extent;    // and of the second
+    Operand  a_op;
+    Operand  b_op;
+    Operand  out_op;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    const uint rest  = i % p.inner;
+    const uint along = (i / p.inner) % p.out_extent;
+    const uint outer = i / (p.inner * p.out_extent);
+
+    const bool from_a = along < p.a_extent;
+    const uint extent = from_a ? p.a_extent : p.b_extent;
+    const uint pos    = from_a ? along : along - p.a_extent;
+    const uint linear = (outer * extent + pos) * p.inner + rest;
+
+    const uint di = CONTIGUOUS ? i : operand_offset(i, p.out_op);
+
+    if (from_a) {
+        const uint si = CONTIGUOUS ? linear : operand_offset(linear, p.a_op);
+        F32Buf(p.dst).v[di] = F32Buf(p.a).v[si];
+    } else {
+        const uint si = CONTIGUOUS ? linear : operand_offset(linear, p.b_op);
+        F32Buf(p.dst).v[di] = F32Buf(p.b).v[si];
+    }
+}
