@@ -1,5 +1,10 @@
 # vkML Engineering Skills — Architecture
 
+> **SUPERSEDED, 2026-07-27.** This 28-skill architecture was explored and rejected in favour of
+> a single engineering specification, `.claude/skills/cpp_spec/SKILL.md`. It is retained as a
+> record of the design and of the reasoning behind the boundaries — several of which survive
+> inside the single skill — but **it is not the plan.** Do not implement it.
+
 **Status:** design proposal, revision 3. Pre-implementation; no skill has been written.
 **Date:** 2026-07-27
 **Supersedes:** revisions 1 and 2 (same path, 2026-07-27)
