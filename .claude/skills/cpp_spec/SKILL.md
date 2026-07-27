@@ -160,6 +160,35 @@ Skipping one is a decision that must be stated.
 | 12 | **Review** | Run the handbook's checklist against your own work before calling it done |
 | 13 | **Commit** | Propose logical commits |
 
+### When the premise is disproven
+
+Steps 2 and 3 exist partly to **test the request's premise**, not only to prepare for it. Often
+enough to matter, reading the code contradicts the reason the task was set: the thing is already
+done, the cost is somewhere else, or the proposed fix would not achieve the stated goal.
+
+**That finding is the deliverable. Stop; do not implement the literal request anyway.**
+
+Report it in this order:
+
+| | |
+|---|---|
+| **The premise** | What the task assumed — stated plainly, so the correction is legible |
+| **The evidence** | What you measured or read. Measured, not inferred, and cheap enough to reproduce |
+| **What that makes the task** | Already done · differently shaped · not worth doing · blocked on something else |
+| **The options** | Each with its cost, and a recommendation you are willing to defend (§3) |
+
+Then **do the part that is unambiguously valuable, and hold the part that needs a decision.** A
+disproven premise rarely invalidates everything — there is usually adjacent work that was needed
+regardless, and doing it keeps the report from being a bill for time spent.
+
+The failure to avoid is completing the task as written so it can be marked done. **A task whose
+premise is wrong is not completed by doing it** — it is completed by saying so. Marking it done
+buries the finding in a commit nobody re-reads, and the wrong premise survives to shape the next
+decision.
+
+This applies to a plan you wrote yourself. Your own earlier reasoning is a premise like any
+other, and is owed the same scepticism (P5, §1).
+
 ## 7. Agent conduct
 
 For the agent reading this. These are the failure modes that cost the most, and several have
@@ -230,6 +259,12 @@ architectural problems, then fix them — before responding, not after being tol
 
 **Flag dangerous edits explicitly.** Say so if the change touches: behaviour · complexity ·
 memory · threading · ABI · public API · determinism.
+
+**Structure the report so it can be acted on.** Lead with what changed and whether it is verified;
+then anything that contradicts what was expected; then a decision you need, stated as options with
+a recommendation. Findings that change what someone would do next come before detail that merely
+supports them, and a decision left implicit is a decision not made. If the premise was disproven,
+use the order above (§6).
 
 **Actively look for the common failure modes** rather than waiting for review to find them:
 off-by-one · integer overflow · lifetime and dangling · missing error handling · resource leaks ·
