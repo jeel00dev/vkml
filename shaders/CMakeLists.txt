@@ -12,6 +12,7 @@ find_program(VKML_GLSLC glslc REQUIRED)
 set(VKML_SHADERS
     fill.comp
     unary.comp
+    binary.comp
     cast.comp
     reduce.comp
     softmax.comp

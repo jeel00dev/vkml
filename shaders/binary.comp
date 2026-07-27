@@ -1,0 +1,128 @@
+#version 450
+
+// Binary elementwise: arithmetic and comparison.
+//
+// One module, many pipelines. The operation is a specialisation constant, so
+// the driver folds both switches away at pipeline creation and each variant is
+// as tight as a dedicated shader (docs/ARCHITECTURE.md 5.4).
+//
+// Comparisons live here rather than in their own shader because everything
+// except the final store is identical -- same broadcast indexing, same operand
+// layout, same bounds check. Only the destination element type differs, and
+// that is decided at pipeline creation too.
+//
+// Every operation must agree with src/backend/cpu/kernels_elementwise.cpp to
+// within the bound declared in tests/python/tolerance.py. add, sub, mul, the
+// comparisons and max/min are all EXACT there, so "agree" means bit-for-bit.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+// Operation selector.
+layout(constant_id = 1) const uint OP = 0;
+// Set when all three operands are contiguous, which removes the per-element
+// stride arithmetic entirely.
+layout(constant_id = 2) const bool CONTIGUOUS = false;
+
+#define OP_ADD 0
+#define OP_SUB 1
+#define OP_MUL 2
+#define OP_DIV 3
+#define OP_POW 4
+#define OP_MAX 5
+#define OP_MIN 6
+#define OP_EQ  7
+#define OP_LT  8
+#define OP_GT  9
+#define OP_LE  10
+#define OP_GE  11
+#define OP_NE  12
+
+// Comparisons produce Bool (one byte per element); arithmetic produces F32.
+// OP is a specialisation constant, so this is a compile-time partition of the
+// shader and not a per-invocation branch.
+const bool IS_COMPARE = OP >= OP_EQ;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t a;
+    uint64_t b;
+    uint64_t dst;
+    uint     n;
+    Operand  a_op;
+    Operand  b_op;
+    Operand  out_op;
+} p;
+
+/// Quiet NaN. Written from its bit pattern rather than as 0.0/0.0, which the
+/// compiler is free to constant-fold or treat as undefined.
+float quiet_nan() {
+    return uintBitsToFloat(0x7fc00000u);
+}
+
+/// pow matching std::pow, which the CPU kernel uses.
+///
+/// GLSL's pow(x, y) is explicitly undefined for x < 0, but std::pow is defined
+/// there whenever y is an integer -- std::pow(-2, 3) is -8, not NaN. Leaving
+/// the built-in to handle it would make the two backends disagree on a case
+/// the CPU answers perfectly well, so the sign is peeled off and reapplied.
+float pow_op(float x, float y) {
+    if (x >= 0.0) {
+        return pow(x, y);
+    }
+    if (y != floor(y)) {
+        return quiet_nan();  // negative base, non-integer exponent: not real
+    }
+    const float magnitude = pow(-x, y);
+    // Odd exponents keep the sign, even ones drop it.
+    return mod(abs(y), 2.0) == 1.0 ? -magnitude : magnitude;
+}
+
+float arithmetic(float x, float y) {
+    switch (OP) {
+        case OP_ADD: return x + y;
+        case OP_SUB: return x - y;
+        case OP_MUL: return x * y;
+        case OP_DIV: return x / y;
+        case OP_POW: return pow_op(x, y);
+        // torch.maximum propagates NaN; GLSL's max() is undefined for it and
+        // std::fmax would return the non-NaN operand. Tested as EXACT, so the
+        // difference is not academic.
+        case OP_MAX: return (isnan(x) || isnan(y)) ? quiet_nan() : (x > y ? x : y);
+        case OP_MIN: return (isnan(x) || isnan(y)) ? quiet_nan() : (x < y ? x : y);
+        default:     return 0.0;
+    }
+}
+
+bool comparison(float x, float y) {
+    switch (OP) {
+        case OP_EQ: return x == y;
+        case OP_LT: return x < y;
+        case OP_GT: return x > y;
+        case OP_LE: return x <= y;
+        case OP_GE: return x >= y;
+        case OP_NE: return x != y;
+        default:    return false;
+    }
+}
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    // Broadcasting needs no special case: a broadcast axis arrives with stride
+    // 0, so operand_offset returns the same element for every index along it.
+    const uint ai = CONTIGUOUS ? i : operand_offset(i, p.a_op);
+    const uint bi = CONTIGUOUS ? i : operand_offset(i, p.b_op);
+    const uint di = CONTIGUOUS ? i : operand_offset(i, p.out_op);
+
+    const float x = F32Buf(p.a).v[ai];
+    const float y = F32Buf(p.b).v[bi];
+
+    if (IS_COMPARE) {
+        U8Buf(p.dst).v[di] = comparison(x, y) ? uint8_t(1) : uint8_t(0);
+    } else {
+        F32Buf(p.dst).v[di] = arithmetic(x, y);
+    }
+}

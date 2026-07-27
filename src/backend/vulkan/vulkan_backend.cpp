@@ -5,6 +5,7 @@
 #include "vk_device.h"
 #include "vk_pipeline.h"
 
+#include "vkml/spv/binary.h"
 #include "vkml/spv/cast.h"
 #include "vkml/spv/fill.h"
 #include "vkml/spv/gemm_naive.h"
@@ -88,6 +89,18 @@ struct UnaryPush {
     GpuOperand in_op;
     GpuOperand out_op;
 };
+
+struct BinaryPush {
+    uint64_t a;
+    uint64_t b;
+    uint64_t dst;
+    uint32_t n;
+    GpuOperand a_op;
+    GpuOperand b_op;
+    GpuOperand out_op;
+};
+
+static_assert(sizeof(BinaryPush) <= 256, "binary push constants exceed the device budget");
 
 struct ReducePush {
     uint64_t src;
@@ -342,6 +355,52 @@ enum class UnaryOp : uint32_t {
     Clamp = 18,
 };
 
+/// Mirrors the OP_* codes in shaders/binary.comp. Codes from Equal upward are
+/// comparisons, which the shader keys on to pick the destination element type,
+/// so they must stay contiguous and last.
+enum class BinaryOp : uint32_t {
+    Add = 0,
+    Sub = 1,
+    Mul = 2,
+    Div = 3,
+    Pow = 4,
+    Maximum = 5,
+    Minimum = 6,
+    Equal = 7,
+    Less = 8,
+    Greater = 9,
+    LessEqual = 10,
+    GreaterEqual = 11,
+    NotEqual = 12,
+};
+
+[[nodiscard]] std::optional<BinaryOp> to_binary_op(OpKind k) {
+    switch (k) {
+        case OpKind::Add: return BinaryOp::Add;
+        case OpKind::Sub: return BinaryOp::Sub;
+        case OpKind::Mul: return BinaryOp::Mul;
+        case OpKind::Div: return BinaryOp::Div;
+        case OpKind::Pow: return BinaryOp::Pow;
+        case OpKind::Maximum: return BinaryOp::Maximum;
+        case OpKind::Minimum: return BinaryOp::Minimum;
+        case OpKind::Equal: return BinaryOp::Equal;
+        case OpKind::Less: return BinaryOp::Less;
+        case OpKind::Greater: return BinaryOp::Greater;
+        case OpKind::LessEqual: return BinaryOp::LessEqual;
+        case OpKind::GreaterEqual: return BinaryOp::GreaterEqual;
+        case OpKind::NotEqual: return BinaryOp::NotEqual;
+        default: return std::nullopt;
+    }
+}
+
+/// Both operands present and F32. Comparisons narrow the *output* to Bool but
+/// still consume floats, so this is asked of the sources independently of the
+/// node's own dtype.
+[[nodiscard]] bool binary_srcs_are_f32(const Node& node) {
+    return node.src[0] != nullptr && node.src[0]->dtype == DType::F32 && node.src[1] != nullptr &&
+           node.src[1]->dtype == DType::F32;
+}
+
 /// OpKind -> shader code. Returns nullopt for anything this shader does not
 /// implement, so a caller cannot silently get a copy: the previous form used a
 /// `default: Copy` arm, which would have turned a forgotten entry here into
@@ -578,6 +637,22 @@ bool VulkanBackend::supports(const Node& node) const {
         case OpKind::Gelu:
         case OpKind::Silu:
         case OpKind::Clamp: return node.dtype == DType::F32;
+        // Binary elementwise arithmetic: F32 in, F32 out.
+        case OpKind::Add:
+        case OpKind::Sub:
+        case OpKind::Mul:
+        case OpKind::Div:
+        case OpKind::Pow:
+        case OpKind::Maximum:
+        case OpKind::Minimum: return node.dtype == DType::F32 && binary_srcs_are_f32(node);
+        // Comparisons: F32 in, Bool out. The output dtype differs from the
+        // inputs', so both ends are checked rather than inferring one.
+        case OpKind::Equal:
+        case OpKind::Less:
+        case OpKind::Greater:
+        case OpKind::LessEqual:
+        case OpKind::GreaterEqual:
+        case OpKind::NotEqual: return node.dtype == DType::Bool && binary_srcs_are_f32(node);
         case OpKind::Cast: return true;
         case OpKind::Sum:
         case OpKind::Mean:
@@ -710,6 +785,63 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 rec.dispatch(
                     pipes.get("unary", spv::unary, spv::unary_size, sizeof(UnaryPush), cfg), &push,
                     sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::Add:
+            case OpKind::Sub:
+            case OpKind::Mul:
+            case OpKind::Div:
+            case OpKind::Pow:
+            case OpKind::Maximum:
+            case OpKind::Minimum:
+            case OpKind::Equal:
+            case OpKind::Less:
+            case OpKind::Greater:
+            case OpKind::LessEqual:
+            case OpKind::GreaterEqual:
+            case OpKind::NotEqual: {
+                const Node& a = *node->src[0];
+                const Node& b = *node->src[1];
+
+                const std::optional<BinaryOp> op = to_binary_op(node->op);
+                VKML_ASSERT(op.has_value(),
+                            "binary dispatch reached for '{}', which to_binary_op does not "
+                            "map -- supports() and this switch disagree",
+                            op_name(node->op));
+
+                // Inputs are always F32; comparisons narrow the output to Bool,
+                // so the destination element size differs from the source one
+                // and the two operands cannot share an itemsize.
+                const size_t in_esz = dtype_size(a.dtype);
+                const size_t out_esz = dtype_size(node->dtype);
+
+                const bool contiguous = a.shape.is_contiguous() && b.shape.is_contiguous() &&
+                                        node->shape.is_contiguous();
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg, static_cast<uint32_t>(*op), contiguous ? 1U : 0U};
+
+                BinaryPush push{};
+                push.a = address_of(a);
+                push.b = address_of(b);
+                push.dst = address_of(*node);
+                push.n = n_elems;
+                // Both sources arrive already broadcast to the output shape, so
+                // a broadcast axis is simply one with stride 0 and the shader
+                // needs no shape reconciliation of its own.
+                push.a_op = to_gpu_operand(a.shape, in_esz);
+                push.b_op = to_gpu_operand(b.shape, in_esz);
+                push.out_op = to_gpu_operand(node->shape, out_esz);
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "binary", cfg, sizeof(BinaryPush),
+                                   (n_elems + wg - 1) / wg, impl_->caps.subgroup_size);
+                }
+                rec.dispatch(
+                    pipes.get("binary", spv::binary, spv::binary_size, sizeof(BinaryPush), cfg),
+                    &push, sizeof(push), n_elems);
                 break;
             }
 

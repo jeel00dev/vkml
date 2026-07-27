@@ -18,6 +18,8 @@ from vkvalidate import (
     make_data,
     random_layouts,
     requires_vulkan,
+    run_binary,
+    run_binary_broadcast,
     run_unary,
     vulkan_ready,
 )
@@ -133,6 +135,136 @@ def test_clamp_rejects_inverted_bounds():
     t = V.tensor(np.zeros((4,), dtype=np.float32), device=gpu_device())
     with pytest.raises(V.ShapeError):
         V.clamp(t, 2.0, -2.0)
+
+
+# ---------------------------------------------------------------------------
+# Binary elementwise
+# ---------------------------------------------------------------------------
+
+# (name, fn, domain_a, domain_b). The right-hand domain differs where the
+# operation is undefined on part of the real line: div by zero, and pow of a
+# negative base.
+BINARY = [
+    ("add", V.add, "any", "any"),
+    ("sub", V.sub, "any", "any"),
+    ("mul", V.mul, "any", "any"),
+    ("div", V.div, "any", "nonzero"),
+    ("pow", V.pow, "positive", "unit"),
+    ("maximum", V.maximum, "any", "any"),
+    ("minimum", V.minimum, "any", "any"),
+]
+
+# The first element is the tolerance-policy key, which is the short form; the
+# public API spells these out. Kept as a pair rather than derived, because the
+# two vocabularies are independent and a mapping would hide that.
+COMPARE = [
+    ("eq", V.equal),
+    ("lt", V.less),
+    ("gt", V.greater),
+    ("le", V.less_equal),
+    ("ge", V.greater_equal),
+    ("ne", V.not_equal),
+]
+
+
+@pytest.mark.parametrize("name,fn,da,db", BINARY, ids=[b[0] for b in BINARY])
+def test_binary(name, fn, da, db, layouts):
+    n = run_binary(name, fn, layouts, SEED, da, db)
+    assert n == len(layouts)
+
+
+@pytest.mark.parametrize("name,fn,da,db", BINARY, ids=[b[0] for b in BINARY])
+def test_binary_broadcast(name, fn, da, db):
+    n = run_binary_broadcast(name, fn, SEED, da, db)
+    assert n == 10
+
+
+@pytest.mark.parametrize("name,fn", COMPARE, ids=[c[0] for c in COMPARE])
+def test_comparison(name, fn, layouts):
+    """Comparisons narrow the output to Bool, so the destination is a byte
+    buffer while the inputs stay float -- the one place in the binary shader
+    where the operand element sizes differ."""
+    n = run_binary(name, fn, layouts, SEED)
+    assert n == len(layouts)
+
+
+@pytest.mark.parametrize("name,fn", COMPARE, ids=[c[0] for c in COMPARE])
+def test_comparison_broadcast(name, fn):
+    n = run_binary_broadcast(name, fn, SEED)
+    assert n == 10
+
+
+def test_comparison_output_is_bool_not_float():
+    """Guards the narrowing itself. If the shader wrote through F32Buf the
+    values would still compare equal after numpy converts them, so this checks
+    the dtype rather than the contents."""
+    a = V.tensor(np.array([1.0, 2.0, 3.0], dtype=np.float32), device=gpu_device())
+    b = V.tensor(np.array([2.0, 2.0, 2.0], dtype=np.float32), device=gpu_device())
+    out = V.less(a, b).numpy()
+    assert out.dtype == np.bool_, f"expected bool output, got {out.dtype}"
+    assert out.tolist() == [True, False, False]
+
+
+def test_equality_of_equal_values_holds_on_gpu():
+    """eq is EXACT, and the interesting case is operands that are equal. A
+    random sweep almost never produces two identical floats, so this feeds the
+    same buffer to both sides."""
+    x = np.linspace(-3.0, 3.0, 257, dtype=np.float32)
+    t = V.tensor(x, device=gpu_device())
+    same = V.equal(t, t).numpy()
+    assert same.all(), "x == x must hold for every element"
+
+
+def test_maximum_propagates_nan_like_torch():
+    """torch.maximum returns NaN if either operand is NaN; GLSL's max() is
+    undefined for NaN and std::fmax would return the other operand. The policy
+    for maximum is EXACT, so a divergence here is a hard failure, and the
+    random sweep never generates NaN."""
+    a = np.array([1.0, np.nan, 3.0, np.nan], dtype=np.float32)
+    b = np.array([2.0, 2.0, np.nan, np.nan], dtype=np.float32)
+
+    for name, fn in (("maximum", V.maximum), ("minimum", V.minimum)):
+        gpu = fn(V.tensor(a, device=gpu_device()), V.tensor(b, device=gpu_device())).numpy()
+        cpu = fn(V.tensor(a, device=V.cpu), V.tensor(b, device=V.cpu)).numpy()
+        ctx = Context(op=name, layout=Layout(a.shape), dtype="f32", seed=SEED, inputs=[a, b])
+        compare(ctx, gpu, cpu)
+        assert np.isnan(gpu[1:]).all(), f"{name} must propagate NaN"
+
+
+def test_pow_matches_std_pow_for_negative_bases():
+    """GLSL's pow(x, y) is undefined for x < 0, but std::pow is defined there
+    whenever y is an integer -- std::pow(-2, 3) is -8. The shader peels the
+    sign off and reapplies it so the two backends agree on a case the CPU
+    answers perfectly well."""
+    base = np.array([-2.0, -2.0, -2.0, -3.0, -1.0], dtype=np.float32)
+    expo = np.array([2.0, 3.0, 4.0, 3.0, 5.0], dtype=np.float32)
+
+    gpu = V.pow(V.tensor(base, device=gpu_device()), V.tensor(expo, device=gpu_device())).numpy()
+    cpu = V.pow(V.tensor(base, device=V.cpu), V.tensor(expo, device=V.cpu)).numpy()
+
+    ctx = Context(op="pow", layout=Layout(base.shape), dtype="f32", seed=SEED,
+                  inputs=[base, expo])
+    compare(ctx, gpu, cpu)
+
+    # Pin the signs explicitly. An implementation returning |x|^y would satisfy
+    # a magnitude check but is wrong for every odd exponent, and that is the
+    # bug this test exists to catch. Signs only -- pow carries a 16 ULP
+    # allowance (Vulkan spec), so (-3)^3 lands on -27.000002, not -27.
+    assert np.sign(gpu).tolist() == [1.0, -1.0, 1.0, -1.0, -1.0]
+    assert np.allclose(np.abs(gpu), [4.0, 8.0, 16.0, 27.0, 1.0], rtol=1e-5)
+
+
+def test_pow_returns_nan_for_negative_base_with_fractional_exponent():
+    """The other half of the pow contract: (-2)^0.5 is not real, and std::pow
+    returns NaN. GLSL would leave it undefined."""
+    base = np.array([-2.0, -4.0], dtype=np.float32)
+    expo = np.array([0.5, 1.5], dtype=np.float32)
+
+    gpu = V.pow(V.tensor(base, device=gpu_device()), V.tensor(expo, device=gpu_device())).numpy()
+    cpu = V.pow(V.tensor(base, device=V.cpu), V.tensor(expo, device=V.cpu)).numpy()
+
+    assert np.isnan(gpu).all(), f"expected NaN, got {gpu}"
+    assert np.isnan(cpu).all(), f"CPU oracle changed behaviour: {cpu}"
 
 
 def test_gelu_negative_tail_is_relatively_accurate():

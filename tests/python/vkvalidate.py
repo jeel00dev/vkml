@@ -352,6 +352,78 @@ def run_unary(op_name: str, fn: Callable, layouts: Sequence[Layout], seed: int,
     return checked
 
 
+def run_binary(op_name: str, fn: Callable, layouts: Sequence[Layout], seed: int,
+               domain: str = "any", domain_b: str | None = None) -> int:
+    """Runs `fn` on two operands sharing a layout, on both backends.
+
+    Both operands get the *same* view transform, so the strided and broadcast
+    paths are exercised on each side simultaneously -- which is the case a
+    kernel is most likely to get wrong, since it must resolve two independent
+    stride sets per element. Broadcasting between *different* shapes is a
+    separate concern and is covered by run_binary_broadcast.
+
+    `domain_b` defaults to `domain`; div and pow need a right-hand operand that
+    avoids zero and negative bases respectively.
+    """
+    rng = np.random.default_rng(seed)
+    checked = 0
+
+    for layout in layouts:
+        a = make_data(rng, layout.base_shape, domain)
+        b = make_data(rng, layout.base_shape, domain_b or domain)
+
+        cpu_out = fn(layout.apply(V.tensor(a, device=V.cpu)),
+                     layout.apply(V.tensor(b, device=V.cpu))).numpy()
+        gpu_out = fn(layout.apply(V.tensor(a, device=gpu_device())),
+                     layout.apply(V.tensor(b, device=gpu_device()))).numpy()
+
+        ctx = Context(op=op_name, layout=layout, dtype="f32", seed=seed,
+                      inputs=[layout.apply_numpy(a), layout.apply_numpy(b)])
+        compare(ctx, gpu_out, cpu_out)
+        checked += 1
+
+    return checked
+
+
+# Shape pairs that must broadcast, covering the cases numpy's rules make
+# distinct: rank extension, a singleton on either side, and singletons on both
+# sides of the same pair of axes (which broadcasts outward in two directions).
+BROADCAST_PAIRS: list[tuple[tuple[int, ...], tuple[int, ...]]] = [
+    ((3, 4), (4,)),
+    ((3, 4), (1, 4)),
+    ((3, 4), (3, 1)),
+    ((3, 1), (1, 4)),
+    ((2, 3, 4), (4,)),
+    ((2, 3, 4), (3, 1)),
+    ((2, 1, 4), (1, 3, 1)),
+    ((5,), (1,)),
+    ((1,), (5,)),
+    ((2, 3, 4, 5), (1, 3, 1, 5)),
+]
+
+
+def run_binary_broadcast(op_name: str, fn: Callable, seed: int,
+                         domain: str = "any", domain_b: str | None = None) -> int:
+    """Same operation across mismatched shapes, where one side has stride 0."""
+    rng = np.random.default_rng(seed)
+    checked = 0
+
+    for shape_a, shape_b in BROADCAST_PAIRS:
+        a = make_data(rng, shape_a, domain)
+        b = make_data(rng, shape_b, domain_b or domain)
+
+        cpu_out = fn(V.tensor(a, device=V.cpu), V.tensor(b, device=V.cpu)).numpy()
+        gpu_out = fn(V.tensor(a, device=gpu_device()),
+                     V.tensor(b, device=gpu_device())).numpy()
+
+        ctx = Context(op=op_name, layout=Layout(shape_a, "broadcast", shape_b),
+                      dtype="f32", seed=seed, inputs=[a, b])
+        compare(ctx, gpu_out, cpu_out)
+        checked += 1
+
+    return checked
+
+
 # ---------------------------------------------------------------------------
 # Reduction support
 #
