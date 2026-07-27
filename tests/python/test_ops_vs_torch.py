@@ -459,6 +459,126 @@ def test_triu_tril_partition_the_tensor():
         assert np.allclose(total, x), f"triu(d={d}) + tril(d={d - 1}) != x"
 
 
+@pytest.mark.parametrize("shape,axes", [
+    ((4, 8), 1),
+    ((2, 3, 16), 1),
+    ((2, 3, 16), 2),      # normalise over two trailing axes
+    ((2, 3, 4, 5), 3),
+    ((1, 64), 1),
+    ((3, 1), 1),          # width 1: variance is exactly 0, so eps carries it
+])
+def test_layer_norm(shape, axes):
+    x = make_input(shape, seed=70)
+    v, t = pair(x)
+    normalized_shape = list(shape[len(shape) - axes:])
+    assert_close(f"layer_norm(axes={axes})", V.layer_norm(v, axes),
+                 torch.nn.functional.layer_norm(t, normalized_shape),
+                 TOLERANCES["transcendental"], inputs=[x])
+
+
+# eps is passed explicitly throughout. torch's rms_norm defaults it to
+# finfo(f32).eps = 1.19e-7 while vkml uses 1e-5 (see ops.h), so comparing the
+# defaults would compare two different functions -- which is exactly what the
+# first version of this test did, and the gradient check caught it.
+RMS_EPS = 1e-5
+
+
+@pytest.mark.parametrize("shape,axes", [((4, 8), 1), ((2, 3, 16), 1), ((2, 3, 4, 5), 2)])
+def test_rms_norm(shape, axes):
+    x = make_input(shape, seed=71)
+    v, t = pair(x)
+    normalized_shape = list(shape[len(shape) - axes:])
+    assert_close(f"rms_norm(axes={axes})", V.rms_norm(v, axes, RMS_EPS),
+                 torch.nn.functional.rms_norm(t, normalized_shape, eps=RMS_EPS),
+                 TOLERANCES["transcendental"], inputs=[x])
+
+
+def test_rms_norm_default_eps_diverges_from_torch_deliberately():
+    """Pins the divergence documented in ops.h so it stays a decision rather
+    than drifting into a surprise.
+
+    Checked on the gradient, not the forward pass. Forward, the two epsilons
+    differ by only ~3e-6 relative and a default-tolerance comparison would call
+    them equal. The gradient of an rms-normalised quantity is proportional to
+    eps, so an 84x difference in eps shows up as roughly that -- which is how
+    this was noticed at all.
+    """
+    x = make_input((2, 32), seed=76)
+
+    def grad_with(eps):
+        v = V.tensor(x, requires_grad=True)
+        y = V.rms_norm(v, 1) if eps is None else V.rms_norm(v, 1, eps)
+        V.sum(V.mul(y, y)).backward()
+        return v.grad.numpy()
+
+    def torch_grad_with(eps):
+        t = torch.from_numpy(x.copy()).requires_grad_(True)
+        y = torch.nn.functional.rms_norm(t, [32], eps=eps)
+        (y * y).sum().backward()
+        return t.grad.numpy()
+
+    ours = np.abs(grad_with(None)).max()
+    theirs = np.abs(torch_grad_with(None)).max()
+    assert ours > 10.0 * theirs, (
+        f"defaults now agree (ours {ours:.2e}, torch {theirs:.2e}); "
+        f"update ops.h and delete this test"
+    )
+
+    # And they agree once eps is stated, which is what the parity tests rely on.
+    assert_close("rms_norm grad, explicit eps", grad_with(1e-5), torch_grad_with(1e-5),
+                 TOLERANCES["transcendental"], inputs=[x])
+
+
+def test_layer_norm_output_is_standardised():
+    """Independent of torch: the defining property is that each normalised
+    group has mean 0 and variance 1. A sign error or a missing rsqrt still
+    produces plausible-looking numbers but fails this."""
+    x = make_input((6, 128), seed=72, low=-50.0, high=50.0)
+    y = V.layer_norm(V.tensor(x), 1).numpy()
+
+    assert np.allclose(y.mean(axis=-1), 0.0, atol=1e-5), y.mean(axis=-1)
+    assert np.allclose(y.var(axis=-1), 1.0, atol=1e-3), y.var(axis=-1)
+
+
+def test_layer_norm_survives_a_large_offset():
+    """The reason the two-pass form is used. With a mean of 1e6 and a spread of
+    1, the one-pass identity var = E[x^2] - E[x]^2 subtracts 1e12 from 1e12 and
+    loses every significant digit. This must still standardise."""
+    rng = np.random.default_rng(73)
+    x = (rng.normal(0.0, 1.0, (4, 256)) + 1.0e6).astype(np.float32)
+
+    y = V.layer_norm(V.tensor(x), 1).numpy()
+    assert np.isfinite(y).all(), "non-finite output"
+    assert np.allclose(y.var(axis=-1), 1.0, atol=1e-2), y.var(axis=-1)
+
+
+@pytest.mark.parametrize("fn,tf", [
+    ("layer_norm", torch.nn.functional.layer_norm),
+    ("rms_norm", torch.nn.functional.rms_norm),
+])
+def test_norm_gradients(fn, tf):
+    """The composition differentiates through mean/sub/square/rsqrt with no
+    rule of its own, which is the point of graph-based autograd -- but the
+    gradient of a normalisation is not obvious (every output depends on every
+    input in the group), so it is checked rather than assumed."""
+    x = make_input((3, 12), seed=74)
+    v = V.tensor(x, requires_grad=True)
+    t = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    V.sum(V.mul(getattr(V, fn)(v, 1, RMS_EPS), getattr(V, fn)(v, 1, RMS_EPS))).backward()
+    (tf(t, [12], eps=RMS_EPS) * tf(t, [12], eps=RMS_EPS)).sum().backward()
+
+    assert_close(f"{fn} grad", v.grad, t.grad, TOLERANCES["transcendental"], inputs=[x])
+
+
+def test_norm_rejects_bad_axis_count():
+    v = V.tensor(make_input((3, 4), seed=75))
+    with pytest.raises(V.ShapeError):
+        V.layer_norm(v, 3)
+    with pytest.raises(V.ShapeError):
+        V.rms_norm(v, 0)
+
+
 @pytest.mark.parametrize("axis", [0, 1, -1])
 @pytest.mark.parametrize("shapes", [
     [(2, 3), (2, 3)],

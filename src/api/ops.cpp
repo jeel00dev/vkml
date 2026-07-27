@@ -266,6 +266,39 @@ Tensor tri_impl(const Tensor& a, int64_t diagonal, OpKind kind) {
 
 }  // namespace
 
+namespace {
+
+/// The trailing `count` axes, as the reduction API wants them.
+std::vector<int> trailing_axes(const Tensor& a, int count, const char* what) {
+    VKML_CHECK(count >= 1 && count <= a.ndim(), ShapeError,
+               "{}() normalizes over {} trailing axes but the tensor has rank {}", what, count,
+               a.ndim());
+    std::vector<int> axes;
+    axes.reserve(static_cast<size_t>(count));
+    for (int i = a.ndim() - count; i < a.ndim(); ++i) {
+        axes.push_back(i);
+    }
+    return axes;
+}
+
+}  // namespace
+
+Tensor layer_norm(const Tensor& a, int normalized_axes, double eps) {
+    const std::vector<int> axes = trailing_axes(a, normalized_axes, "layer_norm");
+
+    // keepdim so the mean broadcasts back over the reduced axes with stride 0
+    // rather than needing an explicit reshape.
+    const Tensor centered = sub(a, mean(a, axes, /*keepdim=*/true));
+    const Tensor variance = mean(square(centered), axes, /*keepdim=*/true);
+    return mul(centered, rsqrt(add(variance, eps)));
+}
+
+Tensor rms_norm(const Tensor& a, int normalized_axes, double eps) {
+    const std::vector<int> axes = trailing_axes(a, normalized_axes, "rms_norm");
+    const Tensor mean_square = mean(square(a), axes, /*keepdim=*/true);
+    return mul(a, rsqrt(add(mean_square, eps)));
+}
+
 Tensor cat(const Tensor& a, const Tensor& b, int axis) {
     check_same_dtype(a, b, OpKind::Cat);
     check_same_device(a, b, OpKind::Cat);

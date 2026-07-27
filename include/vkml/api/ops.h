@@ -63,6 +63,34 @@ namespace vkml {
 /// Elementwise select. `cond` must be Bool; all three broadcast together.
 [[nodiscard]] Tensor where(const Tensor& cond, const Tensor& a, const Tensor& b);
 
+/// Standardises over the last `normalized_axes` axes: subtract the mean,
+/// divide by the standard deviation. No affine term -- `nn.LayerNorm` applies
+/// its own weight and bias with `mul`/`add`, which the autograd handles without
+/// a special case.
+///
+/// Composed from mean/sub/square/rsqrt rather than fused. That is the two-pass
+/// algorithm, which is the numerically sound one: computing the variance as
+/// E[x^2] - E[x]^2 in one pass cancels catastrophically when the mean is large
+/// relative to the spread. A fused kernel would save bandwidth, not accuracy,
+/// and is deferred until a profile says it matters.
+///
+/// `normalized_axes` counts trailing axes rather than naming a shape, which is
+/// a deliberate divergence from torch's `normalized_shape`. It carries the same
+/// information for every legal call and needs no shape validation.
+[[nodiscard]] Tensor layer_norm(const Tensor& a, int normalized_axes = 1, double eps = 1e-5);
+
+/// As `layer_norm` but without centring: divides by the root mean square.
+/// Used by Llama-family models, where dropping the mean subtraction is most of
+/// the speedup and costs nothing measurable in quality.
+///
+/// DEFAULT eps DIVERGES FROM TORCH, deliberately. `torch.nn.functional.rms_norm`
+/// defaults eps to `finfo(dtype).eps` (1.19e-7 for f32), which is small enough
+/// to be a no-op except for an exactly-zero input. vkml uses 1e-5, matching
+/// `layer_norm` here and what Llama-family implementations actually ship. The
+/// two are otherwise identical: pass eps explicitly and the results agree to
+/// 7e-7, which is how the parity tests compare them.
+[[nodiscard]] Tensor rms_norm(const Tensor& a, int normalized_axes = 1, double eps = 1e-5);
+
 /// Joins tensors along `axis`. Every input must share the same rank, dtype,
 /// device and extents on every axis except `axis`.
 ///

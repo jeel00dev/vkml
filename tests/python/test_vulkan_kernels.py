@@ -268,6 +268,45 @@ def test_pow_returns_nan_for_negative_base_with_fractional_exponent():
 
 
 # ---------------------------------------------------------------------------
+# Normalisation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape,axes", [
+    ((4, 8), 1),
+    ((2, 3, 64), 1),
+    ((2, 3, 16), 2),
+    ((1, 257), 1),      # straddles a workgroup boundary inside the reduction
+    ((3, 1), 1),        # width 1: variance is exactly 0, eps carries the result
+])
+@pytest.mark.parametrize("name,fn", [("layer_norm", V.layer_norm), ("rms_norm", V.rms_norm)])
+def test_norm_on_gpu(name, fn, shape, axes):
+    """These are compositions, not kernels, so this is really a test that the
+    whole chain -- mean, sub, square, add, rsqrt, mul -- agrees end to end
+    between backends. A reduction that folds differently across workgroups
+    would show up here and nowhere in the per-op tests."""
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, shape, "any")
+
+    def run(dev):
+        return fn(V.tensor(x, device=dev), axes).numpy()
+
+    ctx = Context(op=name, layout=Layout(shape), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+def test_layer_norm_is_standardised_on_gpu():
+    """The defining property, checked on the device rather than inferred from
+    the CPU comparison."""
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, (6, 512), "any")
+    y = V.layer_norm(V.tensor(x, device=gpu_device()), 1).numpy()
+
+    assert np.allclose(y.mean(axis=-1), 0.0, atol=1e-5)
+    assert np.allclose(y.var(axis=-1), 1.0, atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
 # Concatenation
 # ---------------------------------------------------------------------------
 

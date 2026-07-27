@@ -519,6 +519,8 @@ NB_MODULE(_vkml_core, m) {
     m.def(
         "cat", [](const std::vector<vkml::Tensor>& ts, int axis) { return vkml::cat(ts, axis); },
         "tensors"_a, "axis"_a = 0);
+    m.def("layer_norm", &vkml::layer_norm, "input"_a, "normalized_axes"_a = 1, "eps"_a = 1e-5);
+    m.def("rms_norm", &vkml::rms_norm, "input"_a, "normalized_axes"_a = 1, "eps"_a = 1e-5);
     m.def("masked_fill", &vkml::masked_fill, "input"_a, "mask"_a, "value"_a);
     m.def("triu", &vkml::triu, "input"_a, "diagonal"_a = 0);
     m.def("tril", &vkml::tril, "input"_a, "diagonal"_a = 0);

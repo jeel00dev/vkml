@@ -152,6 +152,20 @@ POLICY: dict[str, Tolerance] = {
                          note="max-subtract, exp, pairwise sum, divide"),
     "log_softmax": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
                              note="as softmax; atol covers results near zero"),
+    # Derived rather than picked. y_i = (x_i - mu)/sqrt(var + eps), and both mu
+    # and var are pairwise means carrying backward error gamma_N. Propagating:
+    # the absolute floor on y is gamma_N * mean|x| / sigma, and the relative
+    # term is gamma_N/2 (sqrt halves it) plus 2 ULP for rsqrt. For x ~ N(0,1)
+    # at N = 16384 that is atol 3.9e-6 and rtol 2.7e-6, so these leave 2.6x and
+    # 3.7x margin. Both grow only as log2(N) -- the pairwise fold is what keeps
+    # this from degrading with width.
+    # atol is load-bearing, not decoration: an output element is near zero
+    # whenever x_i is near the mean, and a purely relative check is meaningless
+    # there. Same reason log_softmax carries one.
+    "layer_norm": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
+                            note="two pairwise means then rsqrt; see derivation above"),
+    "rms_norm": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
+                          note="one pairwise mean then rsqrt; bound as layer_norm"),
 }
 
 
