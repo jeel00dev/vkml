@@ -1,906 +1,872 @@
 ---
 name: cpp_spec
-description: The vkML engineering specification. Use for every implementation, modification, optimisation, review, or refactor in this repository — C++, GLSL, CMake, Python bindings, or tests. Defines how to behave, the development philosophy, the mandatory implementation workflow, project invariants, modern C++20 standards, architecture, backend and dispatcher design, API evolution, refactoring policy, performance and measurement discipline, testing requirements, documentation duties, the pre-completion review checklist, and the Git workflow.
+description: The vkML engineering specification. Use for every implementation, modification, optimisation, review, or refactor in this repository — C++, GLSL, CMake, Python bindings, or tests. Covers agent behaviour, principles, the mandatory workflow, design principles, complexity, invariants, architecture, backend and dispatcher design, API and versioning, C++ language rules, errors and logging, naming, testing, debugging, performance, refactoring, documentation, review, Git, build, and security.
 ---
 
 # vkML Engineering Specification
 
 vkML is a Vulkan-first machine-learning framework in modern C++, built to be correct, fast, and
-maintained for a decade. This document is its engineering standard. Follow it on every change;
-where it conflicts with habit, this wins.
+maintained for a decade. This is its engineering standard. Follow it on every change; where it
+conflicts with habit, this wins.
 
-**This document states how to work. It deliberately states no project state.**
+**This document states how to work. It states no project state.**
 
-Operator counts, device capabilities, measured throughput, the current milestone, tuned
-constants and roadmap position all change, and a rule that embeds them expires. They live in
-`docs/`, which is authoritative for *what is true*:
+Operator counts, device capabilities, measured throughput, the current milestone and tuned
+constants all change, and a rule embedding one expires with it. They live in `docs/`:
+`ARCHITECTURE.md` (design, layers, measured capabilities), `PHASE2-MANIFESTO.md` (mission,
+priorities), `THEORY.md` (performance laws, graded), `MEASUREMENT-AUDIT.md` (instrument
+validity), `adr/*.md` (decisions and their alternatives).
 
-| Document | Authoritative for |
-|---|---|
-| `ARCHITECTURE.md` | design, layering, measured device capabilities, op inventory |
-| `PHASE2-MANIFESTO.md` | mission, phase plan, current priorities |
-| `THEORY.md` | measured performance laws, with confidence and scope |
-| `MEASUREMENT-AUDIT.md` | instrument validity and the measurement rules' derivations |
-| `PERFORMANCE-MODEL.md`, `GAP_ANALYSIS.md` | performance analysis |
-| `adr/*.md` | decisions, their alternatives, and their guardrails |
+Cite them. Never copy a number out of them into code, a comment, or this file.
 
-Cite them. Never copy a number out of them into code, into a comment, or into this file.
+**Contents.** I Working (§0–2) · II Designing (§3–7) · III Writing (§8–10) · IV Verifying
+(§11–14) · V Shipping (§15–21).
 
 ---
+
+# Part I — Working
 
 ## 0. How to behave
 
-This section is for the agent reading the file. It is first because it governs everything after.
+For the agent reading this. First, because it governs everything after.
 
-**Never assume; read.** Before changing a file, read it and its callers. Before using an API,
-read its declaration. Before repeating a claim you found in a comment, verify it against the
-code — a comment can describe an intended design that was never built.
-
-**Never invent.** Not an API, not a function signature, not a flag, not a benchmark, not a test
-result. If you did not run it, you did not measure it. If you cannot find it, it does not exist.
-Say so instead of producing something plausible.
-
-**State assumptions out loud.** When a decision depends on something unverified, say which
-assumption you took and what would change if it were wrong.
-
-**Report faithfully.** If tests fail, say so with the output. If you skipped a step, say which
-and why. "Done" means verified, not written.
-
-**Do not silently change design philosophy.** A recorded decision — an ADR, a documented
-divergence, a deliberate non-goal — is binding until explicitly revisited. If you believe one is
-wrong, say so and make the case; do not quietly implement the alternative.
-
-**When proposing architecture, give trade-offs, not just a recommendation.** What it costs, what
-it forecloses, what would make it the wrong call.
-
-**Ask when genuinely blocked.** Two readings that lead to materially different work, or a
-decision that is the author's to make, are worth one question. Routine judgement calls are not —
-make them, state them, continue.
-
-**Prefer the smallest change that is complete.** Do not widen scope silently, and do not narrow
-it either: if part of a task is blocked, finish the rest and say plainly what you left.
-
----
+- **Never assume; read.** Read a file and its callers before changing it, a declaration before
+  using it. Verify a claim found in a comment against the code — a comment can describe an
+  intended design that was never built.
+- **Never invent.** Not an API, a signature, a flag, a benchmark, or a test result. If you did
+  not run it, you did not measure it. Say so rather than produce something plausible.
+- **State assumptions.** Say which one you took and what changes if it is wrong.
+- **Report faithfully.** Failing tests get shown with output. A skipped step gets named. "Done"
+  means verified.
+- **Do not silently change a recorded decision.** An ADR, a documented divergence, a stated
+  non-goal — binding until explicitly revisited. Argue against it openly or follow it.
+- **Give trade-offs, not just recommendations.** What it costs, what it forecloses, what would
+  make it wrong.
+- **Ask only when genuinely blocked** — two readings leading to materially different work, or a
+  choice that is the author's. Routine calls: make them, state them, continue.
+- **Smallest complete change.** Do not widen scope silently; do not narrow it either. If part is
+  blocked, finish the rest and say what you left.
 
 ## 1. Principles
 
-Stated once, here. Later sections refer to them by number rather than restating them.
+Defined once. Later sections cite them by number.
 
-**P1 — Correctness first.** A wrong answer fast is worthless. Determinism and the numerical
-contract are part of correctness, not a separate concern.
+| | Principle | |
+|---|---|---|
+| **P1** | **Correctness first** | A wrong answer fast is worthless. Determinism and the numerical contract are part of correctness |
+| **P2** | **Completeness before optimisation** | A library that cannot do the job has no users, however fast its inner loop |
+| **P3** | **Architecture before code** | Structure is expensive to change; code is cheap |
+| **P4** | **Maintainability over cleverness** | The next reader has no context |
+| **P5** | **Evidence before claims** | No optimisation and no "it works" without something you ran |
+| **P6** | **Generic before specialised** | One correct implementation everywhere comes first |
+| **P7** | **No unrecorded debt** | Deferral is fine; silence is not. Rationale, owner, revisit trigger |
 
-**P2 — Completeness before optimisation.** A library that cannot do the job has no users,
-however fast its inner loop is. Do not tune one component while others are missing.
+When two conflict, the lower number wins. Three rules override even that:
 
-**P3 — Architecture before code.** Decide where something belongs before writing it. Structure
-is expensive to change; code is cheap.
-
-**P4 — Maintainability over cleverness.** The next reader has no context. Obvious beats clever,
-always.
-
-**P5 — Evidence before claims.** No optimisation, no performance statement, and no "it works"
-without something you actually ran.
-
-**P6 — Generic before specialised.** One correct implementation that works everywhere comes
-first. Specialisation is an optimisation, and P5 governs it.
-
-**P7 — No unrecorded debt.** Deferral is fine; silence is not. A deliberate compromise carries a
-rationale, an owner, and the trigger for revisiting it.
-
-**Ordering.** When two conflict, the lower number wins. Three rules override even that:
-
-- **The numerical contract (§3.3) is never traded for speed**, by any margin, without a
-  documented re-derivation.
-- **No feature is built on an abstraction that cannot carry it.** Fix the abstraction first
-  (§6). "Ship now, clean later" is not available.
-- **A recorded decision is binding** until explicitly revisited (§0).
-
----
+- **The numerical contract (§5.3) is never traded for speed** without a documented re-derivation.
+- **No feature is built on an abstraction that cannot carry it.** Fix it first (§15).
+- **A recorded decision is binding** until explicitly revisited.
 
 ## 2. Mandatory implementation workflow
 
-Every change follows this. Steps scale with the change: a typo fix passes most of them in a
-line, a new kernel does not. Skipping a step is a decision that must be stated.
+Every change. Steps scale with size — a typo passes most in a line, a new kernel does not.
+Skipping one is a decision that must be stated.
 
 | # | Step | What it requires |
 |---|---|---|
-| 1 | **Understand the request** | Restate the requirement in one sentence. If two readings differ materially, ask before building |
-| 2 | **Read the existing code** | Read the files you will touch and their callers. Never patch code you have not read |
-| 3 | **Review nearby architecture** | Which layer owns this? What already exists that does something similar? |
-| 4 | **Assess the abstractions** | Can what exists carry this feature cleanly? Usually yes — say so in a line and continue. See §6 for the escalation signals |
+| 1 | **Understand the request** | Restate it in one sentence. If two readings differ materially, ask before building |
+| 2 | **Read the existing code** | The files you will touch and their callers. Never patch code you have not read |
+| 3 | **Review nearby architecture** | Which layer owns this? What already does something similar? |
+| 4 | **Assess the abstractions** | Can what exists carry this cleanly? Usually yes — say so in a line and continue (§15) |
 | 5 | **Improve first if needed** | If step 4 says no, fix the abstraction in its own commit, *then* add the feature |
-| 6 | **Design** | For anything expensive to reverse, write the design down first. If it changes an invariant, a public contract, or was chosen against an obvious alternative, it needs an ADR (§9) |
-| 7 | **Implement** | To §4 and §5 |
-| 8 | **Tests** | Written with the change, not after (§8) |
-| 9 | **Validate** | Layering, a clean warning-free build, the full suite. For numerics, the oracle chain (§8) |
-| 10 | **Benchmark** | Only if performance is the point — and then to §7, which is not optional |
-| 11 | **Documentation** | Update what the change invalidated (§9) |
-| 12 | **Review** | Run §10 against your own work before calling it done |
-| 13 | **Commit** | Propose logical commits to §11 |
+| 6 | **Design** | Anything expensive to reverse gets written down first; anything changing an invariant or public contract gets an ADR (§16) |
+| 7 | **Implement** | To Parts II and III |
+| 8 | **Tests** | Written with the change, not after (§11) |
+| 9 | **Validate** | Layering, a clean warning-free build, the full suite. For numerics, the oracle chain (§5.4) |
+| 10 | **Benchmark** | Only if performance is the point — and then to §14, which is not optional |
+| 11 | **Documentation** | Update what the change invalidated (§16) |
+| 12 | **Review** | Run §17 against your own work before calling it done |
+| 13 | **Commit** | Propose logical commits to §18 |
 
 ---
 
-## 3. Invariants
+# Part II — Designing
+
+## 3. Design principles
+
+Applied pragmatically. Each usually pays; none is a law, and following one past the point where
+it helps is its own defect. Most rules later are one of these applied to a situation.
+
+| | Principle | The part that matters here |
+|---|---|---|
+| **SRP** | One reason to change | The test is not size but *why* it would be edited. Two unrelated reasons means two units |
+| **Open/closed** | Extend without editing | Adding a backend, operator or device is an addition, not surgery — through the seams in §6, not speculative hooks |
+| **Liskov** | A subtype is usable as its base | An implementation that throws on half the interface, or needs callers to know which one they hold, is a broken abstraction |
+| **Interface segregation** | Narrow interfaces | Several small beat one broad; implementers should not stub what they cannot support |
+| **Dependency inversion** | Depend on abstractions the *lower* layer owns | This is what makes §5.1's one-way rule achievable |
+| **Composition over inheritance** | Inherit only for a genuine interface relationship | Composition is testable in isolation, swappable at run time, and does not couple lifetimes |
+
+**DRY — one authoritative definition per fact.** Applies hardest to *knowledge*: a constant, a
+rule, an invariant. Two code paths that merely look alike but change for different reasons are
+not duplication, and merging them couples them. Duplicate code is cheap; a duplicated *decision*
+is not.
+
+**KISS — few concepts, not few lines.** A dense one-liner is not simple.
+
+**YAGNI — build for the requirement in front of you.** Speculative generality costs certainly and
+pays uncertainly, and it is usually generalised along the wrong axis. Add indirection when the
+second case exists (P6).
+
+## 4. Complexity
+
+**Choose the algorithm before tuning the constant.** Most large performance failures are the
+wrong algorithm; instruction-level work cannot rescue one.
+
+Four costs, all of which matter and only the first of which is usually considered:
+
+| | Ask |
+|---|---|
+| **Time** | How does work grow with input? An accidental quadratic in a loop nest is invisible at test scale and fatal at real scale |
+| **Memory** | Peak, not total. Allocating a full intermediate where a streaming pass would do is what turns a working size into an out-of-memory |
+| **Cache** | How many times is a byte re-read, and is access sequential? On memory-bound work this dominates the instruction count |
+| **I/O and transfer** | Every crossing of a slow boundary — host to device, disk, network. One avoided round-trip usually beats any amount of local tuning |
+
+State non-obvious complexity in a comment, in the terms that matter — a kernel's cost is more
+usefully given in bytes moved than operations. A worse asymptotic bound can still win at the
+sizes actually used: legitimate **when measured** (P5) and recorded with the range it holds for.
+
+## 5. Invariants
 
 Hard constraints. Violating one is a defect regardless of how good the code looks.
 
-### 3.1 Layering
+### 5.1 Layering
 
-The codebase is a stack of layers. **A layer may depend only on layers strictly below it, and
-never on a sibling.** Higher-level concepts must not leak downward: a backend must not know what
-a neural-network layer is, and the autograd rules must not know which backend exists.
+**A layer may depend only on layers strictly below it, never on a sibling.** Higher-level
+concepts must not leak downward: a backend must not know what a neural-network layer is.
 
-This is a policy, enforced automatically. A dependency check runs in CI; when it rejects a
-change, the fix is the design, not the check. Consult `ARCHITECTURE.md` for the current layer
-list — it grows.
+Policy, enforced automatically in CI. When the check rejects a change, the fix is the design.
+Current layers are in `ARCHITECTURE.md`; the list grows.
 
-### 3.2 Target hardware
+### 5.2 Portability and target hardware
 
-**Query capabilities at runtime; never assume them.** The implementation must respect the
-capabilities of the active device, not of the machine it was written on.
+**Query capabilities at runtime; never assume them.** Respect the active device, not the one this
+was written on.
 
-- Never assume support for cooperative matrix / tensor cores, float atomics, a particular
-  subgroup size, a specific shared-memory size, `bufferDeviceAddress`, or any extension.
-- Every capability the code depends on is queried, and its absence produces a clear failure or a
-  supported alternative — never undefined behaviour.
-- A device query that returns "unknown" (a vendor-specific property on another vendor's
-  hardware) is a reason to **decline** the decision it would have informed, not to guess.
-- Push-constant budget, workgroup limits and shared-memory size are device properties. Fit
-  within what is reported; if metadata cannot fit, move it to a buffer rather than assuming
-  headroom.
+- Never presume cooperative matrix, float atomics, a subgroup size, a shared-memory size, an
+  address model, or any extension.
+- A query returning "unknown" — a vendor property on another vendor's hardware — is a reason to
+  **decline** the decision it would have informed, not to guess.
+- Push-constant budget, workgroup limits and shared memory are device properties. Fit what is
+  reported; if metadata will not fit, move it to a buffer rather than assume headroom.
 
-Measured capabilities of the current development device are recorded in `ARCHITECTURE.md`. They
-are context for understanding decisions, not values to hardcode.
+**Portability of the code itself follows the same rule.** No reliance on undefined behaviour
+(§8.10), compiler extensions, byte order, struct padding, or platform assumptions — unless
+isolated behind a named abstraction with the assumption documented at it, so a port has one place
+to look.
 
-### 3.3 The numerical contract
+### 5.3 The numerical contract
 
-- **Results are bit-reproducible.** Same input, same output, every run, on a given device and
-  build.
-- **Reduction order is fixed and deterministic.** Atomic accumulation is forbidden — not because
-  hardware may lack it, but because its ordering varies run to run and float addition is not
-  associative. This also makes the code portable to devices without it.
+- **Results are bit-reproducible** for a given device and build.
+- **Reduction order is fixed.** Atomic accumulation is forbidden — its ordering varies run to run
+  and float addition is not associative. This also makes the code portable to devices lacking it.
 - **Accumulate in at least fp32**, whatever the storage precision.
-- **A tolerance is a property of the operation**, declared once in the central policy with a
-  citable source, and derived *before* the implementation. Never chosen at a call site, and
-  never widened to make a test pass — a failure is a bug until proven otherwise.
-- **Changing a fold order requires a re-derived error bound and re-pinned goldens**, decided
-  before any code is written.
+- **A tolerance is a property of the operation**, declared once centrally with a citable source
+  and derived *before* implementation. Never chosen at a call site, never widened to make a test
+  pass — a failure is a bug until proven otherwise.
+- **Changing a fold order requires a re-derived bound and re-pinned goldens**, decided first.
 
-Prefer an acceptance criterion that compares bytes. It cannot be perturbed by the act of
-measuring, and it detects an ordering change that a tolerance would hide.
+Prefer an acceptance criterion that compares bytes: it cannot be perturbed by measuring, and it
+catches an ordering change a tolerance would hide.
 
-### 3.4 The correctness oracle
-
-Every operation is validated through a chain, in this order:
+### 5.4 The correctness oracle
 
 ```
-reference backend  vs  established framework   →  "is the maths right?"
-optimised backend  vs  reference backend       →  "is this implementation right?"
+reference backend  vs  established framework   →  is the maths right?
+optimised backend  vs  reference backend       →  is this implementation right?
 ```
 
 **Never write the optimised path first.** Each comparison must have exactly one candidate cause;
-that is the whole value. A mismatch against an oracle sharing our own semantics is unambiguously
-an implementation bug, whereas a mismatch against an external framework could be either.
+that is the entire value. The reference backend is written to be *obviously correct*, not fast —
+a measuring instrument that also ships.
 
-The reference backend is written to be *obviously correct*, not fast. It is a measuring
-instrument that also ships.
+### 5.5 Mechanical enforcement
 
-### 3.5 Mechanical enforcement
+**If a tool can decide it, the tool decides it.** Formatting, static analysis, layering and
+naming conventions are configured once and satisfied, never argued in review and never restated
+here.
 
-Formatting, static analysis and layering are decided by tooling, not by review. **If a tool can
-decide it, the tool decides it** — configure the tool, satisfy it, and do not restate its rules
-here or argue them in review. Naming conventions are part of that configuration.
+## 6. Architecture
 
----
+### 6.1 Dependencies and boundaries
 
-## 4. Modern C++
+- **Dependencies point one way**, down the stack (§5.1). If a lower layer needs something from
+  above, invert it with an interface the lower layer owns.
+- **Module boundaries are contracts**: what it guarantees, what it requires. Everything else is
+  private and may change without notice.
+- **Encapsulate representation.** Expose behaviour, not fields.
+- **New code goes in the layer that owns the responsibility**, even when that is less convenient
+  than the layer you happen to be editing.
 
-This project is C++20. Use the standard it targets; do not reach for a later one. Check the
-build configuration before assuming a feature is available — `std::expected` is C++23 and is not
-available here.
+### 6.2 Backend philosophy
 
-This section states how *this project* writes C++. It is not a summary of the Core Guidelines or
-of Effective Modern C++; those are references, and this is a house style.
+```
+generic implementation → verified against the oracle → profiled on a real workload
+                                                      → specialised path, only where justified
+```
 
-### 4.1 Ownership and lifetime
+- **One generic implementation must work on every supported device.** It is the contract; a
+  specialised path is an optimisation on top, never a replacement.
+- **Detect capabilities, not vendors** (§5.2). Vendor identity is a proxy that goes stale with
+  every new part.
+- A specialised path must produce what the generic path would, within §5.3.
+- **Every specialised path is a permanent maintenance obligation.** It earns its place with a
+  measurement (P5) and keeps it by staying measurably ahead. Removing one that no longer pays is
+  a normal change.
 
-- **Rule of Zero by default.** A class managing no resource declares no destructor, copy or
-  move. A type that cannot follow it is a design signal worth a second look.
-- **Rule of Five when you must.** Writing any of the five means writing or `= delete`-ing all
-  five. A half-set is a silent bug.
-- **RAII for every resource** — memory, device handles, file descriptors, timers. No manual
-  release, no "remember to free" comments.
-- **Ownership is stated in the type.**
+An unsupported operation fails clearly, naming it, or is routed to a backend that can run it. It
+never silently produces a wrong result.
 
-  | Intent | Type |
-  |---|---|
-  | Sole owner | `std::unique_ptr<T>` — the default owning pointer |
-  | Genuinely shared, unpredictable lifetime | `std::shared_ptr<T>` |
-  | Break a cycle; observe without extending | `std::weak_ptr<T>` |
-  | Non-owning, must outlive the callee | `T&` or `T*` |
-  | Non-owning contiguous range | `std::span<T>` |
+### 6.3 Dispatcher philosophy
 
-- `shared_ptr` is a decision, not a default. Where this codebase uses it, an ADR records why;
-  read it before "optimising" it away.
-- **Never** `new`/`delete` in application code. Use `std::make_unique` / `std::make_shared`.
-- Raw pointers and references are **non-owning, always**.
+```
+operator  →  dispatcher  →  backend  →  kernel
+```
 
-### 4.2 Value semantics and moves
+**The dispatcher owns backend selection. Operators never know which backend executes them.**
 
-- Prefer values. A copy is fine until measured otherwise (P5); shared mutable state is a
-  permanent cost.
-- Return by value. Out-parameters obscure dataflow and defeat elision.
-- Sink parameters **by value and moved**; read-only parameters by `const&`, or by value for
-  trivially-copyable types of a word or two.
-- Mark moves, swaps and destructors `noexcept` — containers silently copy instead of moving
-  otherwise.
-- A moved-from object is valid but unspecified: assign to it or destroy it, never read it.
-- Do not `std::move` a return value; it blocks copy elision.
+- An operator describes *what* to compute. A branch on device, backend or vendor in operator code
+  is a layering violation.
+- The dispatcher decides *where*, from the backend's own declaration of what it supports.
+- The backend decides *how*; the kernel knows nothing above it.
 
-### 4.3 const, constexpr, consteval, noexcept
+This is what makes adding a backend an addition rather than a rewrite. **Do not build dispatch
+machinery beyond the need** — a flat table sized to the actual counts is right until it is not
+(YAGNI).
 
-- **`const` by default** on locals, parameters, member functions and references. Non-const needs
-  a reason.
-- `const` member functions must be **thread-safe for concurrent readers** — that is what callers
-  assume, and a `mutable` cache breaks it unless synchronised.
-- **`constexpr` wherever computation can move to build time.** It also enables `static_assert`.
-- **`consteval`** when a function must *never* be called at run time — a compile-time-only
-  factory or check. Use it to make that a compile error rather than a convention.
-- **`static_assert` for invariants** the type system can check: struct sizes and offsets shared
-  with a shader, table sizes matching an enum, assumptions about type widths.
-- `noexcept` only where you can genuinely guarantee it, and always on moves, swaps and
-  destructors. A `noexcept` function that throws calls `std::terminate`; it is not decoration.
+### 6.4 API, versioning and stability
 
-### 4.4 Attributes
+**Public APIs are stable. Internal APIs may evolve freely.** The boundary is explicit (§8.11);
+knowing which side you are on decides how much care a change needs.
 
-| Attribute | Use when |
+- **Internal**: change it, update callers, keep tests green.
+- **Public**: a breaking change needs a deprecation period naming the replacement
+  (`[[deprecated("use X")]]`), or an ADR recording why a clean break costs less.
+- **Prefer additive change.** A new overload or defaulted parameter breaks nobody. Widening what
+  a function accepts is safe; narrowing is not.
+- A deliberate divergence from a mirrored framework is a public contract: document it at the
+  declaration and pin it with a test.
+
+**Versioning is semantic.** Major for a breaking change, minor for additions, patch for fixes.
+The version states what the *API* promises — a performance change is not a major bump, and a
+behaviour change that breaks a caller is, even if the signature is untouched.
+
+**ABI is a separate promise from API** and a stricter one: adding a virtual, reordering members,
+or changing a struct's size breaks it without touching a single signature. Until a release
+commits to ABI stability, say so explicitly rather than leave it assumed.
+
+Before the first stable release, "public" means documented and tested rather than frozen — but
+the discipline starts now, because retrofitting it is what ossifies libraries.
+
+### 6.5 Configuration and constants
+
+**A constant that depends on something must be derived from it, not written down.**
+
+| Kind | Where it belongs |
 |---|---|
-| `[[nodiscard]]` | The return value is the point of the call. Default for any pure function, factory, or error code |
-| `[[maybe_unused]]` | A parameter or variable is used only in some build configurations — a debug-only assertion argument |
-| `[[fallthrough]]` | A `switch` case deliberately falls through. Without it the reader cannot tell intent from bug |
-| `[[likely]]` / `[[unlikely]]` | A branch is overwhelmingly one-sided **and** on a measured hot path (P5). Not a guess |
-| `[[noreturn]]` | A function never returns — a throw helper, a fatal handler. Lets the compiler drop unreachable paths |
-| `[[deprecated("use X")]]` | A public API is on its way out (§5.4). Always with the replacement named |
+| Device-dependent (tile sizes, workgroup dims, limits) | Queried, or selected at run time from a tuned table keyed on what was queried |
+| Build-dependent | A build-system option with a documented default |
+| Genuinely universal (a mathematical bound, a format's magic number) | `constexpr`, with its derivation in a comment |
+| Tuned by measurement | A data file or table, versioned, with the measurement recorded |
 
-### 4.5 Types that carry meaning
+A bare `constexpr int kTile = 64;` for a hardware-dependent quantity is a portability bug waiting
+for a different device — the value is not wrong, its *location* is.
 
-- **`enum class` always.** Scoped, non-converting, forward-declarable.
-- **`std::optional<T>`** for "may legitimately be absent". Not for errors.
-- **`std::variant`** for a closed set of alternatives; visit exhaustively so adding a case is a
-  compile error rather than a runtime surprise.
-- **`std::span`** for contiguous ranges — it replaces pointer+length pairs that can go out of
-  sync. Never store one outliving the data it views.
-- **`std::string_view`** for non-owning string parameters. Never store one pointing at a
-  temporary.
-- **Strong types over primitives** where a mix-up is plausible — two same-typed integers meaning
-  different things are one transposition from a silent bug, and a distinct type makes it a build
-  error. Use judgement; not every integer needs a wrapper.
+**No magic numbers.** A literal appearing in logic gets a named constant and a reason.
 
-### 4.6 Conversions and casts
-
-**Never use a C-style cast.** `(int)x` is unsearchable, silently selects among four different
-operations, and can quietly become a `reinterpret_cast` when a type changes. Prefer, in
-decreasing order of acceptability:
-
-| Cast | Use |
-|---|---|
-| `static_cast<T>` | Ordinary, intended conversions. The overwhelming default |
-| `std::bit_cast<T>` | Reinterpreting the bits of an object. Replaces the pointer-cast idiom entirely |
-| `const_cast` | Almost never. Casting away const to *write* is undefined if the object is genuinely const. Needing it usually means an interface is wrong |
-| `reinterpret_cast` | Rare, and always with a comment justifying it. Byte-level buffer access is the legitimate case |
-| `dynamic_cast` | Only across a polymorphic hierarchy where the alternative is worse. A `dynamic_cast` chain is usually a missing virtual function |
-
-**Narrowing is explicit or it is a bug.** No implicit `int64_t` → `int32_t`, no
-`size_t` ↔ signed mixing left to the compiler. Where a narrowing is intended, `static_cast` it
-and, if the value could exceed the target, check first. Use braced initialisation where a
-narrowing conversion should be a compile error. Compare signed to signed and unsigned to
-unsigned; index containers with their own size type.
-
-### 4.7 Macros
-
-**Macros ignore scope and namespaces, so they are a last resort.** Permitted only for:
-
-- header guards (`#pragma once` preferred),
-- platform and compiler detection,
-- compile-time configuration,
-- assertions and logging, where capturing `__FILE__`, `__LINE__` and the source expression is
-  the entire point and no function can do it.
-
-Everything else uses `constexpr`, `inline` functions, templates or `enum class`. A macro that
-does survive is `UPPER_CASE`, prefixed to avoid collisions, and wrapped so it behaves as one
-statement at any call site.
-
-### 4.8 Standard library first
-
-**Prefer the standard library to a custom implementation.** `std::vector`, `std::array`,
-`std::unordered_map`, `std::span`, `std::optional`, `std::string_view`, `std::chrono`,
-`std::filesystem`, `std::bit_cast`, `<algorithm>`.
-
-A hand-rolled container or algorithm needs a profile showing the standard one is the bottleneck
-(P5) plus a comment recording that measurement. "It could be faster" is not a reason.
-
-**Prefer standard algorithms to hand-written loops where they say more.** `std::find_if`,
-`std::transform`, `std::accumulate`, `std::sort`, `std::any_of`, `std::ranges::*` — an algorithm
-names the intent, and a raw loop makes the reader infer it. Do not force it: a loop doing several
-things at once, or one whose index arithmetic is the point, is clearer written out. Clarity
-decides, not purity.
-
-**`std::pmr`** is worth considering only for an allocation-heavy subsystem, after a profile
-shows allocation is the cost. Not a default.
-
-### 4.9 Templates, concepts and compile-time work
-
-- Templates for genuine parametric reuse, not to avoid writing a function twice.
-- **Constrain every template parameter with a concept.** An unconstrained template fails deep
-  inside instantiation with an unreadable error; a constrained one fails at the call site.
-- Keep templates thin — a template wrapper over a non-template implementation keeps compile time
-  and binary size sane.
-- Prefer `if constexpr` to tag dispatch and SFINAE.
-- **Avoid template metaprogramming unless it buys correctness or measured performance.** Clever
-  type-level computation is the hardest code in any codebase to debug, and P4 applies with force.
-- Compile time is a feature. A heavy template instantiated in a widely-included header taxes
-  every translation unit.
-
-### 4.10 Lambdas
-
-- Keep them short. A lambda past a dozen lines wants to be a named function.
-- **Capture explicitly.** `[&]` and `[=]` hide lifetime bugs: `[&]` on a lambda that outlives the
-  scope is a dangling reference, and `[=]` silently copies more than intended. Name what you
-  capture. A blanket capture is acceptable in a small, immediately-invoked lambda where the scope
-  is obvious.
-- Never capture `this` into something that outlives the object; capture the members you need.
-- Prefer a stateless lambda where one will do — it converts to a function pointer and is easier
-  to reason about.
-- An immediately-invoked lambda is the right way to initialise a `const` that needs several
-  statements.
-
-### 4.11 Polymorphism and interfaces
-
-- **Composition over inheritance.** Inherit only for a genuine interface relationship.
-- **Static polymorphism** (templates, CRTP) when the type is known at compile time and the call
-  is hot; **dynamic polymorphism** at genuine runtime boundaries — where the implementation is
-  chosen at run time and the dispatch cost is amortised over real work.
-- Interfaces are **narrow**. Prefer several small ones to a broad one, so implementers are not
-  forced to stub methods.
-- A polymorphic base needs a `virtual` destructor, or a `protected` non-virtual one if deletion
-  through the base is never intended.
-- Do not add a virtual to "keep options open". Add it when a second implementation exists.
-
-### 4.12 Errors and exception safety
-
-vkML **throws; it does not abort.** Aborting is defensible for a command-line binary, not for a
-library embedded in someone else's process — it would take down their session. Every exception
-maps to a natural exception in the binding layer.
-
-The exception hierarchy is rooted at one base type with distinct derived types per failure class
-(shape, dtype, device, index, unimplemented, internal, out-of-memory), so callers can catch
-precisely. Assertions come in three levels, and the distinction matters:
-
-| Level | Meaning | Active in release |
-|---|---|---|
-| User error | Bad arguments to a public API | yes |
-| Internal invariant | A failure means the library itself is broken | yes, deliberately |
-| Hot-path invariant | Checked inside per-element loops | no |
-
-Keeping internal invariants on in release is a deliberate trade: a silently corrupted result
-costs far more to debug than a branch costs to execute.
-
-Because any invariant check can throw, code between an allocation and its owner must be
-exception-safe. Guarantees, in preference order:
-
-1. **No-throw** — destructors, moves, swaps, deallocation. Required.
-2. **Strong** — the operation succeeds or leaves state unchanged. Aim for this wherever shared
-   state is mutated; do the work on a copy, then swap.
-3. **Basic** — invariants hold, nothing leaks, state unspecified. The minimum.
-
-RAII gets most of this automatically, which is the main reason §4.1 is non-negotiable.
-
-**Error messages name the operation, the actual values, and the expectation.** A message that
-says only that something is invalid has wasted the throw.
-
-### 4.13 Undefined behaviour
-
-UB is not a performance tool. Signed overflow, out-of-bounds indexing, strict-aliasing
-violations, misaligned loads, use-after-move, uninitialised reads and data races are defects even
-when the binary happens to work.
-
-Two that bite repeatedly:
-
-- **Dangling from a temporary.** A function returning by value, called twice in one expression to
-  get a begin and an end, yields iterators into two different dead objects. Bind to a named
-  value.
-- **Layout assumptions across a language boundary.** A struct shared with shader code must have
-  its size and offsets `static_assert`-ed, not assumed.
-
-Build and test under sanitizers. A clean sanitizer run is evidence; the absence of a crash is
-not.
-
-### 4.14 Thread safety
+### 6.6 Concurrency model
 
 Concurrency is a design decision recorded in an ADR, not something introduced incidentally. Do
 not add threads, atomics or locks without one.
 
 Every type is documented as thread-safe, thread-compatible (safe for distinct instances), or
-thread-hostile. `const` methods are safe for concurrent readers (§4.3). Objects immutable after
-construction are safe to share by construction, which is the cheapest way to get there.
+thread-hostile. `const` methods must be safe for concurrent readers (§8.3). Objects immutable
+after construction are safe to share by construction — the cheapest way to get there.
 
-### 4.15 Performance-aware design
+## 7. Code smells, and deleting code
 
-Design for performance; do not micro-optimise without measurement (P5, §7).
+**Smells are not style complaints.** Each reliably predicts a design that gets expensive. On
+seeing one, stop and reconsider before adding to it (§15):
 
-- **Data layout beats instruction selection.** Contiguous arrays over pointer chases; cache
-  locality is usually the dominant term.
-- Keep hot structs small and hot fields adjacent; cold data belongs in a side table.
-- Allocation is a design concern, not a micro-optimisation. Reserve capacity, reuse buffers on
-  repeated paths, and aim for a steady state that allocates nothing.
-- Pass large read-only data by `const&` or `span`.
-- Prefer the better algorithm before the better constant factor.
-- Let the compiler vectorise by writing clean, aliasing-free loops over contiguous data. Reach
-  for intrinsics only when a profile and a disassembly justify it.
+- A function past ~100 lines, or one needing section comments to navigate.
+- More than about five parameters — usually a missing struct, or two functions in one.
+- Nesting past three levels; an early return or an extracted function is waiting.
+- **A boolean parameter selecting behaviour.** `f(x, true)` is unreadable at the call site, and
+  the function is really two functions.
+- The same logic in a third place. Twice is coincidence; three times is a missing abstraction.
+- A growing `switch`, especially the same cases switched in several places — a virtual function
+  or a table wants to exist.
+- A parameter existing for exactly one caller.
+- A comment explaining what a block does, where extracting a named function would say it better.
+- A test needing rewriting whenever the implementation changes — it tests the implementation
+  (§11).
 
-### 4.16 Headers and includes
+**Deleting code is an improvement.** Not every contribution is an addition. Delete on sight:
+unused functions, dead branches, a configuration option nobody sets, an abstraction with one
+implementation that was built for a second that never came, a specialised path no longer ahead of
+the generic one (§6.2), and a test that cannot fail.
+
+Git holds the history — deleted code is recoverable, and code kept "just in case" is code that
+must be read, compiled, and kept correct forever. **The burden of proof is on keeping it.**
+
+---
+
+# Part III — Writing
+
+## 8. C++ language
+
+C++20. Use the standard it targets; check the build configuration before assuming a feature
+exists. This is a house style, not a summary of the Core Guidelines.
+
+### 8.1 Ownership and lifetime
+
+- **Rule of Zero by default.** A class managing no resource declares no destructor, copy or move.
+- **Rule of Five when you must.** Writing any of the five means writing or `= delete`-ing all
+  five; a half-set is a silent bug.
+- **RAII for every resource** — memory, device handles, descriptors, timers. No manual release.
+
+| Intent | Type |
+|---|---|
+| Sole owner | `std::unique_ptr<T>` — the default owning pointer |
+| Genuinely shared, unpredictable lifetime | `std::shared_ptr<T>` |
+| Break a cycle; observe without extending | `std::weak_ptr<T>` |
+| Non-owning, must outlive the callee | `T&` or `T*` |
+| Non-owning contiguous range | `std::span<T>` |
+
+`shared_ptr` is a decision, not a default; where this codebase uses it an ADR says why. Never
+`new`/`delete` in application code. Raw pointers and references are **non-owning, always**.
+
+### 8.2 Value semantics and moves
+
+- Prefer values; shared mutable state is a permanent cost.
+- Return by value — out-parameters obscure dataflow and defeat elision.
+- Sink parameters by value and moved; read-only by `const&`, or by value when trivially copyable
+  and small.
+- Mark moves, swaps and destructors `noexcept`, or containers copy instead of moving.
+- A moved-from object is valid but unspecified: assign or destroy, never read.
+- Do not `std::move` a return value; it blocks elision.
+
+### 8.3 const, constexpr, consteval, noexcept
+
+- **`const` by default**; non-const needs a reason.
+- `const` methods must be **thread-safe for concurrent readers** — a `mutable` cache breaks that
+  unless synchronised.
+- **`constexpr`** wherever computation moves to build time. **`consteval`** when a function must
+  *never* run at run time, making that a compile error rather than a convention.
+- **`static_assert` for invariants the type system can check**: struct sizes and offsets shared
+  with shader code, table sizes matching an enum, type widths.
+- `noexcept` only where genuinely guaranteed. A `noexcept` function that throws terminates.
+
+### 8.4 Attributes
+
+| Attribute | Use when |
+|---|---|
+| `[[nodiscard]]` | The return value is the point of the call. Default for pure functions and factories |
+| `[[maybe_unused]]` | Used only in some build configurations — a debug-only assertion argument |
+| `[[fallthrough]]` | A `switch` case deliberately falls through; without it, intent is indistinguishable from bug |
+| `[[likely]]`/`[[unlikely]]` | A branch is overwhelmingly one-sided **and** on a measured hot path (P5) |
+| `[[noreturn]]` | A throw helper or fatal handler; lets the compiler drop unreachable paths |
+| `[[deprecated("use X")]]` | A public API is on its way out (§6.4). Always name the replacement |
+
+### 8.5 Types that carry meaning
+
+- **`enum class` always** — scoped, non-converting, forward-declarable.
+- **`std::optional<T>`** for legitimate absence; not for errors.
+- **`std::variant`** for a closed set; visit exhaustively so a new case is a compile error.
+- **`std::span` / `std::string_view`** for non-owning ranges — they replace pointer+length pairs
+  that can disagree. Never store one outliving what it views.
+- **Strong types over primitives** where a mix-up is plausible: two same-typed integers meaning
+  different things are one transposition from a silent bug. Judgement, not every integer.
+
+### 8.6 Conversions and casts
+
+**Never use a C-style cast.** It is unsearchable and silently picks among four operations.
+
+| Cast | Use |
+|---|---|
+| `static_cast<T>` | Intended conversions. The overwhelming default |
+| `std::bit_cast<T>` | Reinterpreting an object's bits; replaces the pointer-cast idiom |
+| `const_cast` | Almost never. Casting away const to write is UB if the object is const; needing it means an interface is wrong |
+| `reinterpret_cast` | Rare, always with a justifying comment. Byte-level buffer access is the legitimate case |
+| `dynamic_cast` | Only where the alternative is worse. A chain of them is a missing virtual function |
+
+**Narrowing is explicit or it is a bug.** Braced initialisation where a narrowing should not
+compile; `static_cast` with a range check where the value could exceed the target. Compare signed
+to signed, and index containers with their own size type.
+
+### 8.7 Macros
+
+**Macros ignore scope and namespaces**, so they are a last resort. Permitted only for: header
+guards; platform and compiler detection; compile-time configuration; and assertions and logging,
+where capturing `__FILE__`, `__LINE__` and the source expression is the entire point.
+
+Everything else uses `constexpr`, `inline` functions, templates or `enum class`. A surviving
+macro is `UPPER_CASE`, prefixed, and wrapped to behave as one statement at any call site.
+
+### 8.8 Standard library first
+
+**Prefer the standard library to a custom implementation** — containers, `std::span`,
+`std::optional`, `std::chrono`, `std::filesystem`, `std::bit_cast`, `<algorithm>`. A hand-rolled
+replacement needs a profile showing the standard one is the bottleneck (P5), plus a comment
+recording that measurement.
+
+**Prefer standard algorithms to hand-written loops where they say more** — `find_if`,
+`transform`, `accumulate`, `sort`, `any_of`, `ranges::*`. An algorithm names the intent; a raw
+loop makes the reader infer it. Do not force it: a loop doing several things at once, or whose
+index arithmetic is the point, is clearer written out. Use `std::ranges` where it improves
+clarity, not everywhere.
+
+**`std::pmr`** is worth considering only for an allocation-heavy subsystem after a profile shows
+allocation is the cost.
+
+### 8.9 Templates and compile-time work
+
+- Templates for genuine parametric reuse, not to avoid writing a function twice.
+- **Constrain every template parameter with a concept** — an unconstrained one fails deep inside
+  instantiation instead of at the call site.
+- Keep templates thin: a template wrapper over a non-template implementation keeps compile time
+  and binary size sane.
+- Prefer `if constexpr` to tag dispatch and SFINAE.
+- **Prefer runtime polymorphism when compile-time polymorphism costs compile time without a
+  measured runtime benefit.** Templates are not free, and the cost is paid by everyone building.
+- **Avoid template metaprogramming unless it buys correctness or measured performance** — it is
+  the hardest code in any codebase to debug (P4).
+
+### 8.10 Lambdas
+
+- Keep them short; past a dozen lines it wants a name.
+- **Capture explicitly.** `[&]` on a lambda outliving its scope dangles; `[=]` copies more than
+  intended. A blanket capture is acceptable only in a small immediately-invoked lambda.
+- Never capture `this` into something outliving the object — capture the members needed.
+- Prefer stateless lambdas; an immediately-invoked lambda is the right way to initialise a
+  `const` needing several statements.
+
+### 8.11 Undefined behaviour, headers and includes
+
+UB is not a performance tool. Signed overflow, out-of-bounds indexing, aliasing violations,
+misaligned loads, use-after-move, uninitialised reads and data races are defects even when the
+binary works. Two that bite repeatedly: **a function returning by value, called twice in one
+expression** to get a begin and an end, yields iterators into two different dead temporaries; and
+**a struct shared with shader code** must have its size and offsets `static_assert`-ed, not
+assumed. Build and test under sanitizers — a clean run is evidence; no crash is not.
+
+Headers:
 
 - The public include directory is the **public** surface; headers beside sources are internal.
   Nothing public exposes an internal type.
-- **Include what you use**, directly. Do not lean on transitive includes.
-- **Forward-declare** when only a reference, pointer or return type is needed; include when you
-  need the size, a member or a base.
-- Every header is self-contained and compiles alone, with `#pragma once` at the top.
-- Headers include the minimum — a heavy include in a widely-used header taxes every build. PImpl
-  is the escape hatch when an implementation detail would otherwise leak.
-- Definitions in the source file unless the function is genuinely tiny, a template, or
-  `constexpr` and needed at compile time.
-- **Circular dependencies are an architecture failure** (§3.1), not an include problem. Fix the
-  layering; do not paper over it with forward declarations.
+- **Include what you use**, directly; do not lean on transitive includes.
+- **Forward-declare** for a reference, pointer or return type; include when you need the size, a
+  member or a base.
+- Every header is self-contained, compiles alone, `#pragma once` at the top, and includes the
+  minimum — a heavy include in a widely-used header taxes every build. PImpl is the escape hatch.
+- Definitions in the source file unless tiny, a template, or `constexpr` and needed at compile
+  time.
+- **Circular dependencies are an architecture failure** (§5.1), not an include problem.
 
-### 4.17 Naming and comments — the maturity standard
+### 8.12 Features not yet adopted
 
-This is what separates a codebase a stranger can maintain from one only its author can. Hold it
-to the standard of the projects in §13. Neither half is cosmetic: a wrong name and a stale
-comment both actively mislead, which is worse than silence.
+- **Modules** — not until toolchain support is stable across every supported compiler and the
+  build handles them without special-casing. The benefit is build time; the cost of being early
+  is a build nobody can reproduce.
+- **Coroutines** — not without a genuine asynchronous use case awkward to express otherwise. They
+  bring a lifetime model of their own.
 
-**Names state what a thing is, in the domain's own vocabulary.**
+Revisit by proposal and ADR, not by drift.
 
-- Use the word the field uses, and use one word per concept across the whole codebase — if it is
-  a *workgroup* in one file it is not a *block* in the next.
+## 9. Errors, assertions and logging
+
+**Throw; never abort.** A library embedded in someone else's process must not kill it. Every
+exception maps to a natural one in the binding layer.
+
+The hierarchy is rooted at one base type with a derived type per failure class — shape, dtype,
+device, index, unimplemented, internal, out-of-memory — so callers can catch precisely.
+Assertions come in three levels:
+
+| Level | Meaning | Active in release |
+|---|---|---|
+| User error | Bad arguments to a public API | yes |
+| Internal invariant | A failure means the library is broken | yes, deliberately |
+| Hot-path invariant | Checked inside per-element loops | no |
+
+Keeping internal invariants on in release is a deliberate trade: a silently corrupted result
+costs far more to debug than a branch costs to execute.
+
+**Exception safety.** Any check can throw, so code between an allocation and its owner must be
+safe. In preference order: **no-throw** (destructors, moves, swaps — required); **strong**,
+succeed or leave state unchanged, wherever shared state is mutated (work on a copy, then swap);
+**basic**, invariants hold and nothing leaks, as the minimum. RAII gets most of this
+automatically — why §8.1 is non-negotiable.
+
+**Error messages name the operation, the actual values, and the expectation.** A message saying
+only that something is invalid has wasted the throw.
+
+**Logging.** Log what someone can act on.
+
+| Level | For |
+|---|---|
+| `error` | The operation failed and the caller needs to know why |
+| `warn` | Something is wrong but recoverable, or a deprecated path was taken |
+| `info` | Significant lifecycle events — device selected, backend registered. Rare by construction |
+| `debug` | Diagnostic detail, off by default |
+
+- **Never log in a hot loop** unless explicitly diagnosing, and then behind a switch that is off
+  by default and costs one predictable branch when off.
+- **Format nothing unless the message will be emitted.** Building a string that is then discarded
+  can cost more than the work being logged.
+- A log line that fires on every normal operation is noise, and noise trains people to ignore the
+  channel — which costs you the one message that mattered.
+- Logging is not error handling. A logged-and-swallowed failure is a silent failure.
+
+## 10. Naming and comments
+
+A wrong name and a stale comment both actively mislead, which is worse than silence.
+
+**Names state what a thing is, in the domain's vocabulary.**
+
+- Use the word the field uses, and **one word per concept** across the codebase — if it is a
+  *workgroup* in one file it is not a *block* in the next.
 - **Length scales with scope.** `i` in a three-line loop is correct; `i` as a member is not.
 - **Abbreviate only what the domain abbreviates.** Established acronyms are fine; `mgr`, `tmp2`,
-  `res`, `val`, `do_stuff` are not.
+  `res`, `do_stuff` are not.
 - **Booleans read as assertions**, so call sites read as English: `is_contiguous()`,
-  `has_broadcast_stride()`, `supports(x)`.
-- **No type in the name.** Not `float_value`, not `p_node`, not `vec_dims`.
+  `supports(x)`.
+- **No type in the name** — not `float_value`, `p_node`, `vec_dims`.
 - **A name needing a comment to be understood is the wrong name.** Rename first.
-- Banned outright: `data2`, `temp`, `foo`, `helper`, `utils`, `misc`, `manager`, `process()`,
-  `handle()`, and any name whose only meaning is "the other one".
+- Banned: `data2`, `temp`, `foo`, `helper`, `utils`, `misc`, `manager`, `process()`, `handle()`.
 
-**Comments explain *why*. The code already says *what*.**
+**Comments explain *why*. The code says *what*.** The test: **would a competent reader be
+surprised?** If not, write nothing — a comment restating its line drifts and then lies.
 
-The test: **would a competent reader be surprised?** If yes, explain the reason, not the
-mechanics. If no, write nothing — a comment restating its line drifts out of date and then lies.
+Earns a comment: a non-obvious constant **with its derivation**; **a rejected alternative and the
+cost that rejected it** (the most valuable kind — it stops the next person redoing the analysis,
+or "fixing" the code back to the version that was wrong); a deliberate divergence from a
+specification or a mirrored framework; a hardware constraint making odd code necessary; an
+invariant a caller must uphold that the type system cannot express.
 
-What earns a comment:
+Never appears: restatement; commented-out code (§7); decorative banners; an ownerless `TODO`
+(P7); anything false after the next edit — cite a source rather than copy a value.
 
-- **A non-obvious constant, with its derivation** — where the number came from, what breaks if it
-  changes.
-- **A rejected alternative and the cost that rejected it.** The most valuable kind here: it stops
-  the next person redoing the analysis, or "fixing" the code back to the version that was wrong.
-- **A deliberate divergence** from the obvious implementation, from the reference framework, or
-  from a specification — with the reason attached.
-- **A hardware or driver constraint** that makes otherwise-odd code necessary.
-- **An invariant a caller must uphold** that the type system cannot express.
-
-What must not appear: restatement of the line; commented-out code (Git has it); decorative
-banners with no content; a `TODO` with no owner and no trigger (P7); anything that will be false
-after the next edit — cite a source rather than copying a value.
-
-**The standing test for both:** could a contributor who has never spoken to you read this file
-and make a correct change?
-
-### 4.18 Features not yet adopted
-
-- **Modules.** Do not migrate until toolchain support is stable and uniform across every
-  supported compiler and the build system handles them without special-casing. The benefit is
-  build time; the cost of being early is a build nobody else can reproduce.
-- **Coroutines.** Do not introduce them without a genuine asynchronous use case that is awkward
-  to express otherwise. They bring a lifetime model of their own, and adding it for style is a
-  poor trade.
-
-Revisit both by proposal and ADR, not by drift.
+**The standing test:** could a contributor who has never spoken to you read this and make a
+correct change?
 
 ---
 
-## 5. Architecture
+# Part IV — Verifying
 
-### 5.1 Dependencies and boundaries
+## 11. Testing
 
-- **Dependencies point one way**, down the layer stack (§3.1). If a lower layer needs something
-  from above, invert it with an interface the lower layer owns.
-- **Module boundaries are contracts.** A module states what it guarantees and what it requires;
-  everything else is private and may change without notice.
-- **One module, one reason to change.** A file that changes for two unrelated reasons is two
-  files.
-- **Encapsulate representation.** Expose behaviour, not fields.
-- **New code goes in the layer that owns the responsibility**, even when that is less convenient
-  than the layer you happen to be editing.
+Tests ship with the change. A feature without tests is unfinished.
 
-### 5.2 Backend philosophy
+**Test behaviour, not implementation.** Exercise the public contract, not internals. A test
+coupled to internals breaks on every refactor, and a suite that cries wolf stops being read. If
+behaviour is hard to test without reaching inside, the design is telling you something (§7).
 
-vkML targets more than one execution backend and will target more. The rule that keeps that from
-fragmenting the codebase:
+| Tier | Covers |
+|---|---|
+| **Unit** | Every operation: every dtype, contiguous + strided + broadcast, edge shapes (empty, size-1, non-power-of-2, minimum and maximum rank) |
+| **Oracle** | The chain in §5.4, in order |
+| **Gradient** | Analytical against numerical differentiation *and* against the reference framework |
+| **Integration** | Layers, optimisers over many steps (trajectories, not endpoints), whole-model parity |
+| **Regression** | Golden values, exact because results are deterministic. Every fixed bug gets one |
+| **Property** | Randomised shapes, strides, dtypes — where hand-written cases miss combinations |
+| **Resource** | Every allocation freed; peak within prediction; no device loss under stress |
 
-```
-    generic implementation  →  correct everywhere
-            ↓
-    verified against the oracle
-            ↓
-    profiled on a real workload
-            ↓
-    specialised path  →  only where the profile justifies it
-```
+- Run correctness tests in the mode that makes a failure point at the offending operation rather
+  than a deferred execution boundary.
+- Run device tests with validation layers on; any validation error fails the build.
+- **A test that cannot fail is worse than none** — it manufactures confidence. Verify a new test
+  fails against deliberately broken code before trusting its pass.
+- Tolerances come from the central policy and nowhere else (§5.3).
+- Cover what a random sweep cannot reach: NaN and infinity, exact equality, empty inputs,
+  contention, numerically awkward tails.
 
-- **One generic implementation must work on every supported device.** It is the contract; a
-  specialised path is an optimisation on top of it, never a replacement for it.
-- **Detect capabilities, not vendors** (§3.2). Branch on what the device reports it can do, not
-  on who made it. Vendor identity is at best a proxy, and it goes stale with every new part.
-- A specialised path must produce results the generic path would have produced, within the
-  numerical contract (§3.3) — and where it changes a fold order, §3.3's re-derivation applies.
-- **Every specialised path is a permanent maintenance obligation**: another combination to test,
-  another thing to keep correct. It earns its place with a measurement (P5) and keeps it by
-  staying measurably ahead.
-- Removing a specialised path that no longer pays is a normal, encouraged change.
+## 12. Debugging
 
-An unimplemented operation on a backend must fail clearly, naming the operation — or be routed
-to one that can run it, if that routing exists. It must never silently produce a wrong result.
-
-### 5.3 Dispatcher philosophy
+**Never guess.** A fix applied without understanding the cause moves the symptom and leaves a
+change nobody can justify.
 
 ```
-    operator  →  dispatcher  →  backend  →  kernel
+Reproduce  →  Reduce  →  Observe  →  Hypothesise  →  Verify  →  Fix  →  Regression test
 ```
 
-**The dispatcher owns backend selection. Operators never know which backend executes them.**
+1. **Reproduce** deterministically, with a fixed seed and a recorded command. An intermittent
+   failure is a reproduction problem to solve first, not a bug to guess at.
+2. **Reduce** to the smallest input and shortest path that still fails. Most bugs become obvious
+   at minimum size, and the reduced case is the regression test.
+3. **Observe** rather than infer. Print the actual values, dump the intermediate, run the
+   sanitizer, enable the validation layer. What you believe the code does is the thing under
+   suspicion.
+4. **Hypothesise** one specific cause that explains *all* the evidence — including anything that
+   looked irrelevant. A hypothesis explaining only some of it is wrong.
+5. **Verify** by prediction: state what you expect to see if the hypothesis holds, then look.
+   Cheapest discriminating test first.
+6. **Fix the cause.** If the fix works and you cannot say why, you have not finished.
+7. **Regression test**, from the reduced case. Confirm it fails against the unfixed code (§11).
 
-- An operator describes *what* to compute — shapes, dtypes, parameters. It contains no branch on
-  device, backend or vendor. A `if (device == ...)` in operator code is a layering violation.
-- The dispatcher decides *where*, using the backend's own declaration of what it supports.
-- The backend decides *how*, selecting among its kernels.
-- A kernel does the work and knows nothing above it.
+**Before assuming an implementation bug, rule out two things** that have wasted more time here
+than real defects: **a wrong measurement** (§14) and **a wrong test**. Both look exactly like a
+code bug from the outside.
 
-This is what makes adding a backend an addition rather than a rewrite, and it is why the
-capability predicate is asked rather than inferred. Keep the seam clean even when a shortcut
-would be convenient: the shortcut is paid for once per backend, forever.
+**Bisect when the cause is not localised** — which is most of why every commit must build and
+pass (§18). Record what a hard bug taught you, as a note in `docs/` or a comment at the trap.
 
-**Do not build dispatch machinery beyond the need.** A flat table sized to the actual operator
-and backend count is the right structure until it is not; a plugin registry, dynamic loading or a
-multi-key dispatch lattice are answers to problems this project may never have (P2, P6). Add
-indirection when a second case exists, not before.
+## 13. When *not* to optimise
 
-### 5.4 API evolution
+Optimisation has a permanent cost — complexity, another path to test, code that resists change —
+paid whether or not the speedup materialises.
 
-**Public APIs are stable. Internal APIs may evolve freely.** The boundary is explicit (§4.16),
-and knowing which side you are on decides how much care a change needs.
+**Not a reason to optimise:** it feels slow · it looks inefficient · another project does it ·
+it saves allocations in code that runs once · the assembly could be tighter · a microbenchmark of
+the function in isolation improved · it seems wasteful.
 
-- **Internal**: change it. Update the callers, keep the tests green, done.
-- **Public**: a breaking change needs a migration path — a deprecation period with
-  `[[deprecated("use X")]]` naming the replacement, or an ADR recording why a clean break is the
-  lesser cost.
-- **Prefer additive change.** A new overload or a defaulted parameter breaks nobody.
-- **Widening what a function accepts is safe; narrowing is not.** Same for return values in
-  reverse.
-- A deliberate divergence from the framework being mirrored is a public contract too: document
-  it at the declaration and pin it with a test, so it stays a decision rather than drifting into
-  a surprise.
-- Removing a public symbol is a release-note event.
+**A reason to optimise:** a profile of a real workload names it · a benchmark on a representative
+input shows the gain · a measured regression against a recorded baseline · a user-visible
+bottleneck · a resource limit actually being hit.
 
-Until the first stable release, "public" means "documented as public and covered by tests" rather
-than "frozen" — but the discipline starts now, because retrofitting it is what makes libraries
-ossify.
+**Gate zero, before profiling anything: is the functionality this serves complete?** (P2.) A
+missing operation is infinitely slower than a suboptimal one. If it is not complete, implement
+what is missing and record the opportunity (P7).
 
-### 5.5 Code smells — stop and rethink
+## 14. Performance engineering
 
-These are not style complaints. Each one reliably predicts a design that will be expensive later.
-On seeing one, stop and reconsider before adding to it (§6):
+**No optimisation is accepted without evidence** (P5).
 
-- A function past ~100 lines, or one that needs a section comment to be navigable.
-- More than about five parameters — usually a missing struct, or a function doing two jobs.
-- Nesting past three levels; usually an early return or an extracted function is waiting.
-- A **boolean parameter that selects behaviour**. `f(x, true)` is unreadable at the call site and
-  the function is really two functions.
-- The same logic in a third place. Twice can be coincidence; three times is a missing
-  abstraction.
-- A `switch` that keeps growing, especially the same set of cases switched over in several
-  places — that is a virtual function or a table waiting to exist.
-- A parameter that exists for exactly one caller.
-- A comment explaining what a block does, where extracting a named function would say it better.
-- A test that must be rewritten whenever the implementation changes — it is testing the
-  implementation, not the behaviour (§8).
+### The loop
+
+1. **Profile.** Find the actual bottleneck; intuition about which line is hot is wrong more often
+   than right.
+2. **Hypothesise.** State what you expect to change, by how much, and **what result would prove
+   you wrong** — before measuring. A prediction made afterwards is not one.
+3. **Check the constraints.** Does it alter fold order (§5.3)? Do recorded laws forbid it?
+   Cheapest refutation first.
+4. **Gate on resources before timing.** Where the toolchain reports register pressure, spills,
+   scratch or occupancy for a candidate, read them and reject on those *before* benchmarking — a
+   candidate rejected without ever being timed is the cheapest rejection available.
+5. **Measure**, to the rules below.
+6. **Verify correctness.** Full suite plus goldens.
+7. **Accept or roll back.** A failed hypothesis is a result: record it (P7). Failed predictions
+   are where laws come from.
+
+### Measurement rules
+
+Derivations and measured figures are in `MEASUREMENT-AUDIT.md`.
+
+1. **Characterise the noise floor first.** An effect smaller than the spread of repeated
+   identical runs is not an effect.
+2. **Device-side timers beat wall clock.** Use wall clock only when the measured operation
+   dominates the window — check that ratio rather than assume it.
+3. **Report the minimum**, never the mean. The tail measures the machine.
+4. **Never sum per-dispatch timers across concurrent work** — overlapping work reports
+   overlapping intervals and the sum counts the same time repeatedly. Use an enclosing window.
+5. **Never compare a profiled run against an unprofiled one.**
+6. **Never benchmark with validation or debug layers on.** They change what they measure.
+7. **Warm caches and pipelines first.** Compilation is setup, not measurement.
+8. **An A/B is valid only if the A arm is the frozen, unmodified baseline.**
+9. **Prefer criteria that compare bytes** — they cannot be perturbed by measuring.
+10. **Check every gate for vacuity before trusting a pass.**
+11. **Two independent calculations agreeing is not confirmation** — it warns that the experiment
+    cannot distinguish them.
+
+Benchmark in the configuration intended for it. A stored baseline is a claim: updating one needs
+the same evidence as any other performance statement.
 
 ---
 
-## 6. Refactoring
+# Part V — Shipping
+
+## 15. Refactoring
 
 **Before adding a feature, decide whether what exists can carry it.** Usually it can — say so in
-a line and move on. Escalate to a real analysis when you see:
-
-- the feature needs a special case inside an existing abstraction to be accepted;
-- a parameter exists only to select behaviour for one caller;
-- the change forces an edit in a layer that should not have known about it;
-- the same conditional appears in a third place.
+a line and move on. Escalate when: the feature needs a special case inside an existing
+abstraction; a parameter exists only to select behaviour for one caller; the change forces an
+edit in a layer that should not have known about it; the same conditional appears in a third
+place.
 
 **When a signal fires, fix the abstraction first, in its own commit.** Building on a known-bad
 abstraction is never cheaper later.
 
-**When *not* to refactor**, which matters as much:
+**When *not* to refactor**, which matters as much: the code is ugly but stable, well-tested,
+single-caller, with no feature pending · you are mid-feature and it is unrelated (note it, finish,
+do it separately) · you cannot state the improvement in one sentence · behaviour would change,
+which is a redesign needing §2 step 6.
 
-- The code is ugly but stable, well-tested, single-caller, and no feature is pending.
-- You are mid-feature and the refactor is unrelated. Note it, finish, do it separately.
-- You cannot state the improvement in one sentence.
-- Behaviour would change — that is a redesign, and it needs §2 step 6.
+**Refactoring preserves behaviour, and here that is checkable**: a change altering no fold order
+must leave goldens byte-identical (§5.3). If they move, you did not refactor. Small steps, suite
+green between each.
 
-**Refactoring preserves behaviour, and here that is checkable rather than a judgement**: a change
-that alters no fold order must leave goldens byte-identical (§3.3). If they move, you did not
-refactor. Work in small steps with the suite green between each.
+## 16. Documentation
 
----
+Comment philosophy is §10. This is the artifacts, and where each kind of knowledge belongs:
 
-## 7. Performance engineering
+```
+code            what it does now — the only thing that cannot be out of date
+comments        why this line is as it is, and what was rejected
+API docs        the contract: parameters, returns, throws, lifetimes
+architecture    how the pieces fit and why the shape is this shape
+ADRs            one decision, its alternatives, its measurements, its guardrails
+manifesto       mission, priorities, what is deliberately not being done
+```
 
-**No optimisation is accepted without evidence** (P5). Not because it looks faster, not because
-it is theoretically better, not because another project does it.
+Put knowledge at the **narrowest** level that holds it: a reason affecting one line is a comment,
+not an ADR; a decision constraining the project is an ADR, not a comment.
 
-### Gate zero — is this the right work at all?
-
-Before profiling anything: **is the functionality this optimisation serves complete?** (P2.) If
-not, implement what is missing instead — a missing operation is infinitely slower than a
-suboptimal one. Optimise when the path is on a real workload's critical path, the functionality
-around it is complete and tested, and a profile identifies it. Otherwise record the opportunity
-(P7) and move on.
-
-### The loop
-
-1. **Profile.** Find the actual bottleneck. Intuition about which line is hot is wrong more often
-   than right.
-2. **Hypothesise.** State what you expect to change, by how much, and **what result would prove
-   you wrong** — before measuring. A prediction made afterwards is not a prediction.
-3. **Check the constraints.** Does it alter fold order (§3.3)? Do the recorded laws already
-   forbid it? Cheapest possible refutation first.
-4. **Gate on resources before timing.** Where the toolchain can report register pressure, spills,
-   scratch or occupancy for a candidate, read them and reject on those *before* benchmarking. A
-   candidate rejected without ever being timed is the cheapest possible rejection.
-5. **Measure**, to the rules below.
-6. **Verify correctness.** Full suite plus goldens.
-7. **Accept or roll back.** A failed hypothesis is a result — record it (P7) rather than deleting
-   it. Failed predictions are where laws come from.
-
-### Measurement rules
-
-These are hard-won; the derivations and the measured figures behind them are in
-`MEASUREMENT-AUDIT.md`.
-
-1. **Characterise the noise floor before claiming an effect.** An effect smaller than the spread
-   of repeated identical runs is not an effect.
-2. **Device-side timers are far more reproducible than wall clock.** Prefer them; use wall clock
-   only when the measured operation dominates the measured window, and check that ratio rather
-   than assuming it.
-3. **Report the minimum** of a timing distribution, never the mean. The tail measures the
-   machine, not the work.
-4. **Never sum per-dispatch timers across concurrent work.** Use an enclosing window; overlapping
-   work reports overlapping intervals and the sum counts the same time repeatedly.
-5. **Never compare a profiled run against an unprofiled one.**
-6. **Never benchmark with validation or debug layers enabled.** They change what they measure.
-7. **Warm caches and pipelines before timing.** Compilation is setup, not measurement.
-8. **An A/B is valid only if the A arm is the frozen, unmodified baseline.**
-9. **Prefer criteria that compare bytes** — they cannot be perturbed by measuring.
-10. **Check every gate for vacuity before trusting a pass.**
-11. **Two independent calculations agreeing is not confirmation** — it is a warning the
-    experiment cannot distinguish them.
-
-Benchmark in the configuration intended for it, and treat a stored baseline as a claim: updating
-one needs the same evidence as any other performance statement.
-
----
-
-## 8. Testing
-
-Tests ship with the change. A feature without tests is unfinished.
-
-**Test behaviour, not implementation.** Exercise the public contract, not private internals.
-A test coupled to internals breaks on every refactor, and a suite that cries wolf stops being
-read — which costs more than the coverage was worth. If behaviour is hard to test without
-reaching inside, the design is telling you something (§5.5).
-
-| Tier | What it covers |
-|---|---|
-| **Unit** | Every operation: every dtype, contiguous + strided + broadcast, edge shapes (empty, size-1, non-power-of-2, minimum and maximum rank) |
-| **Oracle** | The chain in §3.4, in order |
-| **Gradient** | Analytical against numerical differentiation *and* against the reference framework, for every input and parameter |
-| **Integration** | Layers, optimisers over many steps (compare trajectories, not just endpoints), whole-model parity |
-| **Regression** | Golden values. Exact, because results are deterministic. Every fixed bug gets one |
-| **Property** | Randomised shapes, strides and dtypes, where hand-written cases miss combinations |
-| **Resource** | Every allocation freed; peak usage within prediction; no device loss under stress |
-
-- Run correctness tests in the mode that makes a failure point at the offending operation rather
-  than at a deferred execution boundary.
-- Run device tests with validation layers on; any validation error fails the build.
-- **A test that cannot fail is worse than no test** — it manufactures confidence. Verify a new
-  test fails against deliberately broken code before trusting its pass.
-- Tolerances come from the central policy and nowhere else (§3.3).
-- Cover the cases a random sweep cannot reach: NaN and infinity, exact equality, empty inputs,
-  contention, and the numerically awkward tails.
-
----
-
-## 9. Documentation
-
-Documentation is a deliverable. Comment philosophy is §4.17; this is about the artifacts.
-
-- **Public API**: every public type and function documents purpose, parameters, return value,
-  what it throws, and any lifetime or ownership requirement.
-- **Design rationale goes in `docs/`**, not in a commit message where nobody will find it. A
-  decision that is expensive to reverse, changes a public contract or an invariant, or was taken
-  against an obvious alternative → an **ADR**, following the existing format: *Context →
-  Measurements → Options considered, each with a verdict → Decision → Guardrails adopted now →
-  Rejected alternatives, recorded so they are not rediscovered.*
-- **Experiments get a record** stating the hypothesis, the quantified prediction and the
-  falsification criteria *before* the results.
+- **Public API**: purpose, parameters, return, what it throws, any lifetime or ownership
+  requirement.
+- **ADR format**: *Context → Measurements → Options considered, each with a verdict → Decision →
+  Guardrails adopted now → Rejected alternatives, recorded so they are not rediscovered.*
+- **Experiments get a record** stating hypothesis, quantified prediction and falsification
+  criteria *before* the results.
 - **Update what your change invalidated**, in the same commit. Stale documentation is worse than
   none, because it is trusted.
-- Examples must build and run in CI, or they rot.
+- Examples build and run in CI, or they rot.
 
----
+## 17. Review checklist
 
-## 10. Review checklist
+Against your own work before declaring anything complete. Mechanical always; the rest as
+applicable. Each line cites where the rule lives rather than restating it.
 
-Run this against your own work before declaring anything complete. Scale it to the change: the
-mechanical items always, the rest as applicable.
+**Mechanical** — no judgement, just run them: layering, formatter, static analysis, a
+warning-free build in every configuration, the full suite, sanitizers for memory-touching changes.
 
-**Mechanical** — no judgement required, so just run them: layering check, formatter, static
-analysis, a warning-free build in every configuration, the full test suite, sanitizers for
-memory-touching changes.
-
-**Always:**
-- [ ] Every claim I am about to make is supported by something I actually ran (P5, §0).
-- [ ] The change is one logical unit.
-- [ ] Anything left unfinished is stated explicitly, not implied (P7).
-- [ ] The surrounding code is no worse than I found it.
-
-**Architecture:** correct layer · one responsibility · right abstraction level · no new coupling ·
-no circular dependency · operators contain no backend branch (§5.3) · no smell from §5.5.
-
-**Correctness:** edge cases (empty, minimum rank, size-1, broadcast, non-contiguous, aliased) ·
-overflow · error paths tested, not just the happy path.
-
-**C++:** ownership stated in types · Rule of Zero, or all five · RAII for every resource · no raw
-`new`/`delete` · moves `noexcept` · `const` correct · attributes used where they carry meaning ·
-no C-style casts, no implicit narrowing · no macro that a function could be · standard library
-preferred · includes minimal and direct · headers self-contained · no UB.
-
-**Exception safety:** no-throw where required · strong guarantee where shared state is mutated ·
-no leak on any throw path.
-
-**Numerics:** fold order unchanged, or bound re-derived and goldens re-pinned · tolerances from
-the policy · determinism preserved.
-
-**Performance:** no unnecessary allocation on hot paths · layout cache-friendly · any
-optimisation backed by measurement (§7) · no regression.
-
-**Testing:** new tests can actually fail · tests exercise behaviour, not internals · regression
-test for every fixed bug · oracle chain followed.
-
-**Documentation:** public API documented · non-obvious decisions explained · invalidated docs
-updated · ADR where the decision warrants one.
-
-**Maintainability (§4.17):** every name states what the thing is in domain vocabulary · booleans
-read as assertions · every comment explains *why* and none restates its line · non-obvious
-constants carry their derivation · rejected alternatives recorded · no commented-out code · no
-ownerless TODO · no duplication that wants an abstraction · no speculative abstraction without a
-second caller.
+- [ ] **Always** — every claim supported by something I ran (P5, §0) · one logical unit · anything
+      unfinished stated (P7) · surrounding code no worse than found · nothing added that could
+      have been deleted (§7)
+- [ ] **Design** (§3–7) — correct layer · one reason to change · no new coupling or cycle · no
+      backend branch in an operator (§6.3) · generic before specialised (P6) · no smell from §7 ·
+      complexity suits the real input sizes (§4)
+- [ ] **Correctness** — edge cases (empty, min rank, size-1, broadcast, non-contiguous, aliased) ·
+      overflow · error paths tested, not just the happy path · outside input validated (§20)
+- [ ] **C++** (§8) — ownership in types · Rule of Zero or all five · RAII · moves `noexcept` ·
+      `const` correct · no C-style cast, no implicit narrowing · no macro a function could be ·
+      standard library preferred · headers self-contained · no UB
+- [ ] **Exception safety** (§9) — no-throw where required · strong where shared state is mutated ·
+      no leak on any throw path
+- [ ] **Numerics** (§5.3) — fold order unchanged, or bound re-derived and goldens re-pinned ·
+      tolerances from the policy · determinism preserved
+- [ ] **Performance** (§13–14) — justified by §13, backed by measurement · no needless allocation
+      on hot paths · no regression
+- [ ] **Testing** (§11) — new tests can actually fail · behaviour not internals · regression test
+      for every fixed bug · oracle chain followed
+- [ ] **Docs & naming** (§10, §16) — public API documented · decisions recorded at the right level
+      · invalidated docs updated · names state what things are · comments explain *why* · no
+      commented-out code, no ownerless TODO
 
 The question that decides it: **could a contributor who has never spoken to you read this and
 make a correct change?**
 
----
+## 18. Git workflow
 
-## 11. Git workflow
-
-- **One logical change per commit.** A refactor and a feature are two commits, always. A commit
-  doing two things cannot be reverted, reviewed or bisected cleanly.
-- **Every commit builds and passes tests.** Broken intermediate commits destroy bisection, which
-  is the main reason history is worth keeping.
-- **Commit messages explain *why*.** Subject in the imperative, ≤72 characters, no trailing
-  period. Blank line. Body covering what changed and, more importantly, the reasoning — the
-  alternative considered, the measurement that justified it, the constraint that forced it.
-  Reference documents and ADRs by path. Every commit must be understandable without opening the
-  diff.
-  Good: `Add tensor broadcasting support` · `Implement Adam optimizer` ·
-  `Refactor descriptor cache` · `Fix gradient accumulation bug`.
-  Never: `fix` · `update` · `changes` · `working` · `final` · `test` · `misc`.
+- **One logical change per commit.** A refactor and a feature are two commits. A commit doing two
+  things cannot be reverted, reviewed or bisected cleanly.
+- **Every commit builds and passes tests.** Broken intermediate commits destroy bisection (§12),
+  which is most of why history is worth keeping.
+- **Messages explain *why*.** Imperative subject, ≤72 characters, no trailing period; blank line;
+  body covering what changed and the reasoning — the alternative considered, the measurement that
+  justified it, the constraint that forced it. Reference documents by path. Understandable
+  without opening the diff.
+  Good: `Add tensor broadcasting support` · `Fix gradient accumulation bug`.
+  Never: `fix` · `update` · `changes` · `working` · `final` · `misc`.
 - **Never commit broken code** — failing to compile, breaking tests, a known regression, or
-  incomplete functionality that is not clearly isolated. Build, test and format first.
-- **The history is engineering documentation.** A contributor should be able to read it and
-  understand how the project evolved: decisions, milestones, refactors, optimisation phases.
+  incomplete functionality not clearly isolated.
+- **History is engineering documentation.** A reader should see how the project evolved:
+  decisions, milestones, refactors, optimisation phases.
 - **No artificial history.** Never fabricate commits for states that never existed.
-- **No AI attribution.** No `Co-Authored-By` for tools, no generated-by trailers. The commit
-  records the change, not what typed it.
-- **Keep history linear and readable.** Squash experimental or noisy commits before merging.
-  Rewrite only unpushed work, and only to fix a genuine mistake.
-- **One objective per pull request.** Do not combine unrelated features, refactors, formatting
-  and optimisations.
-- Never commit build output, virtual environments, generated artifacts or vendored study
-  material.
+- **No AI attribution.** No `Co-Authored-By` for tools, no generated-by trailers.
+- **Keep history linear.** Squash noisy commits before merging; rewrite only unpushed work.
+- **One objective per pull request.**
+- Never commit build output, environments, generated artifacts or vendored study material.
 - Propose commits as a list with messages; let the author decide when to run them.
 
----
-
-## 12. Build system
+## 19. Build and reproducibility
 
 - **Modern, target-based CMake.** Everything attaches to a target: `target_link_libraries`,
-  `target_include_directories`, `target_compile_features`, `target_compile_definitions`,
-  `target_compile_options`.
-- **No directory-scoped or global commands** — `include_directories`, `link_libraries`,
-  `add_definitions`, or mutating `CMAKE_CXX_FLAGS` globally. They leak into every target and make
-  a build impossible to reason about locally.
-- **Get the visibility right**: `PRIVATE` for implementation needs, `PUBLIC` for what consumers
-  also require, `INTERFACE` for header-only. Over-broad visibility propagates dependencies nobody
-  asked for.
-- **Named presets for every configuration** anyone is expected to build, so a build is
-  reproducible from one command and CI runs what a developer runs.
-- **Generated sources are build steps with declared dependencies**, including dependency files
-  where a generator supports them — an edit to a shared include must trigger the rebuilds that
-  depend on it.
-- Warnings-as-errors available in every configuration and on in CI.
-- **Dependency admission is a decision, not a convenience.** A new dependency needs a reason, a
-  licence compatible with the project's, and an owner. Prefer the standard library (§4.8), then a
-  small well-maintained library, then vendoring. Reference material studied but never linked is
-  kept clearly separate from code that ships.
+  `target_include_directories`, `target_compile_features`, `target_compile_definitions`.
+- **No directory-scoped or global commands** — `include_directories`, `add_definitions`, mutating
+  `CMAKE_CXX_FLAGS`. They leak into every target and make a build impossible to reason about
+  locally.
+- **Correct visibility**: `PRIVATE` for implementation, `PUBLIC` for what consumers need,
+  `INTERFACE` for header-only. Over-broad visibility propagates dependencies nobody asked for.
+- **Named presets for every configuration** anyone builds, so CI runs what a developer runs.
+- **Generated sources are build steps with declared dependencies**, including dependency files —
+  an edit to a shared include must trigger the rebuilds that depend on it.
+- Warnings-as-errors available everywhere, on in CI.
 
----
+**Reproducibility** — a build that cannot be reproduced cannot be debugged from a report.
 
-## 13. Learning from open source
+- **Pin what you can**: dependency versions, and toolchain versions in CI.
+- **No hidden local dependencies.** If it only builds on the author's machine, it is broken.
+- **Nothing depends on wall-clock time, absolute paths, or leftover environment.** Embedded
+  timestamps and build paths defeat binary comparison.
+- **A bug report should be answerable from a commit hash plus a preset name.**
+
+**Dependency admission is a decision, not a convenience.** A new dependency needs a reason, a
+compatible licence, and an owner. Prefer the standard library (§8.8), then a small well-maintained
+library, then vendoring. Study material that is read but never linked is kept clearly separate
+from code that ships.
+
+## 20. Security
+
+Modest but not optional — a framework that loads model files loads *other people's* files.
+
+- **Validate everything crossing a trust boundary**: file contents, tensor shapes and strides,
+  indices, sizes, counts. Never trust a value because your own writer produced it.
+- **Never deserialise into code execution.** A model format that can invoke arbitrary code on load
+  is a remote-code-execution vector — the well-known failure in this field. Formats are data;
+  loading is parsing.
+- **Check sizes and bounds before allocating or indexing**, including that a declared size matches
+  the bytes actually present. A length field from a file is an attacker-controlled integer.
+- **Integer overflow in size arithmetic is a memory-safety bug.** Multiplying dimensions to get an
+  allocation size overflows silently; check before allocating, not after.
+- **Fail closed.** A malformed input produces a clear error, never a partially-initialised object
+  the caller can use.
+- **Do not put secrets or absolute paths in artifacts** — logs, error messages, embedded strings.
+
+## 21. Learning from prior art
 
 Before proposing a significant architectural change or optimisation, find out how mature projects
 solved the same problem — **and why**.
 
-Relevant prior art spans the frameworks in the same problem space, the compiler and kernel
-projects that solved dispatch and portability, and the large C++ codebases worth imitating for
-engineering practice rather than for design. Where study material is kept in the repository it is
-read-only, at pinned revisions, never linked and never modified.
-
-**How to study:**
-
 1. Read for **intent**, not implementation. Ask what constraint produced the shape.
 2. **Convergence is evidence about the problem.** A choice made independently by several teams
-   with different languages and hardware tells you something about the problem, not about the
-   teams. Where they *disagree*, the question is genuinely open — treat it as such.
-3. **Apply the filter.** Does the constraint that motivated it hold here? Their target hardware,
-   scale, workload and guarantees are usually different. A technique that trades accuracy for
-   speed may be right for an inference engine and incompatible with §3.3 — such a case is
-   rejected outright however fast it is.
-4. **Never copy code.** Understand the idea, then implement it for this project's constraints.
-   Copying also imports licence obligations.
-5. **Record provenance.** A borrowed idea is documented with its source, why it exists there, and
-   why it applies here.
+   with different languages and hardware says something about the problem, not the teams. Where
+   they *disagree*, the question is genuinely open.
+3. **Apply the filter.** Does the motivating constraint hold here? A technique trading accuracy
+   for speed may be right for an inference engine and incompatible with §5.3 — rejected outright,
+   however fast.
+4. **Never copy code.** Understand the idea, implement it for this project's constraints. Copying
+   also imports licence obligations.
+5. **Record provenance**: source, why it exists there, why it applies here.
 
-Do not assume the reference projects are ahead on everything. Where this project has capability
-they lack, use it.
+Study material in the repository is read-only, pinned, never linked, never modified. Do not
+assume the reference projects are ahead on everything.
 
 ---
 
 ## Quick reference
 
-Exact commands and preset names live in the repository's build configuration and CI definition;
-read those rather than memorising them here. The shape of the loop:
+Exact commands and preset names live in the build configuration and CI definition — read those.
+The shape of the loop:
 
 ```
 configure + build (debug)      →  develop
-run the C++ and Python suites  →  correctness
+run the full test suite        →  correctness
 layering + format + tidy       →  mechanical gates
 sanitizer build + suite        →  memory safety
-release-with-debug-info build  →  benchmarking only
+release-with-debug-info        →  benchmarking only
 eager / per-op mode            →  make a failure point at the operation
 ```
 
-**If you remember nothing else:** read before writing · fix the abstraction before building on
-it · generic before specialised · never break determinism · measure before claiming · test
-behaviour, not internals · name things so the next reader needs no explanation · comment the
-*why*, never the *what* · say what you actually did.
+**If you remember nothing else:** read before writing · fix the abstraction before building on it
+· generic before specialised · choose the algorithm before the constant · never break determinism
+· never guess when debugging · measure before claiming · test behaviour, not internals · delete
+what is not earning its place · name things so the next reader needs no explanation · comment the
+*why* · say what you actually did.
