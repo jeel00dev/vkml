@@ -17,6 +17,7 @@
 #include "vkml/spv/reduce.h"
 #include "vkml/spv/softmax.h"
 #include "vkml/spv/unary.h"
+#include "vkml/spv/where.h"
 
 #include "vkml/util/assert.h"
 #include "vkml/util/log.h"
@@ -101,6 +102,20 @@ struct BinaryPush {
 };
 
 static_assert(sizeof(BinaryPush) <= 256, "binary push constants exceed the device budget");
+
+struct WherePush {
+    uint64_t cond;
+    uint64_t a;
+    uint64_t b;
+    uint64_t dst;
+    uint32_t n;
+    GpuOperand cond_op;
+    GpuOperand a_op;
+    GpuOperand b_op;
+    GpuOperand out_op;
+};
+
+static_assert(sizeof(WherePush) <= 256, "where push constants exceed the device budget");
 
 struct ReducePush {
     uint64_t src;
@@ -653,6 +668,13 @@ bool VulkanBackend::supports(const Node& node) const {
         case OpKind::LessEqual:
         case OpKind::GreaterEqual:
         case OpKind::NotEqual: return node.dtype == DType::Bool && binary_srcs_are_f32(node);
+        // Ternary select. The condition is Bool while the values are F32, so
+        // all three sources are checked rather than assumed uniform.
+        case OpKind::Where:
+            return node.dtype == DType::F32 && node.src[0] != nullptr &&
+                   node.src[0]->dtype == DType::Bool && node.src[1] != nullptr &&
+                   node.src[1]->dtype == DType::F32 && node.src[2] != nullptr &&
+                   node.src[2]->dtype == DType::F32;
         case OpKind::Cast: return true;
         case OpKind::Sum:
         case OpKind::Mean:
@@ -842,6 +864,42 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 rec.dispatch(
                     pipes.get("binary", spv::binary, spv::binary_size, sizeof(BinaryPush), cfg),
                     &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::Where: {
+                const Node& cond = *node->src[0];
+                const Node& a = *node->src[1];
+                const Node& b = *node->src[2];
+
+                const size_t cond_esz = dtype_size(cond.dtype);  // Bool: 1 byte
+                const size_t val_esz = dtype_size(node->dtype);  // F32: 4 bytes
+
+                const bool contiguous = cond.shape.is_contiguous() && a.shape.is_contiguous() &&
+                                        b.shape.is_contiguous() && node->shape.is_contiguous();
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg, contiguous ? 1U : 0U};
+
+                WherePush push{};
+                push.cond = address_of(cond);
+                push.a = address_of(a);
+                push.b = address_of(b);
+                push.dst = address_of(*node);
+                push.n = n_elems;
+                push.cond_op = to_gpu_operand(cond.shape, cond_esz);
+                push.a_op = to_gpu_operand(a.shape, val_esz);
+                push.b_op = to_gpu_operand(b.shape, val_esz);
+                push.out_op = to_gpu_operand(node->shape, val_esz);
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "where", cfg, sizeof(WherePush), (n_elems + wg - 1) / wg,
+                                   impl_->caps.subgroup_size);
+                }
+                rec.dispatch(
+                    pipes.get("where", spv::where, spv::where_size, sizeof(WherePush), cfg), &push,
+                    sizeof(push), n_elems);
                 break;
             }
 

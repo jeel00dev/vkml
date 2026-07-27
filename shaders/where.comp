@@ -1,0 +1,47 @@
+#version 450
+
+// Ternary select: out[i] = cond[i] ? a[i] : b[i].
+//
+// Kept out of binary.comp because the arity differs. Folding a third operand
+// into that shader would cost every add and multiply an unused address and a
+// 32-byte operand block in push constants, and would make its bounds handling
+// answer two questions at once.
+//
+// The condition is Bool, so it is read a byte at a time while the values are
+// read as floats -- the same mixed-element-size situation the comparisons
+// create in reverse.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+// Set when all four operands are contiguous.
+layout(constant_id = 1) const bool CONTIGUOUS = false;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t cond;
+    uint64_t a;
+    uint64_t b;
+    uint64_t dst;
+    uint     n;
+    Operand  cond_op;
+    Operand  a_op;
+    Operand  b_op;
+    Operand  out_op;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    const uint ci = CONTIGUOUS ? i : operand_offset(i, p.cond_op);
+    const uint ai = CONTIGUOUS ? i : operand_offset(i, p.a_op);
+    const uint bi = CONTIGUOUS ? i : operand_offset(i, p.b_op);
+    const uint di = CONTIGUOUS ? i : operand_offset(i, p.out_op);
+
+    // Selecting rather than blending matters: the unselected operand may hold
+    // NaN or an infinity, and any arithmetic form of this would propagate it.
+    F32Buf(p.dst).v[di] =
+        U8Buf(p.cond).v[ci] != uint8_t(0) ? F32Buf(p.a).v[ai] : F32Buf(p.b).v[bi];
+}

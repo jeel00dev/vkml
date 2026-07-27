@@ -267,6 +267,65 @@ def test_pow_returns_nan_for_negative_base_with_fractional_exponent():
     assert np.isnan(cpu).all(), f"CPU oracle changed behaviour: {cpu}"
 
 
+# ---------------------------------------------------------------------------
+# Where (ternary select)
+# ---------------------------------------------------------------------------
+
+
+def test_where_over_random_layouts(layouts):
+    """Four operands, three of them independently strided, and the condition is
+    a byte buffer while the values are floats -- so this exercises the mixed
+    element-size path from the opposite side to the comparisons."""
+    rng = np.random.default_rng(SEED)
+    checked = 0
+
+    for layout in layouts:
+        a = make_data(rng, layout.base_shape, "any")
+        b = make_data(rng, layout.base_shape, "any")
+        # Build the condition through a comparison so it is a genuine Bool
+        # tensor produced by the library rather than a host-side construction.
+        thresh = make_data(rng, layout.base_shape, "any")
+
+        def run(dev):
+            ta = layout.apply(V.tensor(a, device=dev))
+            tb = layout.apply(V.tensor(b, device=dev))
+            tc = V.greater(ta, layout.apply(V.tensor(thresh, device=dev)))
+            return V.where(tc, ta, tb).numpy()
+
+        ctx = Context(op="where", layout=layout, dtype="f32", seed=SEED,
+                      inputs=[layout.apply_numpy(a), layout.apply_numpy(b)])
+        compare(ctx, run(gpu_device()), run(V.cpu))
+        checked += 1
+
+    assert checked == len(layouts)
+
+
+def test_where_selects_rather_than_blends():
+    """The unselected operand may hold NaN or an infinity. A blend written as
+    c*a + (1-c)*b would propagate it; a select must not."""
+    #        selected   unselected      -> the unselected value must not leak
+    #  0:  a=1.0        b=NaN
+    #  1:  b=2.0        a=NaN
+    #  2:  a=+inf       b=3.0           (selecting an infinity is still fine)
+    #  3:  b=-inf       a=4.0
+    cond = np.array([True, False, True, False])
+    a = np.array([1.0, np.nan, np.inf, 4.0], dtype=np.float32)
+    b = np.array([np.nan, 2.0, 3.0, -np.inf], dtype=np.float32)
+
+    def run(dev):
+        return V.where(V.tensor(cond, device=dev), V.tensor(a, device=dev),
+                       V.tensor(b, device=dev)).numpy()
+
+    gpu = run(gpu_device())
+    ctx = Context(op="where", layout=Layout(a.shape), dtype="f32", seed=SEED, inputs=[a, b])
+    compare(ctx, gpu, run(V.cpu))
+
+    assert gpu.tolist() == [1.0, 2.0, float("inf"), float("-inf")]
+    # The load-bearing part: a NaN sat opposite each of the first two results
+    # and neither reached the output.
+    assert not np.isnan(gpu[:2]).any()
+
+
 def test_gelu_negative_tail_is_relatively_accurate():
     """The reason gelu is computed through erfc rather than erf.
 
