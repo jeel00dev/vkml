@@ -1,0 +1,11 @@
+# Revisions to skip when running `git blame`.
+#
+# Enable locally with:
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Only whole-tree mechanical reformats belong here. A commit in this list
+# must change layout and nothing else, so that skipping it never hides a
+# real authorship record.
+
+# Format the codebase with clang-format
+fddf51478edc1ba93e5925904019d5b75af99ccd
