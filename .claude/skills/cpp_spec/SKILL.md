@@ -337,6 +337,63 @@ Design for performance; do not micro-optimise without measurement (§7).
 - **Circular dependencies are an architecture failure, not an include problem.** Fix the layering
   (§3.1); do not paper over it with forward declarations.
 
+### 4.12 Naming and comments — the maturity standard
+
+This is what separates a codebase a stranger can maintain from one only its author can. Hold it
+to the standard of the projects in §12: LLVM, Chromium, the Linux kernel. Neither of these is
+cosmetic — a wrong name and a stale comment both actively mislead, which is worse than silence.
+
+**Names state what a thing is, in the domain's own vocabulary.**
+
+- Use the word the field uses. `logits`, `stride`, `subgroup`, `workgroup`, `epilogue`,
+  `spilled_vgprs`. Never invent a synonym for an established term, and never use two words for
+  one concept — if it is a `workgroup` in one file it is not a `block` in the next.
+- **Length scales with scope.** `i` inside a three-line loop is correct and `index_of_current_row`
+  there is noise. A member, a parameter, or anything living more than a screen gets a full name.
+- **Abbreviate only what the domain already abbreviates.** `gemm`, `lds`, `spv`, `vgpr`, `esz`
+  next to an `element size` comment — fine, these are how practitioners write. `mgr`, `hdlr`,
+  `tmp2`, `res`, `val`, `do_stuff` — never.
+- **Booleans read as assertions**, so the call site reads as English: `is_contiguous()`,
+  `has_broadcast_stride()`, `supports(node)`, `binary_srcs_are_f32(node)`.
+- **No type in the name.** Not `float_value`, `p_node`, `vec_dims`. The type is already there.
+- **A name that needs a comment to be understood is the wrong name.** Rename first; comment only
+  what a better name cannot carry.
+- **Banned outright**: `data2`, `temp`, `foo`, `helper`, `utils`, `misc`, `manager`, `process()`,
+  `handle()`, and any name whose only meaning is "the other one".
+
+**Comments explain *why*. The code already says *what*.**
+
+The test is: **would a competent reader be surprised?** If yes, explain, and explain the
+*reason* — not the mechanics. If no, write nothing. A comment restating its line is worse than
+no comment, because it drifts out of date and then lies.
+
+What earns a comment:
+
+- **A non-obvious constant, with its derivation.** Not `// 32 elements`, but why 32 — where the
+  number came from and what breaks if it changes.
+- **A rejected alternative**, and the cost that rejected it. This is the single most valuable
+  kind here: it stops the next person redoing the analysis, or "fixing" the code back to the
+  version that was wrong. `error.h` explains why vkml throws where ggml aborts;
+  `shape.h` spends twenty lines justifying row-major order against ggml's convention.
+- **A deliberate divergence** from the obvious implementation, from PyTorch, or from a
+  specification — always with the reason attached.
+- **A hardware or driver constraint** that makes otherwise-odd code necessary.
+- **An invariant a caller must uphold** that the type system cannot express.
+
+What must not appear:
+
+- Restating the line: `// increment i`, `// loop over elements`, `// return the result`.
+- **Commented-out code.** Git has it. Delete it.
+- Decorative banners with no content, and `// -----` separators around a single function.
+- A `TODO` with no owner and no trigger. Deferral is allowed but must be *recorded* (§1) — say
+  what is deferred, why, and what would make it worth doing.
+- Anything that will be false after the next edit. If a comment must track a value stated
+  elsewhere, cite the source rather than copying it.
+
+**The standing test for both**, applied before every commit: could a contributor who has never
+spoken to you read this file and make a correct change? If a name or a comment would send them
+the wrong way, it is a defect, not a style preference.
+
 ---
 
 ## 5. Architecture
@@ -547,8 +604,14 @@ followed.
 **Documentation:** public API documented · non-obvious decisions explained · invalidated docs
 updated · ADR if the decision warrants one.
 
-**Maintainability:** a stranger can follow it · names say what things are · no duplication that
-wants an abstraction · no speculative abstraction without a second caller.
+**Maintainability (§4.12):** every name states what the thing is in domain vocabulary · no
+`tmp`/`data2`/`helper`/`process()` · booleans read as assertions · every comment explains *why*
+and none restates its line · non-obvious constants carry their derivation · rejected
+alternatives recorded · no commented-out code · no ownerless TODO · no duplication that wants an
+abstraction · no speculative abstraction without a second caller.
+
+The question that decides it: **could a contributor who has never spoken to you read this and
+make a correct change?**
 
 ---
 
@@ -637,5 +700,6 @@ VKML_EAGER=1 python -m pytest tests/python -q                   # per-op realisa
 ```
 
 **If you remember nothing else:** read before writing · fix the abstraction before building on
-it · never break determinism · measure before claiming · test what you changed · say what you
+it · never break determinism · measure before claiming · test what you changed · name things so
+the next reader needs no explanation · comment the *why*, never the *what* · say what you
 actually did.
