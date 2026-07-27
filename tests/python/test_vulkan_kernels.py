@@ -1157,3 +1157,61 @@ def test_cross_entropy_gradient_on_gpu():
     ctx = Context(op="cross_entropy", layout=Layout((6, 5)), dtype="f32", seed=SEED,
                   inputs=[logits])
     compare(ctx, grad(gpu_device()), grad(V.cpu))
+
+
+# ---------------------------------------------------------------------------
+# Sliding windows
+# ---------------------------------------------------------------------------
+
+WINDOWS = [
+    ((1, 1, 4, 4), (2, 2), (1, 1), (0, 0), (1, 1)),
+    ((2, 3, 5, 5), (3, 3), (1, 1), (1, 1), (1, 1)),   # padded, overlapping
+    ((1, 2, 6, 6), (2, 2), (2, 2), (0, 0), (1, 1)),   # strided, no overlap
+    ((2, 1, 7, 5), (3, 2), (2, 1), (1, 0), (1, 1)),   # asymmetric everything
+    ((1, 2, 5, 5), (2, 2), (1, 1), (0, 0), (2, 2)),   # dilated
+    ((1, 1, 17, 17), (3, 3), (1, 1), (1, 1), (1, 1)),  # crosses a workgroup
+]
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad,dil", WINDOWS)
+def test_im2col_on_gpu(shape, kernel, stride, pad, dil):
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, shape, "any")
+
+    def run(dev):
+        return V.im2col(V.tensor(x, device=dev), kernel, stride, pad, dil).numpy()
+
+    ctx = Context(op="im2col", layout=Layout(shape), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad,dil", WINDOWS)
+def test_col2im_on_gpu(shape, kernel, stride, pad, dil):
+    """Overlapping geometries are the ones that exercise the accumulation the
+    inverted loop exists to make deterministic."""
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, shape, "any")
+
+    def run(dev):
+        cols = V.im2col(V.tensor(x, device=dev), kernel, stride, pad, dil)
+        return V.col2im(cols, shape[2:], kernel, stride, pad, dil).numpy()
+
+    ctx = Context(op="col2im", layout=Layout(shape), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+def test_col2im_fold_is_bit_reproducible():
+    """The policy claims EXACT on the grounds that both backends fold in the
+    same kernel order. Magnitudes are spread widely so a reordering cannot hide
+    inside the rounding, and the geometry gives each interior position nine
+    overlapping contributions."""
+    cols = np.zeros((1, 9, 16), dtype=np.float32)
+    cols[0, :, :] = np.array([1e8, 1.0, -1e8, 1e-8, 1.0, -1.0, 1e7, 1.0, -1e7],
+                             dtype=np.float32)[:, None]
+
+    def run(dev):
+        return V.col2im(V.tensor(cols, device=dev), [4, 4], [3, 3], [1, 1], [1, 1]).numpy()
+
+    gpu, cpu = run(gpu_device()), run(V.cpu)
+    assert gpu.tobytes() == cpu.tobytes(), f"fold order differs:\n{gpu}\nvs\n{cpu}"
+    assert gpu.tobytes() == run(gpu_device()).tobytes(), "GPU result is not reproducible"

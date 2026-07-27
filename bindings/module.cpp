@@ -12,6 +12,7 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/array.h>
 #include <nanobind/stl/function.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
@@ -527,6 +528,11 @@ NB_MODULE(_vkml_core, m) {
           "reduction"_a = vkml::Reduction::Mean);
     m.def("cross_entropy", &vkml::cross_entropy, "logits"_a, "target"_a,
           "reduction"_a = vkml::Reduction::Mean);
+    m.def("im2col", &vkml::im2col, "input"_a, "kernel"_a, "stride"_a = std::array<int, 2>{1, 1},
+          "padding"_a = std::array<int, 2>{0, 0}, "dilation"_a = std::array<int, 2>{1, 1});
+    m.def("col2im", &vkml::col2im, "cols"_a, "image"_a, "kernel"_a,
+          "stride"_a = std::array<int, 2>{1, 1}, "padding"_a = std::array<int, 2>{0, 0},
+          "dilation"_a = std::array<int, 2>{1, 1});
     m.def("index_select", &vkml::index_select, "input"_a, "axis"_a, "index"_a);
     m.def("scatter_add", &vkml::scatter_add, "src"_a, "axis"_a, "index"_a, "dim_size"_a);
     m.def("layer_norm", &vkml::layer_norm, "input"_a, "normalized_axes"_a = 1, "eps"_a = 1e-5);

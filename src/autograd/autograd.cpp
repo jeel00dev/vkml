@@ -252,6 +252,26 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
                            sub(Tensor::ones(node.shape.dims(), node.dtype, node.device), out()));
             return;
 
+        // im2col and col2im are each other's adjoint, exactly as index_select
+        // and scatter_add are: extracting windows is linear, and the transpose
+        // of an extraction is a sum back into the positions it drew from.
+        case OpKind::Im2Col: {
+            const auto p = node.params.get<UnfoldParams>();
+            accumulate(grads, a,
+                       col2im(grad, {p.image_h, p.image_w}, {p.kernel_h, p.kernel_w},
+                              {p.stride_h, p.stride_w}, {p.pad_h, p.pad_w},
+                              {p.dilation_h, p.dilation_w}));
+            return;
+        }
+
+        case OpKind::Col2Im: {
+            const auto p = node.params.get<UnfoldParams>();
+            accumulate(grads, a,
+                       im2col(grad, {p.kernel_h, p.kernel_w}, {p.stride_h, p.stride_w},
+                              {p.pad_h, p.pad_w}, {p.dilation_h, p.dilation_w}));
+            return;
+        }
+
         // index_select and scatter_add are each other's adjoint, which is the
         // whole reason scatter_add exists as an operator: gathering rows is
         // linear, and the transpose of a gather is a scatter-with-accumulation.

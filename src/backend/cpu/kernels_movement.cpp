@@ -381,9 +381,124 @@ void k_scatter_add(Node& out) {
     }
 }
 
+/// Window geometry, recomputed identically by both kernels and by the shader.
+struct Window {
+    int64_t out_h = 0;  ///< window positions down the image
+    int64_t out_w = 0;  ///< window positions across it
+    int64_t channels = 0;
+};
+
+[[nodiscard]] Window window_of(const UnfoldParams& p, int64_t channels_times_patch) {
+    const auto span = [](int64_t extent, int k, int s, int pad, int d) {
+        return (extent + 2LL * pad - (static_cast<int64_t>(d) * (k - 1) + 1)) / s + 1;
+    };
+    Window w;
+    w.out_h = span(p.image_h, p.kernel_h, p.stride_h, p.pad_h, p.dilation_h);
+    w.out_w = span(p.image_w, p.kernel_w, p.stride_w, p.pad_w, p.dilation_w);
+    w.channels = channels_times_patch / (static_cast<int64_t>(p.kernel_h) * p.kernel_w);
+    return w;
+}
+
+/// Extracts sliding blocks. One output element is read from exactly one image
+/// position, or is zero when the window falls outside the padded image -- so
+/// this is a gather and needs no accumulation.
+void k_im2col(Node& out) {
+    const Node& in = *out.src[0];
+    if (out.dtype != DType::F32) {
+        unsupported_dtype(out);
+    }
+    const auto p = out.params.get<UnfoldParams>();
+    const Window w = window_of(p, out.shape.dim(1));
+
+    const int64_t n_batch = out.shape.dim(0);
+    const int64_t patch = static_cast<int64_t>(p.kernel_h) * p.kernel_w;
+    const int64_t positions = w.out_h * w.out_w;
+
+    for (int64_t n = 0; n < n_batch; ++n) {
+        for (int64_t row = 0; row < out.shape.dim(1); ++row) {
+            const int64_t c = row / patch;
+            const int64_t ki = (row % patch) / p.kernel_w;
+            const int64_t kj = (row % patch) % p.kernel_w;
+
+            for (int64_t pos = 0; pos < positions; ++pos) {
+                const int64_t oh = pos / w.out_w;
+                const int64_t ow = pos % w.out_w;
+                const int64_t h = oh * p.stride_h - p.pad_h + ki * p.dilation_h;
+                const int64_t x = ow * p.stride_w - p.pad_w + kj * p.dilation_w;
+
+                const bool inside = h >= 0 && h < p.image_h && x >= 0 && x < p.image_w;
+                const int64_t src = ((n * w.channels + c) * p.image_h + h) * p.image_w + x;
+                const int64_t dst = (n * out.shape.dim(1) + row) * positions + pos;
+                store<float>(out, dst, inside ? load<float>(in, src) : 0.0F);
+            }
+        }
+    }
+}
+
+/// Adjoint of im2col: every window contribution is summed back into the image
+/// position it came from.
+///
+/// Walks the OUTPUT and pulls, rather than walking the input and scattering.
+/// Overlapping windows mean an image position receives several contributions,
+/// and pulling makes each output element the property of one iteration -- so
+/// the fold order is fixed by construction and no accumulation races. The
+/// Vulkan kernel uses the identical traversal for the identical reason, which
+/// is why the two agree bit-for-bit rather than within a tolerance.
+///
+/// The scan is bounded by the kernel size, not by the number of windows: for a
+/// given image position only kernel_h * kernel_w window offsets can reach it,
+/// and each determines at most one window.
+void k_col2im(Node& out) {
+    const Node& cols = *out.src[0];
+    if (out.dtype != DType::F32) {
+        unsupported_dtype(out);
+    }
+    const auto p = out.params.get<UnfoldParams>();
+    const Window w = window_of(p, cols.shape.dim(1));
+
+    const int64_t patch = static_cast<int64_t>(p.kernel_h) * p.kernel_w;
+    const int64_t positions = w.out_h * w.out_w;
+    const int64_t total = out.shape.numel();
+
+    for (int64_t i = 0; i < total; ++i) {
+        const int64_t x = i % p.image_w;
+        const int64_t h = (i / p.image_w) % p.image_h;
+        const int64_t c = (i / (p.image_w * p.image_h)) % w.channels;
+        const int64_t n = i / (p.image_w * p.image_h * w.channels);
+
+        float acc = 0.0F;
+        for (int64_t ki = 0; ki < p.kernel_h; ++ki) {
+            const int64_t top = h + p.pad_h - ki * p.dilation_h;
+            if (top < 0 || top % p.stride_h != 0) {
+                continue;
+            }
+            const int64_t oh = top / p.stride_h;
+            if (oh >= w.out_h) {
+                continue;
+            }
+            for (int64_t kj = 0; kj < p.kernel_w; ++kj) {
+                const int64_t left = x + p.pad_w - kj * p.dilation_w;
+                if (left < 0 || left % p.stride_w != 0) {
+                    continue;
+                }
+                const int64_t ow = left / p.stride_w;
+                if (ow >= w.out_w) {
+                    continue;
+                }
+                const int64_t row = c * patch + ki * p.kernel_w + kj;
+                acc += load<float>(cols,
+                                   (n * cols.shape.dim(1) + row) * positions + oh * w.out_w + ow);
+            }
+        }
+        store<float>(out, i, acc);
+    }
+}
+
 }  // namespace
 
 void register_movement_kernels(KernelTable& t) {
+    t[static_cast<size_t>(OpKind::Im2Col)] = k_im2col;
+    t[static_cast<size_t>(OpKind::Col2Im)] = k_col2im;
     t[static_cast<size_t>(OpKind::Cat)] = k_cat;
     t[static_cast<size_t>(OpKind::IndexSelect)] = k_index_select;
     t[static_cast<size_t>(OpKind::ScatterAdd)] = k_scatter_add;

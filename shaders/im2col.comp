@@ -1,0 +1,54 @@
+#version 450
+
+// Extracts sliding local blocks: (N, C, H, W) -> (N, C*kh*kw, L).
+//
+// One thread per OUTPUT element. Each reads exactly one image position, or
+// writes zero where the window falls outside the padded image, so this is a
+// gather with no accumulation and nothing to synchronise. Its adjoint,
+// col2im.comp, is where that stops being true.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;
+    uint64_t dst;
+    uint  n;
+    int   kernel_h, kernel_w;
+    int   stride_h, stride_w;
+    int   pad_h, pad_w;
+    int   dilation_h, dilation_w;
+    int   image_h, image_w;
+    int   out_h, out_w;   // window positions down and across
+    int   channels;
+    int   rows;           // channels * kernel_h * kernel_w
+    Operand in_op;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    const int positions = p.out_h * p.out_w;
+    const int patch_size     = p.kernel_h * p.kernel_w;
+
+    const int pos = int(i) % positions;
+    const int row = (int(i) / positions) % p.rows;
+    const int b   = int(i) / (positions * p.rows);
+
+    const int c  = row / patch_size;
+    const int ki = (row % patch_size) / p.kernel_w;
+    const int kj = (row % patch_size) % p.kernel_w;
+
+    const int h = (pos / p.out_w) * p.stride_h - p.pad_h + ki * p.dilation_h;
+    const int x = (pos % p.out_w) * p.stride_w - p.pad_w + kj * p.dilation_w;
+
+    float value = 0.0;
+    if (h >= 0 && h < p.image_h && x >= 0 && x < p.image_w) {
+        const int from = ((b * p.channels + c) * p.image_h + h) * p.image_w + x;
+        value = F32Buf(p.src).v[operand_offset(uint(from), p.in_op)];
+    }
+    F32Buf(p.dst).v[i] = value;
+}

@@ -8,6 +8,8 @@
 #include "vkml/spv/binary.h"
 #include "vkml/spv/cast.h"
 #include "vkml/spv/cat.h"
+#include "vkml/spv/col2im.h"
+#include "vkml/spv/im2col.h"
 #include "vkml/spv/index_select.h"
 #include "vkml/spv/scatter_add.h"
 #include "vkml/spv/fill.h"
@@ -166,6 +168,27 @@ struct GatherPush {
 };
 
 static_assert(sizeof(GatherPush) <= 256, "gather push constants exceed the device budget");
+
+/// Shared by im2col and col2im: adjoints over the same window geometry, so
+/// they need the same description of it. The window counts and row total are
+/// derived on the host rather than in the shader, because both kernels need
+/// them and neither should re-derive a value the other already has.
+struct UnfoldPush {
+    uint64_t src;
+    uint64_t dst;
+    uint32_t n;
+    int32_t kernel_h, kernel_w;
+    int32_t stride_h, stride_w;
+    int32_t pad_h, pad_w;
+    int32_t dilation_h, dilation_w;
+    int32_t image_h, image_w;
+    int32_t out_h, out_w;
+    int32_t channels;
+    int32_t rows;
+    GpuOperand in_op;
+};
+
+static_assert(sizeof(UnfoldPush) <= 256, "unfold push constants exceed the device budget");
 
 struct ReducePush {
     uint64_t src;
@@ -746,6 +769,12 @@ bool VulkanBackend::supports(const Node& node) const {
         case OpKind::Cat: return node.dtype == DType::F32 && binary_srcs_are_f32(node);
         // Values are F32, the index is I64. Both shaders read the index through
         // I64Buf, so the dtype is checked rather than assumed.
+        // Window geometry is carried in params and the output is freshly
+        // allocated, so only the element type needs checking.
+        case OpKind::Im2Col:
+        case OpKind::Col2Im:
+            return node.dtype == DType::F32 && node.src[0] != nullptr &&
+                   node.src[0]->dtype == DType::F32;
         case OpKind::IndexSelect:
         case OpKind::ScatterAdd:
             return node.dtype == DType::F32 && node.src[0] != nullptr &&
@@ -952,6 +981,63 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 rec.dispatch(
                     pipes.get("binary", spv::binary, spv::binary_size, sizeof(BinaryPush), cfg),
                     &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::Im2Col:
+            case OpKind::Col2Im: {
+                const bool extracting = node->op == OpKind::Im2Col;
+                const Node& src = *node->src[0];
+                const size_t esz = dtype_size(node->dtype);
+                const auto up = node->params.get<UnfoldParams>();
+
+                const auto span = [](int64_t extent, int32_t k, int32_t stride, int32_t pad,
+                                     int32_t dilation) {
+                    return static_cast<int32_t>(
+                        (extent + 2LL * pad - (static_cast<int64_t>(dilation) * (k - 1) + 1)) /
+                            stride +
+                        1);
+                };
+
+                // Rows are the channel-patch axis, which lives on the column
+                // side: it is the source for col2im and the output for im2col.
+                const int32_t rows =
+                    static_cast<int32_t>(extracting ? node->shape.dim(1) : src.shape.dim(1));
+
+                UnfoldPush push{};
+                push.src = address_of(src);
+                push.dst = address_of(*node);
+                push.n = n_elems;
+                push.kernel_h = up.kernel_h;
+                push.kernel_w = up.kernel_w;
+                push.stride_h = up.stride_h;
+                push.stride_w = up.stride_w;
+                push.pad_h = up.pad_h;
+                push.pad_w = up.pad_w;
+                push.dilation_h = up.dilation_h;
+                push.dilation_w = up.dilation_w;
+                push.image_h = up.image_h;
+                push.image_w = up.image_w;
+                push.out_h = span(up.image_h, up.kernel_h, up.stride_h, up.pad_h, up.dilation_h);
+                push.out_w = span(up.image_w, up.kernel_w, up.stride_w, up.pad_w, up.dilation_w);
+                push.rows = rows;
+                push.channels = rows / (up.kernel_h * up.kernel_w);
+                push.in_op = to_gpu_operand(src.shape, esz);
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg};
+
+                const char* name = extracting ? "im2col" : "col2im";
+                const uint32_t* code = extracting ? spv::im2col : spv::col2im;
+                const size_t code_size = extracting ? spv::im2col_size : spv::col2im_size;
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, name, cfg, sizeof(UnfoldPush), (n_elems + wg - 1) / wg,
+                                   impl_->caps.subgroup_size);
+                }
+                rec.dispatch(pipes.get(name, code, code_size, sizeof(UnfoldPush), cfg), &push,
+                             sizeof(push), n_elems);
                 break;
             }
 

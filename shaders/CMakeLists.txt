@@ -18,6 +18,8 @@ set(VKML_SHADERS
     cat.comp
     index_select.comp
     scatter_add.comp
+    im2col.comp
+    col2im.comp
     cast.comp
     reduce.comp
     softmax.comp

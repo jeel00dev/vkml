@@ -249,6 +249,28 @@ struct ArangeParams {
     double step = 1.0;
 };
 
+/// Geometry of a sliding-window operation, shared by im2col and col2im.
+///
+/// `image_h`/`image_w` are the spatial extent of the *image* side -- the input
+/// for im2col, the output for col2im. They are carried explicitly because
+/// col2im cannot derive them: padding makes the mapping many-to-one, so a
+/// column tensor produced from a 5-row image and from a 6-row image can have
+/// identical shape.
+struct UnfoldParams {
+    int32_t kernel_h = 1;
+    int32_t kernel_w = 1;
+    int32_t stride_h = 1;
+    int32_t stride_w = 1;
+    int32_t pad_h = 0;
+    int32_t pad_w = 0;
+    int32_t dilation_h = 1;
+    int32_t dilation_w = 1;
+    int32_t image_h = 0;
+    int32_t image_w = 0;
+};
+
+static_assert(sizeof(UnfoldParams) <= kOpParamBytes);
+
 struct NormParams {
     int32_t normalized_axes = 1;  ///< number of trailing axes to normalise over
     float eps = 1e-5F;

@@ -356,6 +356,106 @@ Tensor cross_entropy(const Tensor& logits, const Tensor& target, Reduction reduc
     return apply_reduction(neg(picked), reduction);
 }
 
+namespace {
+
+/// Window positions along one axis, following the standard convolution formula.
+/// Returns 0 when the padded image is smaller than the dilated kernel, which
+/// the callers reject rather than silently producing an empty result.
+[[nodiscard]] int64_t window_count(int64_t extent, int kernel, int stride, int pad, int dilation) {
+    const int64_t effective = static_cast<int64_t>(dilation) * (kernel - 1) + 1;
+    const int64_t span = extent + 2LL * pad - effective;
+    return span < 0 ? 0 : span / stride + 1;
+}
+
+void check_window(std::array<int, 2> kernel, std::array<int, 2> stride, std::array<int, 2> padding,
+                  std::array<int, 2> dilation, const char* what) {
+    for (int i = 0; i < 2; ++i) {
+        VKML_CHECK(kernel[i] >= 1, ShapeError, "{}: kernel must be positive, got {}", what,
+                   kernel[i]);
+        VKML_CHECK(stride[i] >= 1, ShapeError, "{}: stride must be positive, got {}", what,
+                   stride[i]);
+        VKML_CHECK(dilation[i] >= 1, ShapeError, "{}: dilation must be positive, got {}", what,
+                   dilation[i]);
+        VKML_CHECK(padding[i] >= 0, ShapeError, "{}: padding must not be negative, got {}", what,
+                   padding[i]);
+    }
+}
+
+UnfoldParams make_unfold_params(std::array<int, 2> kernel, std::array<int, 2> stride,
+                                std::array<int, 2> padding, std::array<int, 2> dilation,
+                                int64_t image_h, int64_t image_w) {
+    return UnfoldParams{.kernel_h = kernel[0],
+                        .kernel_w = kernel[1],
+                        .stride_h = stride[0],
+                        .stride_w = stride[1],
+                        .pad_h = padding[0],
+                        .pad_w = padding[1],
+                        .dilation_h = dilation[0],
+                        .dilation_w = dilation[1],
+                        .image_h = static_cast<int32_t>(image_h),
+                        .image_w = static_cast<int32_t>(image_w)};
+}
+
+}  // namespace
+
+Tensor im2col(const Tensor& input, std::array<int, 2> kernel, std::array<int, 2> stride,
+              std::array<int, 2> padding, std::array<int, 2> dilation) {
+    VKML_CHECK(input.ndim() == 4, ShapeError, "im2col() expects (N, C, H, W), got rank {}",
+               input.ndim());
+    check_window(kernel, stride, padding, dilation, "im2col()");
+
+    const int64_t out_h =
+        window_count(input.size(2), kernel[0], stride[0], padding[0], dilation[0]);
+    const int64_t out_w =
+        window_count(input.size(3), kernel[1], stride[1], padding[1], dilation[1]);
+    VKML_CHECK(out_h > 0 && out_w > 0, ShapeError,
+               "im2col(): the dilated kernel is larger than the padded image "
+               "({}x{} against {}x{})",
+               dilation[0] * (kernel[0] - 1) + 1, dilation[1] * (kernel[1] - 1) + 1,
+               input.size(2) + 2LL * padding[0], input.size(3) + 2LL * padding[1]);
+
+    const std::vector<int64_t> dims{input.size(0), input.size(1) * kernel[0] * kernel[1],
+                                    out_h * out_w};
+
+    auto n = make_node(OpKind::Im2Col, Shape::contiguous(dims, dtype_size(input.dtype())),
+                       input.dtype(), input.device());
+    n->src[0] = input.node();
+    n->n_src = 1;
+    n->params.set(
+        make_unfold_params(kernel, stride, padding, dilation, input.size(2), input.size(3)));
+    n->requires_grad = grad_enabled() && input.requires_grad();
+    return finish(std::move(n));
+}
+
+Tensor col2im(const Tensor& cols, std::array<int, 2> image, std::array<int, 2> kernel,
+              std::array<int, 2> stride, std::array<int, 2> padding, std::array<int, 2> dilation) {
+    VKML_CHECK(cols.ndim() == 3, ShapeError, "col2im() expects (N, C*kh*kw, L), got rank {}",
+               cols.ndim());
+    check_window(kernel, stride, padding, dilation, "col2im()");
+
+    const int64_t patch = static_cast<int64_t>(kernel[0]) * kernel[1];
+    VKML_CHECK(cols.size(1) % patch == 0, ShapeError,
+               "col2im(): channel-patch extent {} is not a multiple of the kernel size {}",
+               cols.size(1), patch);
+
+    const int64_t out_h = window_count(image[0], kernel[0], stride[0], padding[0], dilation[0]);
+    const int64_t out_w = window_count(image[1], kernel[1], stride[1], padding[1], dilation[1]);
+    VKML_CHECK(out_h * out_w == cols.size(2), ShapeError,
+               "col2im(): a {}x{} image with this geometry has {} window positions, but the "
+               "column tensor has {}",
+               image[0], image[1], out_h * out_w, cols.size(2));
+
+    const std::vector<int64_t> dims{cols.size(0), cols.size(1) / patch, image[0], image[1]};
+
+    auto n = make_node(OpKind::Col2Im, Shape::contiguous(dims, dtype_size(cols.dtype())),
+                       cols.dtype(), cols.device());
+    n->src[0] = cols.node();
+    n->n_src = 1;
+    n->params.set(make_unfold_params(kernel, stride, padding, dilation, image[0], image[1]));
+    n->requires_grad = grad_enabled() && cols.requires_grad();
+    return finish(std::move(n));
+}
+
 Tensor index_select(const Tensor& a, int axis, const Tensor& index) {
     VKML_CHECK(index.dtype() == DType::I64, DTypeError, "index_select() index must be I64, got {}",
                dtype_name(index.dtype()));

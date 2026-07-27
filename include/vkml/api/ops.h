@@ -98,6 +98,27 @@ enum class Reduction {
 [[nodiscard]] Tensor cross_entropy(const Tensor& logits, const Tensor& target,
                                    Reduction reduction = Reduction::Mean);
 
+/// Extracts sliding local blocks, following torch.nn.functional.unfold.
+///
+/// `(N, C, H, W)` becomes `(N, C * kernel_h * kernel_w, L)`, where `L` is the
+/// number of window positions. Positions falling outside the padded image
+/// contribute zero. This is the first half of convolution-as-GEMM: the second
+/// half is an ordinary matmul against the flattened weights.
+[[nodiscard]] Tensor im2col(const Tensor& input, std::array<int, 2> kernel,
+                            std::array<int, 2> stride = {1, 1}, std::array<int, 2> padding = {0, 0},
+                            std::array<int, 2> dilation = {1, 1});
+
+/// Adjoint of `im2col`, following torch.nn.functional.fold: sums every window
+/// contribution back into the image position it came from.
+///
+/// Overlapping windows mean one image position receives several contributions,
+/// which is why this cannot be expressed as a gather and is one of the few
+/// operations needing its own kernel. `image` gives the spatial extent to
+/// reconstruct, which the column tensor does not determine.
+[[nodiscard]] Tensor col2im(const Tensor& cols, std::array<int, 2> image, std::array<int, 2> kernel,
+                            std::array<int, 2> stride = {1, 1}, std::array<int, 2> padding = {0, 0},
+                            std::array<int, 2> dilation = {1, 1});
+
 /// Gathers along `axis` at the positions named by `index`, following
 /// torch.index_select. `index` must be I64 and rank 1; the result takes its
 /// extent on `axis` from the index length, and every other extent from `a`.

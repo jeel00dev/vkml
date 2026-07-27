@@ -97,6 +97,11 @@ POLICY: dict[str, Tolerance] = {
     "copy": Tolerance(Kind.EXACT, note="moves bits"),
     "cat": Tolerance(Kind.EXACT, note="moves bits; no arithmetic"),
     "index_select": Tolerance(Kind.EXACT, note="gathers elements; no arithmetic"),
+    "im2col": Tolerance(Kind.EXACT, note="gathers elements or writes zero padding"),
+    # EXACT for the same reason as scatter_add: both backends walk the output
+    # and pull, so the contributions to an image position arrive in the same
+    # kernel order and the two perform an identical sequence of additions.
+    "col2im": Tolerance(Kind.EXACT, note="same kernel-order fold on both backends"),
     # EXACT despite being a sum, and that is a claim about the fold rather
     # than about the magnitudes: both backends accumulate into a destination
     # in ascending index order, so the two perform the identical sequence of

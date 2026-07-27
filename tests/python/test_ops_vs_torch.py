@@ -895,3 +895,95 @@ def test_cross_entropy_rejects_label_count_mismatch():
     v = V.tensor(make_input((4, 3), seed=98))
     with pytest.raises(V.ShapeError):
         V.cross_entropy(v, V.tensor(np.array([0, 1], dtype=np.int64)))
+
+
+# ---------------------------------------------------------------------------
+# Sliding windows
+# ---------------------------------------------------------------------------
+
+WINDOWS = [
+    # (shape, kernel, stride, padding, dilation)
+    ((1, 1, 4, 4), (2, 2), (1, 1), (0, 0), (1, 1)),
+    ((2, 3, 5, 5), (3, 3), (1, 1), (1, 1), (1, 1)),   # padded, overlapping
+    ((1, 2, 6, 6), (2, 2), (2, 2), (0, 0), (1, 1)),   # strided, no overlap
+    ((2, 1, 7, 5), (3, 2), (2, 1), (1, 0), (1, 1)),   # asymmetric everything
+    ((1, 2, 5, 5), (2, 2), (1, 1), (0, 0), (2, 2)),   # dilated
+    ((1, 1, 3, 3), (3, 3), (1, 1), (0, 0), (1, 1)),   # kernel == image
+]
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad,dil", WINDOWS)
+def test_im2col(shape, kernel, stride, pad, dil):
+    x = make_input(shape, seed=110)
+    v, t = pair(x)
+    assert_close("im2col", V.im2col(v, kernel, stride, pad, dil),
+                 torch.nn.functional.unfold(t, kernel, dilation=dil, padding=pad, stride=stride),
+                 inputs=[x])
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad,dil", WINDOWS)
+def test_col2im(shape, kernel, stride, pad, dil):
+    """Overlapping windows are the case that matters: an image position then
+    receives several contributions, which is what stops this being a gather."""
+    x = make_input(shape, seed=111)
+    t = torch.from_numpy(x.copy())
+    cols_t = torch.nn.functional.unfold(t, kernel, dilation=dil, padding=pad, stride=stride)
+    cols_v = V.im2col(V.tensor(x), kernel, stride, pad, dil)
+
+    assert_close("col2im", V.col2im(cols_v, shape[2:], kernel, stride, pad, dil),
+                 torch.nn.functional.fold(cols_t, shape[2:], kernel, dilation=dil,
+                                          padding=pad, stride=stride),
+                 TOLERANCES["reduction"], inputs=[x])
+
+
+def test_col2im_counts_overlap():
+    """Folding a column tensor of ones gives, at each position, the number of
+    windows covering it. Independent of torch, and it fails if contributions
+    are overwritten instead of summed -- which a gather-shaped implementation
+    would do while still producing plausible numbers."""
+    ones = V.full([1, 1 * 3 * 3, 4 * 4], 1.0)
+    counts = V.col2im(ones, [4, 4], [3, 3], [1, 1], [1, 1]).numpy()[0, 0]
+
+    # A 3x3 kernel with stride 1 and padding 1 over 4x4: corners are covered by
+    # four windows, edges by six, the interior by nine.
+    assert counts[0, 0] == 4.0, counts
+    assert counts[0, 1] == 6.0, counts
+    assert counts[1, 1] == 9.0, counts
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad,dil", WINDOWS[:4])
+def test_im2col_col2im_are_adjoint(shape, kernel, stride, pad, dil):
+    """<im2col(u), v> == <u, col2im(v)>. The defining property of an adjoint
+    pair, and what makes each the other's gradient rule."""
+    rng = np.random.default_rng(112)
+    u = rng.normal(size=shape).astype(np.float32)
+    cols = V.im2col(V.tensor(u), kernel, stride, pad, dil)
+    v = rng.normal(size=cols.numpy().shape).astype(np.float32)
+
+    lhs = float((cols.numpy() * v).sum())
+    rhs = float((u * V.col2im(V.tensor(v), shape[2:], kernel, stride, pad, dil).numpy()).sum())
+    assert abs(lhs - rhs) <= 1e-3 * max(1.0, abs(lhs)), f"{lhs} vs {rhs}"
+
+
+def test_im2col_gradients():
+    x = make_input((2, 2, 5, 5), seed=113)
+    v = V.tensor(x, requires_grad=True)
+    t = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    V.sum(V.mul(V.im2col(v, [3, 3], [1, 1], [1, 1]),
+                V.im2col(v, [3, 3], [1, 1], [1, 1]))).backward()
+    (torch.nn.functional.unfold(t, [3, 3], padding=[1, 1]) ** 2).sum().backward()
+
+    assert_close("im2col grad", v.grad, t.grad, TOLERANCES["reduction"], inputs=[x])
+
+
+def test_im2col_rejects_oversized_kernel():
+    v = V.tensor(make_input((1, 1, 3, 3), seed=114))
+    with pytest.raises(V.ShapeError):
+        V.im2col(v, [5, 5])
+
+
+def test_col2im_rejects_inconsistent_geometry():
+    cols = V.im2col(V.tensor(make_input((1, 1, 4, 4), seed=115)), [2, 2])
+    with pytest.raises(V.ShapeError):
+        V.col2im(cols, [7, 7], [2, 2])

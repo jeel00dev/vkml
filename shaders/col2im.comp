@@ -1,0 +1,72 @@
+#version 450
+
+// Adjoint of im2col: sums every window contribution back into the image
+// position it came from.
+//
+// Overlapping windows mean one image position receives several contributions.
+// The target device may not offer a global float atomicAdd, and even where one
+// exists its ordering varies run to run, so an atomic scatter is unavailable
+// and unwanted. The loop is therefore inverted, exactly as in scatter_add:
+// one thread per OUTPUT element, pulling from the windows that reach it. Every
+// destination is written by one invocation, so nothing contends and the fold
+// order is fixed by construction -- the same order the CPU kernel uses.
+//
+// Unlike scatter_add the scan is BOUNDED: only kernel_h * kernel_w offsets can
+// reach a given image position, and each determines at most one window. So this
+// costs O(kh*kw) per element rather than a full pass over the input.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;
+    uint64_t dst;
+    uint  n;
+    int   kernel_h, kernel_w;
+    int   stride_h, stride_w;
+    int   pad_h, pad_w;
+    int   dilation_h, dilation_w;
+    int   image_h, image_w;
+    int   out_h, out_w;
+    int   channels;
+    int   rows;
+    Operand in_op;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    const int positions = p.out_h * p.out_w;
+    const int patch_size     = p.kernel_h * p.kernel_w;
+
+    const int x = int(i) % p.image_w;
+    const int h = (int(i) / p.image_w) % p.image_h;
+    const int c = (int(i) / (p.image_w * p.image_h)) % p.channels;
+    const int b =  int(i) / (p.image_w * p.image_h * p.channels);
+
+    // Ascending (ki, kj): the fold order, and why this is reproducible.
+    float acc = 0.0;
+    for (int ki = 0; ki < p.kernel_h; ++ki) {
+        const int top = h + p.pad_h - ki * p.dilation_h;
+        // A window only reaches this row if the offset lands exactly on a
+        // stride boundary; otherwise no window position maps here at all.
+        if (top < 0 || (top % p.stride_h) != 0) { continue; }
+        const int oh = top / p.stride_h;
+        if (oh >= p.out_h) { continue; }
+
+        for (int kj = 0; kj < p.kernel_w; ++kj) {
+            const int left = x + p.pad_w - kj * p.dilation_w;
+            if (left < 0 || (left % p.stride_w) != 0) { continue; }
+            const int ow = left / p.stride_w;
+            if (ow >= p.out_w) { continue; }
+
+            const int row  = c * patch_size + ki * p.kernel_w + kj;
+            const int from = (b * p.rows + row) * positions + oh * p.out_w + ow;
+            acc += F32Buf(p.src).v[operand_offset(uint(from), p.in_op)];
+        }
+    }
+    F32Buf(p.dst).v[i] = acc;
+}
