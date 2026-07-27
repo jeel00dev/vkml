@@ -1,4 +1,8 @@
 ---
+# Six options below deviate from LLVM's defaults, and each one was chosen to
+# match how this codebase was already written rather than to impose a new
+# style. They are marked [house]; see the commit that introduced them for the
+# evidence. Everything else is LLVM.
 Language: Cpp
 BasedOnStyle: LLVM
 
@@ -10,15 +14,29 @@ UseTab: Never
 
 AccessModifierOffset: -4
 AlignAfterOpenBracket: Align
-AlignConsecutiveAssignments: Consecutive
+# [house] Aligned assignments look tidy in a table but make one renamed
+# identifier re-lay-out every neighbouring line, which inflates diffs and
+# scatters `git blame`. History is documentation here, so the churn is not
+# worth the appearance.
+AlignConsecutiveAssignments: None
 AlignConsecutiveDeclarations: false
 AlignTrailingComments: true
-AllowShortFunctionsOnASingleLine: Inline
+# [house] Dispatch switches are everywhere in this codebase -- op kinds, dtypes,
+# VkResult -- and `case X: return Y;` is far easier to scan as a table than the
+# same thing across two lines.
+AllowShortCaseLabelsOnASingleLine: true
+# [house] Keeps one-line bodies one line, which is how the CPU kernel table in
+# backend/cpu/kernels_elementwise.cpp is written.
+AllowShortFunctionsOnASingleLine: All
 AllowShortIfStatementsOnASingleLine: false
 AllowShortLoopsOnASingleLine: false
 AlwaysBreakTemplateDeclarations: Yes
-BinPackArguments: false
-BinPackParameters: false
+# [house] With BinPack off, a call that overflows puts *every* argument on its
+# own line: a 4-argument VKML_CHECK becomes seven lines. Those checks are the
+# most common multi-argument call in the project, so packing and wrapping at
+# the column limit is materially more readable.
+BinPackArguments: true
+BinPackParameters: true
 BreakBeforeBraces: Attach
 BreakConstructorInitializers: BeforeColon
 ConstructorInitializerIndentWidth: 4
@@ -27,7 +45,9 @@ EmptyLineBeforeAccessModifier: LogicalBlock
 FixNamespaceComments: true
 IncludeBlocks: Preserve
 IndentCaseLabels: true
-IndentPPDirectives: None
+# [house] Nested preprocessor conditionals read better indented, and the
+# bindings layer has several.
+IndentPPDirectives: AfterHash
 KeepEmptyLinesAtTheStartOfBlocks: false
 MaxEmptyLinesToKeep: 1
 NamespaceIndentation: None
@@ -36,5 +56,6 @@ ReferenceAlignment: Left
 SeparateDefinitionBlocks: Always
 SortIncludes: false
 SpaceAfterCStyleCast: false
-SpaceAfterTemplateKeyword: false
+# [house] The codebase writes `template <typename T>` without exception.
+SpaceAfterTemplateKeyword: true
 SpacesBeforeTrailingComments: 2
