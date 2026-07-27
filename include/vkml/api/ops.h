@@ -119,6 +119,26 @@ enum class Reduction {
                             std::array<int, 2> stride = {1, 1}, std::array<int, 2> padding = {0, 0},
                             std::array<int, 2> dilation = {1, 1});
 
+/// 2D convolution, following torch.nn.functional.conv2d.
+///
+/// `input` is `(N, C_in, H, W)`, `weight` is `(C_out, C_in, kernel_h,
+/// kernel_w)`, and `bias` is `(C_out)` or undefined.
+///
+/// Implemented as convolution-as-GEMM: `im2col` to lay each window out as a
+/// column, then one matmul against the flattened weights. That reuses the tuned
+/// matmul instead of needing a direct convolution kernel, and its gradient
+/// falls out of the gradients for im2col, matmul and reshape -- there is no
+/// conv-specific backward rule anywhere.
+///
+/// GROUPS ARE NOT SUPPORTED. Grouped and depthwise convolution need either a
+/// batched matmul over the group axis or a separate kernel, and nothing in the
+/// current roadmap uses them. Passing a weight whose input-channel extent
+/// disagrees with the input's is rejected rather than silently misinterpreted.
+[[nodiscard]] Tensor conv2d(const Tensor& input, const Tensor& weight,
+                            const Tensor& bias = Tensor{}, std::array<int, 2> stride = {1, 1},
+                            std::array<int, 2> padding = {0, 0},
+                            std::array<int, 2> dilation = {1, 1});
+
 /// Gathers along `axis` at the positions named by `index`, following
 /// torch.index_select. `index` must be I64 and rank 1; the result takes its
 /// extent on `axis` from the index length, and every other extent from `a`.

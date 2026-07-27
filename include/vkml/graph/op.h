@@ -106,7 +106,6 @@ enum class OpKind : uint16_t {
     // -- convolution / pooling ---------------------------------------------
     Im2Col,
     Col2Im,
-    Conv2d,
     MaxPool2d,
     AvgPool2d,
     MaxPool2dBackward,

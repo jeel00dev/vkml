@@ -77,6 +77,7 @@ cat = _C.cat
 Reduction = _C.Reduction
 mse_loss = _C.mse_loss
 cross_entropy = _C.cross_entropy
+conv2d = _C.conv2d
 im2col = _C.im2col
 col2im = _C.col2im
 index_select = _C.index_select

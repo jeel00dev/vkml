@@ -528,6 +528,9 @@ NB_MODULE(_vkml_core, m) {
           "reduction"_a = vkml::Reduction::Mean);
     m.def("cross_entropy", &vkml::cross_entropy, "logits"_a, "target"_a,
           "reduction"_a = vkml::Reduction::Mean);
+    m.def("conv2d", &vkml::conv2d, "input"_a, "weight"_a, "bias"_a = vkml::Tensor{},
+          "stride"_a = std::array<int, 2>{1, 1}, "padding"_a = std::array<int, 2>{0, 0},
+          "dilation"_a = std::array<int, 2>{1, 1});
     m.def("im2col", &vkml::im2col, "input"_a, "kernel"_a, "stride"_a = std::array<int, 2>{1, 1},
           "padding"_a = std::array<int, 2>{0, 0}, "dilation"_a = std::array<int, 2>{1, 1});
     m.def("col2im", &vkml::col2im, "cols"_a, "image"_a, "kernel"_a,

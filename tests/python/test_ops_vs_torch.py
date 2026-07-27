@@ -987,3 +987,71 @@ def test_col2im_rejects_inconsistent_geometry():
     cols = V.im2col(V.tensor(make_input((1, 1, 4, 4), seed=115)), [2, 2])
     with pytest.raises(V.ShapeError):
         V.col2im(cols, [7, 7], [2, 2])
+
+
+CONVS = [
+    # (input, weight, stride, padding, dilation)
+    ((1, 1, 5, 5), (2, 1, 3, 3), (1, 1), (0, 0), (1, 1)),
+    ((2, 3, 6, 6), (4, 3, 3, 3), (1, 1), (1, 1), (1, 1)),   # padded, same-size out
+    ((1, 2, 8, 8), (3, 2, 2, 2), (2, 2), (0, 0), (1, 1)),   # strided
+    ((2, 1, 7, 9), (2, 1, 3, 2), (2, 1), (1, 0), (1, 1)),   # asymmetric
+    ((1, 2, 7, 7), (2, 2, 3, 3), (1, 1), (2, 2), (2, 2)),   # dilated
+    ((1, 3, 4, 4), (5, 3, 4, 4), (1, 1), (0, 0), (1, 1)),   # kernel == image
+]
+
+
+@pytest.mark.parametrize("xs,ws,stride,pad,dil", CONVS)
+@pytest.mark.parametrize("use_bias", [False, True])
+def test_conv2d(xs, ws, stride, pad, dil, use_bias):
+    x = make_input(xs, seed=120)
+    w = make_input(ws, seed=121)
+    b = make_input((ws[0],), seed=122) if use_bias else None
+
+    vx, tx = pair(x)
+    vw, tw = pair(w)
+    vb, tb = pair(b) if use_bias else (V.Tensor(), None)
+
+    assert_close("conv2d", V.conv2d(vx, vw, vb, stride, pad, dil),
+                 torch.nn.functional.conv2d(tx, tw, tb, stride=stride, padding=pad,
+                                            dilation=dil),
+                 TOLERANCES["reduction"], inputs=[x, w])
+
+
+def test_conv2d_gradients():
+    """No conv-specific backward rule exists: the gradient comes from im2col,
+    matmul and reshape composing. Checked because that composition is the whole
+    claim, and a wrong one still produces plausibly-shaped gradients."""
+    x = make_input((2, 3, 6, 6), seed=123)
+    w = make_input((4, 3, 3, 3), seed=124)
+    b = make_input((4,), seed=125)
+
+    vx = V.tensor(x, requires_grad=True)
+    vw = V.tensor(w, requires_grad=True)
+    vb = V.tensor(b, requires_grad=True)
+    tx = torch.from_numpy(x.copy()).requires_grad_(True)
+    tw = torch.from_numpy(w.copy()).requires_grad_(True)
+    tb = torch.from_numpy(b.copy()).requires_grad_(True)
+
+    V.sum(V.conv2d(vx, vw, vb, padding=(1, 1))).backward()
+    torch.nn.functional.conv2d(tx, tw, tb, padding=(1, 1)).sum().backward()
+
+    assert_close("conv2d grad input", vx.grad, tx.grad, TOLERANCES["reduction"], inputs=[x])
+    assert_close("conv2d grad weight", vw.grad, tw.grad, TOLERANCES["reduction"], inputs=[w])
+    assert_close("conv2d grad bias", vb.grad, tb.grad, TOLERANCES["reduction"], inputs=[b])
+
+
+def test_conv2d_rejects_grouped_weight():
+    """Grouped convolution is unsupported, and the failure must be explicit --
+    a mismatched channel count is otherwise a plausible-looking reshape away
+    from silently computing something else."""
+    x = V.tensor(make_input((1, 4, 5, 5), seed=126))
+    w = V.tensor(make_input((4, 2, 3, 3), seed=127))    # would be groups=2
+    with pytest.raises(V.ShapeError):
+        V.conv2d(x, w)
+
+
+def test_conv2d_rejects_bad_bias():
+    x = V.tensor(make_input((1, 2, 5, 5), seed=128))
+    w = V.tensor(make_input((3, 2, 3, 3), seed=129))
+    with pytest.raises(V.ShapeError):
+        V.conv2d(x, w, V.tensor(make_input((5,), seed=130)))

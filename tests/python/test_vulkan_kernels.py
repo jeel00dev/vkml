@@ -1215,3 +1215,30 @@ def test_col2im_fold_is_bit_reproducible():
     gpu, cpu = run(gpu_device()), run(V.cpu)
     assert gpu.tobytes() == cpu.tobytes(), f"fold order differs:\n{gpu}\nvs\n{cpu}"
     assert gpu.tobytes() == run(gpu_device()).tobytes(), "GPU result is not reproducible"
+
+
+@pytest.mark.parametrize("xs,ws,stride,pad,dil", [
+    ((1, 1, 5, 5), (2, 1, 3, 3), (1, 1), (0, 0), (1, 1)),
+    ((2, 3, 6, 6), (4, 3, 3, 3), (1, 1), (1, 1), (1, 1)),
+    ((1, 2, 8, 8), (3, 2, 2, 2), (2, 2), (0, 0), (1, 1)),
+    ((1, 2, 7, 7), (2, 2, 3, 3), (1, 1), (2, 2), (2, 2)),
+])
+def test_conv2d_on_gpu(xs, ws, stride, pad, dil):
+    """conv2d is a composition, so this checks the whole chain -- im2col, the
+    tuned matmul, reshape and the bias broadcast -- agrees between backends."""
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, xs, "any")
+    w = make_data(rng, ws, "any")
+    b = make_data(rng, (ws[0],), "any")
+
+    def run(dev):
+        return V.conv2d(V.tensor(x, device=dev), V.tensor(w, device=dev),
+                        V.tensor(b, device=dev), stride, pad, dil).numpy()
+
+    ctx = Context(op="matmul", layout=Layout(xs), dtype="f32", seed=SEED, inputs=[x, w])
+    gpu, cpu = run(gpu_device()), run(V.cpu)
+    # matmul carries a BACKWARD bound; the reduction length is the flattened
+    # patch, and the terms are the products summed to make one output element.
+    k = ws[1] * ws[2] * ws[3]
+    compare(ctx, gpu, cpu, terms_abs_sum=float(np.abs(x).max() * np.abs(w).max() * k),
+            reduction_n=k)

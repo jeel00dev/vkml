@@ -456,6 +456,51 @@ Tensor col2im(const Tensor& cols, std::array<int, 2> image, std::array<int, 2> k
     return finish(std::move(n));
 }
 
+Tensor conv2d(const Tensor& input, const Tensor& weight, const Tensor& bias,
+              std::array<int, 2> stride, std::array<int, 2> padding, std::array<int, 2> dilation) {
+    VKML_CHECK(input.ndim() == 4, ShapeError, "conv2d() expects (N, C, H, W) input, got rank {}",
+               input.ndim());
+    VKML_CHECK(weight.ndim() == 4, ShapeError,
+               "conv2d() expects (C_out, C_in, kh, kw) weight, got rank {}", weight.ndim());
+    check_same_dtype(input, weight, "conv2d");
+    check_same_device(input, weight, "conv2d");
+    VKML_CHECK(weight.size(1) == input.size(1), ShapeError,
+               "conv2d(): weight has {} input channels but the input has {}; grouped and "
+               "depthwise convolution are not supported",
+               weight.size(1), input.size(1));
+
+    const int64_t out_channels = weight.size(0);
+    const std::array<int, 2> kernel{static_cast<int>(weight.size(2)),
+                                    static_cast<int>(weight.size(3))};
+
+    // (N, C*kh*kw, L). im2col validates the geometry, so no separate check here.
+    const Tensor cols = im2col(input, kernel, stride, padding, dilation);
+    const int64_t positions = cols.size(2);
+
+    const int64_t out_h =
+        window_count(input.size(2), kernel[0], stride[0], padding[0], dilation[0]);
+    const int64_t out_w =
+        window_count(input.size(3), kernel[1], stride[1], padding[1], dilation[1]);
+
+    // (C_out, C*kh*kw) @ (N, C*kh*kw, L) -> (N, C_out, L). matmul broadcasts the
+    // batch axes, so the weights are shared across the batch without a copy.
+    const Tensor flat_weight = weight.reshape({out_channels, cols.size(1)});
+    Tensor out = matmul(flat_weight, cols).reshape({input.size(0), out_channels, out_h, out_w});
+
+    if (bias.defined()) {
+        VKML_CHECK(bias.ndim() == 1 && bias.size(0) == out_channels, ShapeError,
+                   "conv2d(): bias must be rank 1 with {} elements, got rank {} with {}",
+                   out_channels, bias.ndim(), bias.numel());
+        // (C_out, 1, 1) right-aligns against (N, C_out, H, W), so the bias
+        // broadcasts across batch and space with stride 0 rather than a copy.
+        out = add(out, bias.reshape({out_channels, 1, 1}));
+    }
+
+    VKML_ASSERT(positions == out_h * out_w, "im2col window count {} disagrees with {}x{}",
+                positions, out_h, out_w);
+    return out;
+}
+
 Tensor index_select(const Tensor& a, int axis, const Tensor& index) {
     VKML_CHECK(index.dtype() == DType::I64, DTypeError, "index_select() index must be I64, got {}",
                dtype_name(index.dtype()));
