@@ -69,6 +69,18 @@ def test_unary_gradients(name, vf, tf, domain, shape):
     _check_grad(name, vf, tf, x)
 
 
+@pytest.mark.parametrize("diagonal", [0, 1, -1])
+@pytest.mark.parametrize("name,vf,tf", [("triu", V.triu, torch.triu), ("tril", V.tril, torch.tril)])
+def test_tri_gradients(name, vf, tf, diagonal):
+    """A triangular mask is linear and idempotent, so its own adjoint is
+    itself: the masked-out region must receive exactly zero gradient. Getting
+    the backward diagonal wrong leaks gradient into elements that contributed
+    nothing, which this catches because torch does not."""
+    x = make_input((5, 5), seed=140 + diagonal)
+    _check_grad(f"{name}(d={diagonal})",
+                lambda v: vf(v, diagonal), lambda t: tf(t, diagonal), x)
+
+
 BINARY_GRAD = [
     ("add", V.add, torch.add, "any"),
     ("sub", V.sub, torch.sub, "any"),

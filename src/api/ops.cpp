@@ -242,6 +242,34 @@ Tensor full_like(const Tensor& a, double value) {
     return Tensor::full(a.shape(), value, a.dtype(), a.device());
 }
 
+namespace {
+
+Tensor tri_impl(const Tensor& a, int64_t diagonal, OpKind kind) {
+    VKML_CHECK(a.shape().size() >= 2, ShapeError,
+               "{}() needs a rank-2 or higher tensor, got rank {}", op_name(kind),
+               a.shape().size());
+    // The offset is stored as int32 to keep TriParams small; a diagonal beyond
+    // that range could not index any tensor this backend can allocate, so
+    // rejecting it here is a clearer failure than a silent narrowing.
+    VKML_CHECK(diagonal >= std::numeric_limits<int32_t>::min() &&
+                   diagonal <= std::numeric_limits<int32_t>::max(),
+               IndexError, "{}() diagonal {} is out of range", op_name(kind), diagonal);
+
+    auto n =
+        make_node(kind, Shape::contiguous(a.shape(), dtype_size(a.dtype())), a.dtype(), a.device());
+    n->src[0] = a.node();
+    n->n_src = 1;
+    n->params.set(TriParams{.diagonal = static_cast<int32_t>(diagonal)});
+    n->requires_grad = grad_enabled() && a.requires_grad();
+    return finish(std::move(n));
+}
+
+}  // namespace
+
+Tensor triu(const Tensor& a, int64_t diagonal) { return tri_impl(a, diagonal, OpKind::Triu); }
+
+Tensor tril(const Tensor& a, int64_t diagonal) { return tri_impl(a, diagonal, OpKind::Tril); }
+
 Tensor where(const Tensor& cond, const Tensor& a, const Tensor& b) {
     VKML_CHECK(cond.dtype() == DType::Bool, DTypeError, "where() condition must be Bool, got {}",
                dtype_name(cond.dtype()));

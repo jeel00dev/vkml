@@ -1,0 +1,49 @@
+#version 450
+
+// Triangular mask over the last two axes: keeps one side of a diagonal and
+// zeroes the other. Batched over any leading axes.
+//
+// The predicate depends on an element's position rather than its value, so
+// this cannot ride on unary.comp -- that shader deliberately knows nothing
+// about where an element sits.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+// true keeps the upper triangle (triu), false the lower (tril).
+layout(constant_id = 1) const bool UPPER = true;
+layout(constant_id = 2) const bool CONTIGUOUS = false;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;
+    uint64_t dst;
+    uint     n;
+    // Extents of the last two axes, needed to turn a flat index into a
+    // (row, col) pair. Passed explicitly rather than read out of the Operand
+    // so the arithmetic does not depend on how the rank was padded.
+    uint     height;
+    uint     width;
+    int      diagonal;
+    Operand  in_op;
+    Operand  out_op;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    // Exact for any stride pattern: the linear index walks the logical shape
+    // in row-major order, and operand_offset maps it to memory separately.
+    const uint col = i % p.width;
+    const uint row = (i / p.width) % p.height;
+    const int  offset = int(col) - int(row);
+
+    const bool keep = UPPER ? offset >= p.diagonal : offset <= p.diagonal;
+
+    const uint si = CONTIGUOUS ? i : operand_offset(i, p.in_op);
+    const uint di = CONTIGUOUS ? i : operand_offset(i, p.out_op);
+
+    F32Buf(p.dst).v[di] = keep ? F32Buf(p.src).v[si] : 0.0;
+}

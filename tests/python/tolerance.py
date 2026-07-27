@@ -100,6 +100,8 @@ POLICY: dict[str, Tolerance] = {
     "maximum": Tolerance(Kind.EXACT),
     "minimum": Tolerance(Kind.EXACT),
     "where": Tolerance(Kind.EXACT, note="select"),
+    "triu": Tolerance(Kind.EXACT, note="keeps an element or writes zero"),
+    "tril": Tolerance(Kind.EXACT, note="keeps an element or writes zero"),
     "cast": Tolerance(Kind.EXACT, note="IEEE-754 conversions are correctly rounded"),
     "eq": Tolerance(Kind.EXACT),
     "lt": Tolerance(Kind.EXACT),

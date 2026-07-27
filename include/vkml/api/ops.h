@@ -63,6 +63,15 @@ namespace vkml {
 /// Elementwise select. `cond` must be Bool; all three broadcast together.
 [[nodiscard]] Tensor where(const Tensor& cond, const Tensor& a, const Tensor& b);
 
+/// Zeroes everything below the `diagonal`-th diagonal of the last two axes,
+/// keeping the upper triangle. `diagonal = 0` keeps the main diagonal;
+/// positive values move the boundary toward the upper-right. Rank must be at
+/// least 2; leading axes are batched over.
+[[nodiscard]] Tensor triu(const Tensor& a, int64_t diagonal = 0);
+
+/// Mirror of `triu`, keeping the lower triangle.
+[[nodiscard]] Tensor tril(const Tensor& a, int64_t diagonal = 0);
+
 // Reductions. An empty `axes` reduces over every axis.
 [[nodiscard]] Tensor sum(const Tensor& a, std::span<const int> axes = {}, bool keepdim = false);
 [[nodiscard]] Tensor mean(const Tensor& a, std::span<const int> axes = {}, bool keepdim = false);

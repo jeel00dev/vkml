@@ -238,6 +238,13 @@ struct CastParams {
     DType target = DType::F32;
 };
 
+/// Offset of the retained diagonal for triu/tril, following torch: 0 is the
+/// main diagonal, positive moves toward the upper-right, negative toward the
+/// lower-left. Which side is kept comes from the OpKind, not from here.
+struct TriParams {
+    int32_t diagonal = 0;
+};
+
 struct ClampParams {
     float lo = 0.0F;
     float hi = 0.0F;

@@ -268,6 +268,36 @@ def test_pow_returns_nan_for_negative_base_with_fractional_exponent():
 
 
 # ---------------------------------------------------------------------------
+# Triangular masks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("diagonal", [0, 1, -1, 3, -3])
+@pytest.mark.parametrize("name,fn", [("triu", V.triu), ("tril", V.tril)])
+def test_tri_over_random_layouts(name, fn, diagonal, layouts):
+    """The predicate is positional, so this is the one kernel where a strided
+    or permuted input could disagree with the CPU by masking the wrong element
+    rather than by reading the wrong one."""
+    rank2 = [lay for lay in layouts if len(lay.base_shape) >= 2]
+    assert rank2, "expected the layout sweep to contain rank-2+ cases"
+
+    n = run_unary(name, lambda t: fn(t, diagonal), rank2, SEED, "any")
+    assert n == len(rank2)
+
+
+def test_tri_boundary_is_exact_on_gpu():
+    """Pins the diagonal boundary itself. A >= written as > shifts the kept
+    region by one column and still passes a shape check."""
+    x = np.arange(16, dtype=np.float32).reshape(4, 4)
+    t = V.tensor(x, device=gpu_device())
+
+    assert V.triu(t, 0).numpy().tolist() == np.triu(x, 0).tolist()
+    assert V.triu(t, 1).numpy().tolist() == np.triu(x, 1).tolist()
+    assert V.tril(t, 0).numpy().tolist() == np.tril(x, 0).tolist()
+    assert V.tril(t, -1).numpy().tolist() == np.tril(x, -1).tolist()
+
+
+# ---------------------------------------------------------------------------
 # Where (ternary select)
 # ---------------------------------------------------------------------------
 

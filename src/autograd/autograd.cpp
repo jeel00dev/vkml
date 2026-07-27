@@ -252,6 +252,18 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
                            sub(Tensor::ones(node.shape.dims(), node.dtype, node.device), out()));
             return;
 
+        // A triangular mask is linear and idempotent, so its own transpose is
+        // itself: whatever the mask zeroed contributed nothing to the output
+        // and must receive no gradient. Applying the same mask to `grad` is the
+        // whole rule -- no new kernel, per the graph-autograd design.
+        case OpKind::Triu:
+            accumulate(grads, a, triu(grad, node.params.get<TriParams>().diagonal));
+            return;
+
+        case OpKind::Tril:
+            accumulate(grads, a, tril(grad, node.params.get<TriParams>().diagonal));
+            return;
+
         case OpKind::Relu:
             accumulate(grads, a, where(greater(ta(), zeros_like(ta())), grad, zeros_like(grad)));
             return;

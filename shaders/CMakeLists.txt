@@ -14,6 +14,7 @@ set(VKML_SHADERS
     unary.comp
     binary.comp
     where.comp
+    tri.comp
     cast.comp
     reduce.comp
     softmax.comp

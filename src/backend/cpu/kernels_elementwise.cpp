@@ -235,6 +235,37 @@ void k_clamp(Node& out) {
     });
 }
 
+/// Triangular mask over the last two axes.
+///
+/// Not written through map_unary because the predicate depends on *where* an
+/// element is, not on its value. The row and column are recovered from the
+/// linear index, which is exact because that index walks the logical shape in
+/// row-major order regardless of how the operand is strided.
+void k_tri(Node& out, bool upper) {
+    if (out.dtype != DType::F32) {
+        unsupported_dtype(out);
+    }
+    const Node& in = *out.src[0];
+    const auto p = out.params.get<TriParams>();
+
+    const int nd = out.shape.ndim();
+    const int64_t width = out.shape.dim(nd - 1);
+    const int64_t height = out.shape.dim(nd - 2);
+    const int64_t n = out.shape.numel();
+
+    for (int64_t i = 0; i < n; ++i) {
+        const int64_t col = i % width;
+        const int64_t row = (i / width) % height;
+        const int64_t offset = col - row;
+        const bool keep = upper ? offset >= p.diagonal : offset <= p.diagonal;
+        store<float>(out, i, keep ? load<float>(in, i) : 0.0F);
+    }
+}
+
+void k_triu(Node& o) { k_tri(o, true); }
+
+void k_tril(Node& o) { k_tri(o, false); }
+
 void k_where(Node& out) {
     // src0 = condition (Bool), src1 = value if true, src2 = value if false.
     // All three are already broadcast to the output shape.
@@ -295,6 +326,8 @@ void register_elementwise_kernels(KernelTable& t) {
     t[static_cast<size_t>(OpKind::NotEqual)] = k_not_equal;
 
     t[static_cast<size_t>(OpKind::Where)] = k_where;
+    t[static_cast<size_t>(OpKind::Triu)] = k_triu;
+    t[static_cast<size_t>(OpKind::Tril)] = k_tril;
 }
 
 }  // namespace vkml::cpu

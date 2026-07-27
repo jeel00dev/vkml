@@ -73,6 +73,8 @@ clamp = _C.clamp
 clamp_min = _C.clamp_min
 clamp_max = _C.clamp_max
 where = _C.where
+triu = _C.triu
+tril = _C.tril
 
 sum = _C.sum  # noqa: A001
 mean = _C.mean

@@ -435,6 +435,36 @@ def test_clamp_and_where():
                  torch.where(cond_t, t, torch.zeros(4, 5)))
 
 
+@pytest.mark.parametrize("diagonal", [0, 1, 2, -1, -2, 5, -5])
+@pytest.mark.parametrize("shape", [(4, 4), (3, 5), (5, 3), (2, 3, 4), (2, 2, 3, 3), (1, 1)])
+def test_triu_tril(shape, diagonal):
+    """Non-square shapes and out-of-range diagonals are the cases that catch an
+    off-by-one: at diagonal 5 on a 4-wide tensor triu must return all zeros and
+    tril must return the input unchanged, and swapping the comparison silently
+    inverts both."""
+    x = make_input(shape, seed=40)
+    v, t = pair(x)
+    assert_close(f"triu(d={diagonal})", V.triu(v, diagonal), torch.triu(t, diagonal))
+    assert_close(f"tril(d={diagonal})", V.tril(v, diagonal), torch.tril(t, diagonal))
+
+
+def test_triu_tril_partition_the_tensor():
+    """triu(d) and tril(d-1) are complementary: every element belongs to exactly
+    one of them, so the two must sum back to the original. Independent of
+    PyTorch, and it fails if either side's boundary is off by one."""
+    x = make_input((6, 6), seed=41)
+    v, _ = pair(x)
+    for d in (-2, 0, 3):
+        total = V.add(V.triu(v, d), V.tril(v, d - 1)).numpy()
+        assert np.allclose(total, x), f"triu(d={d}) + tril(d={d - 1}) != x"
+
+
+def test_triu_requires_rank_two():
+    v = V.tensor(make_input((5,), seed=42))
+    with pytest.raises(V.ShapeError):
+        V.triu(v)
+
+
 def test_cast_roundtrip():
     x = make_input((3, 4), seed=27)
     v, t = pair(x)

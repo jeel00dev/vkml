@@ -16,6 +16,7 @@
 #include "vkml/spv/gemv.h"
 #include "vkml/spv/reduce.h"
 #include "vkml/spv/softmax.h"
+#include "vkml/spv/tri.h"
 #include "vkml/spv/unary.h"
 #include "vkml/spv/where.h"
 
@@ -116,6 +117,19 @@ struct WherePush {
 };
 
 static_assert(sizeof(WherePush) <= 256, "where push constants exceed the device budget");
+
+struct TriPush {
+    uint64_t src;
+    uint64_t dst;
+    uint32_t n;
+    uint32_t height;
+    uint32_t width;
+    int32_t diagonal;
+    GpuOperand in_op;
+    GpuOperand out_op;
+};
+
+static_assert(sizeof(TriPush) <= 256, "tri push constants exceed the device budget");
 
 struct ReducePush {
     uint64_t src;
@@ -675,6 +689,11 @@ bool VulkanBackend::supports(const Node& node) const {
                    node.src[0]->dtype == DType::Bool && node.src[1] != nullptr &&
                    node.src[1]->dtype == DType::F32 && node.src[2] != nullptr &&
                    node.src[2]->dtype == DType::F32;
+        // Triangular masks. Rank >= 2 is guaranteed by the API, but the shader
+        // indexes the last two extents directly, so it is re-checked here
+        // rather than trusted across a layer boundary.
+        case OpKind::Triu:
+        case OpKind::Tril: return node.dtype == DType::F32 && node.shape.ndim() >= 2;
         case OpKind::Cast: return true;
         case OpKind::Sum:
         case OpKind::Mean:
@@ -864,6 +883,38 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 rec.dispatch(
                     pipes.get("binary", spv::binary, spv::binary_size, sizeof(BinaryPush), cfg),
                     &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::Triu:
+            case OpKind::Tril: {
+                const Node& src = *node->src[0];
+                const size_t esz = dtype_size(node->dtype);
+                const auto tp = node->params.get<TriParams>();
+
+                const int nd = node->shape.ndim();
+                const bool contiguous = src.shape.is_contiguous() && node->shape.is_contiguous();
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg, node->op == OpKind::Triu ? 1U : 0U, contiguous ? 1U : 0U};
+
+                TriPush push{};
+                push.src = address_of(src);
+                push.dst = address_of(*node);
+                push.n = n_elems;
+                push.height = static_cast<uint32_t>(node->shape.dim(nd - 2));
+                push.width = static_cast<uint32_t>(node->shape.dim(nd - 1));
+                push.diagonal = tp.diagonal;
+                push.in_op = to_gpu_operand(src.shape, esz);
+                push.out_op = to_gpu_operand(node->shape, esz);
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "tri", cfg, sizeof(TriPush), (n_elems + wg - 1) / wg,
+                                   impl_->caps.subgroup_size);
+                }
+                rec.dispatch(pipes.get("tri", spv::tri, spv::tri_size, sizeof(TriPush), cfg), &push,
+                             sizeof(push), n_elems);
                 break;
             }
 
