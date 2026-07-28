@@ -109,11 +109,14 @@ so any extra rounding in a shader is a defect rather than a rounding difference.
 That is the second link of the correctness chain, and it is the link that was
 missing when this section was first written.
 
-**Matmul is the exception and is still f32-only on the GPU.** The GEMM family is
-six tuned shaders with shared-memory tiling, double buffering and vec4 loads;
-giving them an f16 storage path is a change to the most delicate code in the
-project rather than the load/store swap everything else needed. f16 matmul runs
-on the CPU and raises on Vulkan, which is loud rather than silent.
+**Matmul followed, and its result contradicted the prediction.** The GEMM family
+now computes f16 on the GPU, bit-exact against the CPU across every path the
+dispatcher can choose — gemv, naive, tiled, register-blocked, and split-K. That
+last one needed a decision: **split-K partials stay f32 whatever the operands
+are**, because rounding a partial sum to 16 bits before the final fold breaks
+fp32 accumulation across the split exactly as a 16-bit accumulator breaks it
+within one. So the GEMM shaders carry two storage types, the operands' and the
+destination's, and they differ in precisely that case.
 
 ### What f16 buys, measured
 
@@ -139,6 +142,38 @@ The corollary matters for anyone reading a smaller number: at 2^22 the win is
 only 1.40×, because halving the traffic also moves the kernel down the
 saturation curve. All six points lie on one curve when plotted against bytes
 moved. `bench/gpu_bench.py` tracks the 2^24 pair.
+
+### f16 GEMM is slower, and the reason corrects a claim made here
+
+This document previously argued that f16 should pay *more* in a GEMM than in an
+elementwise pass, "because a GEMM reads its operands repeatedly, so halving
+operand traffic matters more there". **That reasoning was wrong**, and measuring
+it is what showed so.
+
+| 2048³ matmul | gpu min |
+|---|---|
+| f32, vectorised tile load | **6.74 ms** |
+| f32, vectorised load disabled | 9.89 ms |
+| f16 (vectorised load disabled) | 9.74 ms |
+
+f16 is **1.45× slower than f32**, and none of that is f16's doing. `load4` reads
+through `F32Vec4Buf`, so the vectorised tile load is f32-only and f16 falls back
+to the scalar path — which was already there and already correct, which is why
+it was chosen over writing an f16 vec4 loader on a first pass. Disabling
+vectorisation for f32 too reproduces almost exactly the f16 time (9.89 against
+9.74), at 512³ and 1024³ as well as here.
+
+At **equal** vectorisation f16 is 2–6 % faster, and that small figure is the
+real finding: a tiled GEMM is compute-bound, not bandwidth-bound. The repeated
+operand reads the earlier argument appealed to hit *shared memory*, not global —
+tiling already solved the bandwidth problem, which is what tiling is for. The
+elementwise kernel got 1.95× precisely because it has no reuse to exploit.
+
+**So f16 matmul is worth having for footprint, not for speed**, and it currently
+costs speed. That is recorded rather than hidden: `bench/gpu_bench.py` tracks the
+pair, and an f16 vectorised load (item 32) would restore parity rather than
+deliver a win — its value is removing a regression, and its expected size is now
+measured rather than hoped for.
 
 **The integer types are storage and indices, not arithmetic**, and that is now
 stated in `dtype.h` rather than discovered at a call site.
@@ -258,7 +293,8 @@ rather than converted.
 |---|---|---|
 | ~~26~~ | ~~Decide f16 and integer arithmetic~~ | **Done** — f16 computes on the CPU; integers are storage and indices (§2) |
 | ~~30~~ | ~~Implement f16 on the Vulkan backend~~ | **Done** — elementwise, comparisons, reductions and softmax; bit-exact against the CPU oracle (§2) |
-| 31 | **f16 in the GEMM family** | §2. The one operator still f32-only on the GPU. Six tuned shaders, so it wants its own measured increment |
+| ~~31~~ | ~~f16 in the GEMM family~~ | **Done** — bit-exact on every path including split-K, whose partials stay f32 (§2) |
+| 32 | **An f16 vectorised tile load for the GEMM shaders** | §2. f16 matmul is 1.45× slower than f32 purely because `load4` is f32-only. Restores parity; measured not to be a speedup, so it waits on someone actually running f16 GEMMs |
 | 27 | Reconcile the backends' input requirements, or document the divergence | §5. Sharpens item 16 |
 | 28 | Implement `prod` on Vulkan, or state it is CPU-only | §4 |
 | 15 | Run the Python suite under a sanitizer in CI | Unchanged; still open |
@@ -281,13 +317,13 @@ decision.**
 
 Both properties that were unreachable — mixed precision, and the backward half
 of `Cast` — are now reachable and covered, on **both** backends, with the two
-verified bit-exact against each other. This remains *part 1* only because
-matmul's GPU path is still f32 (item 31); every other f16 operator runs the full
-correctness chain.
+verified bit-exact against each other, matmul included. Every f16 operator now
+runs the full correctness chain.
 
 All gates green: layering (56 files) · clang-format · debug `-Werror` · release ·
-ASan build and suite · ctest · **1,156 Python tests, 5 skipped** · **29 of 29
-mutations killed** · validation layers clean on the f16 GPU path.
+ASan build and suite · ctest · **1,161 Python tests, 5 skipped** · **29 of 29
+mutations killed** · validation layers clean on the f16 GPU path, split-K
+included.
 
 Five of those mutations exist for the f16 precision contract, which a tolerance
 comparison cannot check: accumulating a reduction or a dot product in 16 bits,

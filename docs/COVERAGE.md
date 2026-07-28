@@ -17,7 +17,7 @@ Recorded over the full Python suite on an RX 5600M (RADV), 2026-07-28.
 - operators executed: **63 of 63**
 - backends observed: cpu, vulkan
 - backward rules declared: **47**, fired: **47**
-- total node evaluations: 123,242
+- total node evaluations: 123,284
 
 ## BLOCKING — never executed
 
@@ -58,10 +58,10 @@ Ranks `0 1 2 3 4`, sizes `empty scalar one_group many_groups` — a digit or let
 | `full` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | . | . | . | 16,836 |
 | `arange` | compute | cpu,vulkan | f32 | . 1 . . . | . . o m | . | . | . | 225 |
 | `rand` | compute | cpu,vulkan | f32 | . 1 2 3 . | . s o m | . | . | . | 155 |
-| `reshape` | view | view | f16,f32,i64 | 0 1 2 3 4 | . s o m | . | . | . | 12,009 |
+| `reshape` | view | view | f16,f32,i64 | 0 1 2 3 4 | . s o m | . | . | . | 12,020 |
 | `permute` | view | view | f16,f32 | . . 2 3 4 | . . o m | yes | yes | yes | 7,262 |
 | `slice` | view | view | f32 | . 1 2 3 4 | . . o m | . | yes | yes | 2,205 |
-| `broadcast` | view | view | bool,f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | yes | 28,950 |
+| `broadcast` | view | view | bool,f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | yes | 28,970 |
 | `squeeze` | view | view | f32 | . 1 2 . . | . . o . | . | yes | yes | 11 |
 | `unsqueeze` | view | view | f32 | . . 2 3 4 | . s o . | . | . | . | 226 |
 | `contiguous` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | . . o m | yes | yes | . | 1,800 |
@@ -105,7 +105,7 @@ Ranks `0 1 2 3 4`, sizes `empty scalar one_group many_groups` — a digit or let
 | `prod` | compute | cpu | f32 | 0 1 . . . | . s o m | . | yes | . | 4 |
 | `argmax` | compute | cpu,vulkan | i64 | 0 1 2 . . | . s o m | . | yes | . | 28 |
 | `argmin` | compute | cpu,vulkan | i64 | 0 1 2 . . | . s o m | . | yes | . | 26 |
-| `matmul` | compute | cpu,vulkan | f16,f32 | . . . . 4 | . s o m | yes | yes | . | 4,738 |
+| `matmul` | compute | cpu,vulkan | f16,f32 | . . . . 4 | . s o m | yes | yes | . | 4,749 |
 | `softmax` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | . s o m | . | yes | . | 166 |
 | `log_softmax` | compute | cpu,vulkan | f16,f32 | . 1 2 3 . | . s o m | . | yes | . | 305 |
 | `im2col` | compute | cpu,vulkan | f32 | . . . 3 . | . . o m | . | yes | . | 112 |
