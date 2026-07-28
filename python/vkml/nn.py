@@ -169,6 +169,33 @@ class Module:
         for p in self.parameters():
             p.grad = V.Tensor()
 
+    def to(self, device) -> "Module":
+        """Move every parameter and buffer to `device`, in place.
+
+        CALL THIS BEFORE CONSTRUCTING AN OPTIMISER. The optimiser captures the
+        parameter list when it is built, and this replaces each parameter with a
+        new tensor -- so an optimiser made first would keep updating the old
+        ones while the model used the new. torch has the same ordering
+        constraint for the same reason.
+
+        Transfer goes through the host, because that is what a transfer to a
+        discrete device is: the data has to cross the bus either way. A direct
+        device-to-device path would only matter with a second accelerator
+        backend, which does not exist yet.
+
+        Gradients move with their parameters. Dropping them would leave a
+        subsequent optimiser step silently updating nothing.
+        """
+        for name, p in list(self.named_parameters()):
+            moved = V.tensor(p.numpy(), device=device, requires_grad=p.requires_grad)
+            if p.grad.defined():
+                moved.grad = V.tensor(p.grad.numpy(), device=device)
+            self._replace_param(name, moved)
+
+        for name, b in list(self.named_buffers()):
+            self._replace_buffer(name, V.tensor(b.numpy(), device=device))
+        return self
+
     def train(self, mode: bool = True) -> "Module":
         object.__setattr__(self, "training", mode)
         for m in self._modules.values():
@@ -372,10 +399,23 @@ class BatchNorm2d(Module):
                                  V.tensor(_np.zeros(num_features, dtype=_np.float32)))
             self.register_buffer("running_var",
                                  V.tensor(_np.ones(num_features, dtype=_np.float32)))
-            # Unused here -- it exists for torch's momentum=None cumulative
-            # average, which this layer does not offer -- but it is in every
-            # torch BatchNorm state_dict, and interop is the point of matching
-            # the naming at all.
+            # Present for state_dict interop and DELIBERATELY NOT MAINTAINED.
+            #
+            # Every torch BatchNorm state_dict carries this key, so the buffer
+            # has to exist or load_state_dict rejects the checkpoint. Nothing in
+            # vkml reads it: torch uses it only for momentum=None, the
+            # cumulative-average mode this layer does not offer.
+            #
+            # Keeping it accurate would cost a host round-trip per forward pass
+            # -- I64 arithmetic is unimplemented on both backends, so the
+            # increment cannot happen on the device, and reading the counter
+            # back to add one is exactly the per-step synchronisation this
+            # project spends effort avoiding. That is a poor trade for a value
+            # with no reader.
+            #
+            # Consequence, stated: a vkml checkpoint loaded into torch reports
+            # zero batches. Revisit if momentum=None is ever supported, or if
+            # I64 elementwise arithmetic lands and the increment becomes free.
             self.register_buffer("num_batches_tracked", V.tensor(_np.array(0, dtype=_np.int64)))
 
     def forward(self, x: V.Tensor) -> V.Tensor:
@@ -427,10 +467,7 @@ class BatchNorm2d(Module):
             self.running_var.assign_(
                 self.running_var * (1.0 - m) + biased_var.detach() * (m * correction)
             )
-        with V.no_grad():
-            self.num_batches_tracked.assign_(
-                V.tensor(_np.array(int(self.num_batches_tracked.numpy()) + 1, dtype=_np.int64))
-            )
+
 
     def __repr__(self) -> str:
         return (f"BatchNorm2d({self.num_features}, eps={self.eps}, "

@@ -1369,3 +1369,95 @@ def test_dropout_mask_matches_across_backends(p):
 
     ctx = Context(op="dropout", layout=Layout((64, 64)), dtype="f32", seed=SEED, inputs=[x])
     compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+# ---------------------------------------------------------------------------
+# Module placement and training on the device
+# ---------------------------------------------------------------------------
+
+
+def test_module_to_moves_parameters_and_buffers():
+    model = V.nn.Sequential(V.nn.Conv2d(1, 2, 3, padding=1), V.nn.BatchNorm2d(2))
+    before = {name: a.copy() for name, a in model.state_dict().items()}
+
+    model.to(gpu_device())
+
+    for _, p in model.named_parameters():
+        assert str(p.device) == "vulkan:0", p.device
+    for _, b in model.named_buffers():
+        assert str(b.device) == "vulkan:0", b.device
+
+    # Values survive the move unchanged; only their residence differs.
+    after = model.state_dict()
+    for name, value in before.items():
+        assert np.array_equal(after[name], value), name
+
+
+def test_module_to_carries_gradients():
+    """Dropping gradients would leave a subsequent optimiser step silently
+    updating nothing, which is worse than failing."""
+    model = V.nn.Linear(4, 3)
+    x = V.tensor(np.ones((2, 4), dtype=np.float32))
+    V.sum(model(x)).backward()
+    grad_before = model.weight.grad.numpy().copy()
+
+    model.to(gpu_device())
+    assert model.weight.grad.defined(), "gradient was dropped by to()"
+    assert np.allclose(model.weight.grad.numpy(), grad_before)
+
+
+def test_cnn_trains_on_the_device():
+    """The whole stack on Vulkan: conv, batch norm, pooling, flatten, linear,
+    cross-entropy, backward and an optimiser step. Asserts the loss actually
+    falls -- a model that ran without error but learned nothing would pass a
+    shape check."""
+    model = V.nn.Sequential(
+        V.nn.Conv2d(1, 4, 3, padding=1), V.nn.BatchNorm2d(4), V.nn.ReLU(),
+        V.nn.MaxPool2d(2), V.nn.Flatten(), V.nn.Linear(4 * 4 * 4, 3)).to(gpu_device())
+    opt = V.optim.SGD(model.parameters(), lr=0.05)
+
+    rng = np.random.default_rng(SEED)
+    x = V.tensor(rng.normal(size=(8, 1, 8, 8)).astype(np.float32), device=gpu_device())
+    y = V.tensor(rng.integers(0, 3, size=8).astype(np.int64), device=gpu_device())
+
+    losses = []
+    for _ in range(15):
+        opt.zero_grad()
+        loss = V.nn.cross_entropy(model(x), y)
+        loss.backward()
+        opt.step()
+        losses.append(loss.item())
+
+    assert all(np.isfinite(losses)), losses
+    assert losses[-1] < losses[0] * 0.75, f"loss did not fall: {losses[0]:.4f} -> {losses[-1]:.4f}"
+
+
+def test_device_and_cpu_training_agree():
+    """The same model, data and seed on both backends must follow the same
+    trajectory -- the oracle chain applied to a whole training loop rather than
+    to one operator."""
+    rng = np.random.default_rng(SEED)
+    x = rng.normal(size=(6, 5)).astype(np.float32)
+    y = rng.integers(0, 4, size=6).astype(np.int64)
+    init = {"0.weight": rng.normal(size=(4, 5)).astype(np.float32),
+            "0.bias": rng.normal(size=(4,)).astype(np.float32)}
+
+    def train(device):
+        model = V.nn.Sequential(V.nn.Linear(5, 4))
+        model.load_state_dict(init)
+        model.to(device)
+        opt = V.optim.SGD(model.parameters(), lr=0.1)
+        tx = V.tensor(x, device=device)
+        ty = V.tensor(y, device=device)
+        out = []
+        for _ in range(10):
+            opt.zero_grad()
+            loss = V.nn.cross_entropy(model(tx), ty)
+            loss.backward()
+            opt.step()
+            out.append(loss.item())
+        return np.array(out, dtype=np.float32)
+
+    gpu, cpu = train(gpu_device()), train(V.cpu)
+    ctx = Context(op="cross_entropy", layout=Layout((6, 5)), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, gpu, cpu)
