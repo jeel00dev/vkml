@@ -20,24 +20,25 @@ vkML is a tensor library with reverse-mode autograd, neural network layers,
 optimisers and a data pipeline — the shape of API you would expect from PyTorch
 — running on the GPU through **Vulkan compute shaders** instead of CUDA or ROCm.
 
-It is written in C++20 (~13k lines of core and shader code) with a Python API
-through [nanobind](https://github.com/wjakob/nanobind). Tensors are lazy: an
+I wrote it in C++20 — about 13k lines of core and shader code — with a Python
+API through [nanobind](https://github.com/wjakob/nanobind). Tensors are lazy: an
 operation appends a node to a graph, and work happens when a result is actually
 needed, so a whole expression reaches the GPU as one submission.
 
 ### Why Vulkan
 
 CUDA is the reason most GPU deep learning runs on NVIDIA hardware. ROCm covers
-some AMD cards and not others — this project began because the author's GPU was
-one of the ones it does not cover.
+some AMD cards and not others, and mine is one of the ones it does not cover —
+that is why I started this.
 
-Vulkan is a different bet: it is a **vendor-neutral compute API** with drivers
+Vulkan is a different bet: it is a **vendor-neutral compute API**, with drivers
 from AMD, NVIDIA, Intel, Qualcomm, ARM and Apple (through MoltenVK). A compute
-shader compiled to SPIR-V runs on all of them. That trades away CUDA's mature
-libraries — no cuBLAS, no cuDNN, every kernel is written here — for the
-possibility of a single build that runs anywhere.
+shader compiled to SPIR-V runs on all of them. What I gave up for that is CUDA's
+mature libraries — there is no cuBLAS and no cuDNN here, so every kernel is one
+I had to write — and what I get back is the possibility of a single build that
+runs anywhere.
 
-Concretely, the design leans on Vulkan features that make that trade cheaper:
+I leaned on the Vulkan features that make that trade cheaper:
 
 | Feature | What it buys |
 |---|---|
@@ -95,8 +96,9 @@ Requires a C++20 compiler, CMake ≥ 3.25 and the Vulkan SDK. The SPIR-V for eve
 shader is compiled into the extension, so an installed vkML has no data files to
 find at run time.
 
-Without the Vulkan SDK the build **fails deliberately** rather than quietly
-producing a CPU-only library. If that is genuinely what you want:
+Without the Vulkan SDK I make the build **fail** rather than quietly hand you a
+CPU-only library, since that would not be the thing you installed. If it is
+genuinely what you want, ask for it:
 
 ```sh
 pip install . -C cmake.define.VKML_VULKAN=OFF
@@ -114,9 +116,10 @@ pip install . -C cmake.define.VKML_VULKAN=OFF
 | `vkml.data` | `Dataset`, `ArrayDataset`, `DataLoader`, reproducible shuffling, `split` |
 | `vkml.serialize` | Checkpoints as a zip of `.npy` arrays plus JSON metadata |
 
-Autograd is reverse-mode with 47 backward rules, each written in terms of
-*forward* operations — so a gradient reuses the same kernels as the forward
-pass, and a bug fixed in `mul` is fixed in the gradient of `mul`.
+Autograd is reverse-mode with 47 backward rules. I wrote each of them in terms
+of *forward* operations, so a gradient reuses the same kernels as the forward
+pass and a bug I fix in `mul` is fixed in the gradient of `mul` at the same
+time.
 
 Both **f32 and f16** compute on either backend. f16 is storage, never an
 accumulator: values widen to float at the memory boundary and narrow once on the
@@ -124,29 +127,28 @@ store, so a reduction of any length keeps fp32 accumulation.
 
 ### Checkpoints do not execute code
 
-A vkML checkpoint is a zip containing only data — `.npy` members read with
+I made a vkML checkpoint a zip containing only data — `.npy` members read with
 `allow_pickle=False`, plus one JSON document. Neither can name a callable, so
 loading a model file cannot run a program. The well-known failure in this field
 is a format built on `pickle`, which reconstructs objects by *calling* what the
-stream names.
+stream names, and I did not want to repeat it.
 
 ---
 
 ## How correctness is established
 
-Every operator is checked against PyTorch, in a chain:
+I check every operator against PyTorch, in a chain:
 
 ```
 vkml-cpu  vs  PyTorch     catches wrong formulas, axes and broadcast rules
 vkml-vulkan  vs  vkml-cpu catches kernel bugs, against an oracle with identical semantics
 ```
 
-Tolerances are derived from the reduction length **in advance** and never
-widened after a failure — a mismatch is a bug until an error analysis says
-otherwise.
+I derive tolerances from the reduction length **in advance** and never widen one
+after a failure — a mismatch is a bug until an error analysis says otherwise.
 
-A green test suite only proves the tests ran, so three further gates check that
-the suite *could* fail:
+A green test suite only proves the tests ran, so I keep three further gates that
+check the suite *could* fail:
 
 | Gate | Question it answers |
 |---|---|
@@ -160,34 +162,36 @@ python scripts/mutation_check.py        # can the suite fail?
 python scripts/asan_python.py           # the suite, instrumented
 ```
 
-Results are reproducible by construction: no global atomics, fixed reduction
-trees, and a counter-based RNG that is a pure function of seed and index.
+Results are reproducible by construction, which I treat as part of correctness
+rather than a nicety: no global atomics, fixed reduction trees, and a
+counter-based RNG that is a pure function of seed and index.
 
 ---
 
 ## Project status
 
-**Alpha.** It trains real models and is tested hard, but everything below has
-been verified on a single machine — two GPUs in it, one driver, one OS — and it
+**Alpha.** It trains real models and I test it hard, but everything below I have
+only verified on my own machine — two GPUs in it, one driver, one OS — and it
 does not cover everything a mature framework does.
 
 **What works** — the MNIST MLP and CNN train end to end on the GPU and agree
 with PyTorch to well inside tolerance; 65 operators across both backends;
 1,176 tests, passing on two different GPUs.
 
-**What does not, stated plainly:**
+**What does not, stated plainly, because I would rather you found out here:**
 
-- **Tested on two GPUs, one driver, one OS.** A discrete RX 5600M (RDNA1, 36
+- **I have tested two GPUs, one driver, one OS.** A discrete RX 5600M (RDNA1, 36
   compute units) and an integrated Renoir iGPU (6 compute units), both RADV on
-  Linux — the full suite passes on each, and MNIST trains to the same accuracy
-  and the same maximum divergence from PyTorch on both. Nothing yet proves it
-  runs on NVIDIA, Intel, Windows or macOS, where the *driver* differs rather
-  than the hardware.
+  Linux. The full suite passes on each, and MNIST trains to the same accuracy
+  and the same maximum divergence from PyTorch on both. I have no evidence yet
+  about NVIDIA, Intel, Windows or macOS, where the *driver* differs rather than
+  the hardware.
 - **Vulkan is all-or-nothing.** An operator the GPU cannot run raises rather than
   falling back to the CPU. Two cases exist: `prod`, and `max_pool2d` given a
   non-contiguous input.
 - **Missing layers:** Conv1d/Conv3d, BCE/KL/Huber losses, gradient checkpointing.
-- **Rank ≤ 4.** A push-constant budget decision, not an oversight.
+- **Rank ≤ 4.** A push-constant budget decision I made deliberately, not an
+  oversight.
 - **f16 matmul is correct but slower than f32**, because the vectorised tile load
   is f32-only.
 - No distributed training, no quantisation, no ONNX.
@@ -208,7 +212,7 @@ Presets: `release`, `debug` (warnings as errors), `asan`, `relwithdebinfo`.
 
 ## Documentation
 
-Design decisions live with their reasoning, including the alternatives that were
+I keep design decisions with their reasoning, including the alternatives I
 rejected and why:
 
 | Document | Contents |
