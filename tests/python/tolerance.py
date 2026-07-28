@@ -94,6 +94,12 @@ POLICY: dict[str, Tolerance] = {
     # doubles and rounds twice. Integer parameters -- every use inside the
     # library, including cross_entropy's class indices -- are exact on both.
     "arange": Tolerance(Kind.ULP, ulp=4, note="double vs float evaluation of start + i*step"),
+    # Both backends run the identical Philox rounds over the identical
+    # counter, all in integer arithmetic, so the bits agree exactly. A
+    # tolerance here would hide a divergence in the round structure, which is
+    # the only failure mode that matters.
+    "rand": Tolerance(Kind.EXACT, note="identical integer rounds on both backends"),
+    "dropout": Tolerance(Kind.EXACT, note="a select and one multiply over an exact mask"),
     "copy": Tolerance(Kind.EXACT, note="moves bits"),
     "cat": Tolerance(Kind.EXACT, note="moves bits; no arithmetic"),
     "index_select": Tolerance(Kind.EXACT, note="gathers elements; no arithmetic"),

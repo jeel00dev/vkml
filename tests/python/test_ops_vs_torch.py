@@ -1209,3 +1209,96 @@ def test_batch_norm_rejects_wrong_statistic_shape():
     with pytest.raises(V.ShapeError):
         V.batch_norm(x, V.tensor(make_input((5,), seed=158)),
                      V.tensor(make_input((5,), seed=159)))
+
+
+# ---------------------------------------------------------------------------
+# Random number generation and dropout
+#
+# The generator is deliberately NOT bit-compatible with torch's, so these test
+# distributional properties and the reproducibility contract rather than
+# comparing streams (docs/ARCHITECTURE.md 7.2).
+# ---------------------------------------------------------------------------
+
+
+def test_rand_is_uniform():
+    u = V.rand([200_000], 20260728).numpy()
+    assert u.mean() == pytest.approx(0.5, abs=5e-3), u.mean()
+    assert u.var() == pytest.approx(1.0 / 12.0, abs=5e-3), u.var()
+    # A chi-squared-style check that the mass is spread, not merely centred:
+    # a generator returning 0.5 everywhere passes mean but not this.
+    counts, _ = np.histogram(u, bins=10, range=(0.0, 1.0))
+    assert counts.min() > 0.9 * u.size / 10, counts
+    assert counts.max() < 1.1 * u.size / 10, counts
+
+
+def test_rand_range_is_half_open():
+    """[0, 1), not [0, 1]. dropout's threshold relies on it: P(u < p) == p only
+    holds if 1.0 is unreachable, and philox_uniform takes 24 bits rather than
+    scaling 32 precisely to guarantee that."""
+    u = V.rand([500_000], 7).numpy()
+    assert u.min() >= 0.0, u.min()
+    assert u.max() < 1.0, u.max()
+
+
+def test_rand_is_a_pure_function():
+    """Same seed and offset, same values -- no hidden stream advancing between
+    calls. This is the property that makes a dropout mask reproducible."""
+    a = V.rand([1000], 99, 3).numpy()
+    b = V.rand([1000], 99, 3).numpy()
+    assert np.array_equal(a, b)
+
+    assert not np.array_equal(a, V.rand([1000], 99, 4).numpy()), "offset did not change the stream"
+    assert not np.array_equal(a, V.rand([1000], 100, 3).numpy()), "seed did not change the stream"
+
+
+def test_rand_elements_are_independent_of_tensor_size():
+    """Counter-based: element i depends on i alone, so a longer draw extends a
+    shorter one rather than replacing it. A stateful generator would fail this,
+    and so would one seeded per workgroup."""
+    small = V.rand([64], 5).numpy()
+    large = V.rand([4096], 5).numpy()
+    assert np.array_equal(small, large[:64])
+
+
+@pytest.mark.parametrize("p", [0.0, 0.25, 0.5, 0.9])
+def test_dropout_keeps_the_expectation(p):
+    """Inverted dropout scales survivors by 1/(1-p), so the mean is preserved.
+    Checked on a constant input, where the surviving fraction is the only thing
+    that can move the mean."""
+    x = V.full([200_000], 1.0)
+    out = V.dropout(x, p, seed=11).numpy()
+
+    assert out.mean() == pytest.approx(1.0, abs=2e-2), out.mean()
+    dropped = float((out == 0.0).mean())
+    assert dropped == pytest.approx(p, abs=1e-2), f"dropped {dropped}, expected {p}"
+    if p > 0.0:
+        kept = out[out != 0.0]
+        assert np.allclose(kept, 1.0 / (1.0 - p)), "survivors are not scaled by 1/(1-p)"
+
+
+def test_dropout_is_identity_in_eval():
+    x = make_input((4, 5), seed=160)
+    v = V.tensor(x)
+    assert np.array_equal(V.dropout(v, 0.5, seed=1, training=False).numpy(), x)
+
+
+def test_dropout_gradient_follows_the_mask():
+    """Gradient reaches exactly the surviving elements, scaled the same way --
+    which is what makes training with dropout unbiased."""
+    x = make_input((6, 8), seed=161)
+    v = V.tensor(x, requires_grad=True)
+    out = V.dropout(v, 0.5, seed=22)
+    V.sum(out).backward()
+
+    mask = out.numpy() != 0.0
+    grad = v.grad.numpy()
+    assert np.allclose(grad[mask], 2.0), grad[mask][:5]     # 1/(1-0.5)
+    assert np.allclose(grad[~mask], 0.0), grad[~mask][:5]
+
+
+def test_dropout_rejects_probability_of_one():
+    """p = 1 would scale survivors by 1/0. Rejected rather than returning
+    infinities."""
+    v = V.tensor(make_input((3, 3), seed=162))
+    with pytest.raises(V.ShapeError):
+        V.dropout(v, 1.0, seed=1)

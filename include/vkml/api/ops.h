@@ -139,6 +139,35 @@ enum class Reduction {
                             std::array<int, 2> padding = {0, 0},
                             std::array<int, 2> dilation = {1, 1});
 
+/// Uniform values in [0, 1), from a counter-based generator.
+///
+/// A PURE FUNCTION of `(seed, offset, element index)`: the same arguments always
+/// give the same tensor, on either backend, however the work is divided. There
+/// is no hidden global stream to advance, so two calls sharing a seed and an
+/// offset produce identical values -- which is what makes a dropout mask
+/// reproducible, and a bug if a training loop forgets to advance the offset.
+///
+/// Deliberately not bit-compatible with PyTorch's generator, and it does not
+/// try to be (docs/ARCHITECTURE.md §7.2). Matching another framework's stream
+/// would validate nothing about this library; parity is tested
+/// distributionally instead.
+[[nodiscard]] Tensor rand(std::span<const int64_t> dims, uint64_t seed, uint64_t offset = 0,
+                          Device device = Device::cpu());
+
+/// Zeroes each element independently with probability `p` and scales the rest
+/// by `1 / (1 - p)`, following torch.nn.functional.dropout.
+///
+/// The scaling happens at training time -- "inverted dropout" -- so that
+/// evaluation is the identity and needs no compensating factor. `training =
+/// false` returns the input unchanged, which is why the flag is a parameter
+/// rather than something the caller branches on.
+///
+/// The mask comes from `rand(seed, offset)`, so the caller owns reproducibility:
+/// the same seed and offset give the same mask. A training loop must advance the
+/// offset between steps, or every step drops the same elements.
+[[nodiscard]] Tensor dropout(const Tensor& input, double p, uint64_t seed, uint64_t offset = 0,
+                             bool training = true);
+
 /// Applies a batch normalisation given the statistics to use:
 /// `(input - mean) / sqrt(variance + eps) * weight + bias`.
 ///

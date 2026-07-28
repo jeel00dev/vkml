@@ -21,6 +21,7 @@ set(VKML_SHADERS
     im2col.comp
     col2im.comp
     max_pool2d.comp
+    rand.comp
     cast.comp
     reduce.comp
     softmax.comp

@@ -466,6 +466,31 @@ std::array<int, 2> pool_stride(std::array<int, 2> stride, std::array<int, 2> ker
 
 }  // namespace
 
+Tensor rand(std::span<const int64_t> dims, uint64_t seed, uint64_t offset, Device device) {
+    auto n = make_node(OpKind::Rand, Shape::contiguous(dims, dtype_size(DType::F32)), DType::F32,
+                       device);
+    n->n_src = 0;
+    n->params.set(RandParams{.seed = seed, .offset = offset});
+    return finish(std::move(n));
+}
+
+Tensor dropout(const Tensor& input, double p, uint64_t seed, uint64_t offset, bool training) {
+    VKML_CHECK(p >= 0.0 && p < 1.0, ShapeError, "dropout() probability must be in [0, 1), got {}",
+               p);
+    if (!training || p == 0.0) {
+        return input;
+    }
+
+    // Strict `>=` keeps an element, so p is exactly the probability of being
+    // dropped: rand() is uniform on the half-open [0, 1), so P(u < p) == p. A
+    // generator that could return 1.0 would make the two ends inconsistent,
+    // which is why philox_uniform takes 24 bits rather than scaling 32.
+    const Tensor keep = greater_equal(rand(input.shape(), seed, offset, input.device()),
+                                      Tensor::full({}, p, DType::F32, input.device()));
+    const Tensor scaled = mul(input, 1.0 / (1.0 - p));
+    return where(keep, scaled, zeros_like(input));
+}
+
 Tensor batch_norm(const Tensor& input, const Tensor& mean, const Tensor& variance,
                   const Tensor& weight, const Tensor& bias, double eps) {
     VKML_CHECK(input.ndim() >= 2, ShapeError,

@@ -11,6 +11,7 @@
 #include "vkml/spv/col2im.h"
 #include "vkml/spv/im2col.h"
 #include "vkml/spv/max_pool2d.h"
+#include "vkml/spv/rand.h"
 #include "vkml/spv/index_select.h"
 #include "vkml/spv/scatter_add.h"
 #include "vkml/spv/fill.h"
@@ -193,6 +194,15 @@ static_assert(sizeof(UnfoldPush) <= 256, "unfold push constants exceed the devic
 
 /// Max pooling and its adjoint. `input` is used only by the adjoint, which
 /// recomputes the argmax rather than reading a stored index.
+struct RandPush {
+    uint64_t dst;
+    uint32_t n;
+    uint64_t seed;
+    uint64_t offset;
+};
+
+static_assert(sizeof(RandPush) <= 256, "rand push constants exceed the device budget");
+
 struct PoolPush {
     uint64_t src;
     uint64_t image;
@@ -734,6 +744,9 @@ bool VulkanBackend::supports(const Node& node) const {
         // shader writes through F32Buf -- an I64 arange still falls to the CPU.
         case OpKind::Full:
         case OpKind::Arange: return node.dtype == DType::F32;
+        // Counter-based, so the value depends only on the element index and the
+        // push constants -- nothing to seed per invocation, nothing shared.
+        case OpKind::Rand: return node.dtype == DType::F32;
         // Unary elementwise: one shader, one specialisation constant per op.
         case OpKind::Contiguous:
         case OpKind::Relu:
@@ -1008,6 +1021,23 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 rec.dispatch(
                     pipes.get("binary", spv::binary, spv::binary_size, sizeof(BinaryPush), cfg),
                     &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::Rand: {
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg};
+
+                const auto rp = node->params.get<RandParams>();
+                const RandPush push{address_of(*node), n_elems, rp.seed, rp.offset};
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "rand", cfg, sizeof(RandPush), (n_elems + wg - 1) / wg,
+                                   impl_->caps.subgroup_size);
+                }
+                rec.dispatch(pipes.get("rand", spv::rand, spv::rand_size, sizeof(RandPush), cfg),
+                             &push, sizeof(push), n_elems);
                 break;
             }
 

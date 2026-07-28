@@ -1,5 +1,6 @@
 #include "iterate.h"
 #include "kernels.h"
+#include "philox.h"
 
 #include "vkml/util/assert.h"
 
@@ -180,6 +181,22 @@ void k_arange(Node& out) {
         return;
     }
     unsupported_dtype(out);
+}
+
+/// Uniform values in [0, 1), one per element, from a counter-based generator.
+///
+/// The value depends only on (seed, offset, linear index), so it is identical
+/// on both backends and independent of how the work is divided -- see philox.h.
+void k_rand(Node& out) {
+    if (out.dtype != DType::F32) {
+        unsupported_dtype(out);
+    }
+    const auto p = out.params.get<RandParams>();
+    const int64_t n = out.shape.numel();
+
+    for (int64_t i = 0; i < n; ++i) {
+        store<float>(out, i, philox_uniform(p.seed, p.offset, static_cast<uint64_t>(i)));
+    }
 }
 
 /// Adjoint of a strided narrowing.
@@ -647,6 +664,7 @@ void register_movement_kernels(KernelTable& t) {
     t[static_cast<size_t>(OpKind::Cast)] = k_cast;
     t[static_cast<size_t>(OpKind::Full)] = k_full;
     t[static_cast<size_t>(OpKind::Arange)] = k_arange;
+    t[static_cast<size_t>(OpKind::Rand)] = k_rand;
 }
 
 }  // namespace vkml::cpu

@@ -13,6 +13,7 @@ constexpr std::array<std::string_view, kNumOps> kOpNames = {
 
     "full",
     "arange",
+    "rand",
 
     "reshape",
     "permute",
@@ -83,7 +84,7 @@ constexpr std::array<std::string_view, kNumOps> kOpNames = {
     "slice_backward",
 
     "where",
-    "dropout",
+
     "triu",
     "tril",
 };

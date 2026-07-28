@@ -1324,3 +1324,48 @@ def test_avg_pool2d_on_gpu(shape, kernel, stride, pad):
     n = kernel[0] * kernel[1]
     compare(ctx, run(gpu_device()), run(V.cpu),
             terms_abs_sum=float(np.abs(x).max() * n), reduction_n=n)
+
+
+# ---------------------------------------------------------------------------
+# Random number generation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("n", [1, 255, 256, 257, 4096, 100_000])
+def test_rand_is_bit_identical_across_backends(n):
+    """The two Philox implementations must agree EXACTLY, not merely be
+    similarly uniform. Each would look perfectly random on its own while
+    disagreeing on every value, so a distributional test cannot catch a
+    divergence in the round structure -- only a byte comparison can.
+
+    Sizes straddle the workgroup boundary because the counter is the global
+    invocation index: a shader seeding per workgroup instead would agree at
+    n <= 256 and diverge above it.
+    """
+    gpu = V.rand([n], 20260728, 5, device=gpu_device()).numpy()
+    cpu = V.rand([n], 20260728, 5, device=V.cpu).numpy()
+    assert gpu.tobytes() == cpu.tobytes(), (
+        f"philox diverged at n={n}: first mismatch at "
+        f"{int(np.argmax(gpu != cpu))}, gpu={gpu[gpu != cpu][:3]} cpu={cpu[gpu != cpu][:3]}"
+    )
+
+
+def test_rand_is_reproducible_across_runs_on_gpu():
+    a = V.rand([10_000], 3, 7, device=gpu_device()).numpy()
+    b = V.rand([10_000], 3, 7, device=gpu_device()).numpy()
+    assert a.tobytes() == b.tobytes(), "GPU generator is not reproducible run to run"
+
+
+@pytest.mark.parametrize("p", [0.25, 0.5, 0.9])
+def test_dropout_mask_matches_across_backends(p):
+    """Dropout composes from rand, comparison and select, so an identical
+    generator must give an identical mask -- the same elements dropped, not
+    merely the same fraction."""
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, (64, 64), "any")
+
+    def run(dev):
+        return V.dropout(V.tensor(x, device=dev), p, seed=1234, offset=9).numpy()
+
+    ctx = Context(op="dropout", layout=Layout((64, 64)), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, run(gpu_device()), run(V.cpu))

@@ -528,6 +528,14 @@ NB_MODULE(_vkml_core, m) {
           "reduction"_a = vkml::Reduction::Mean);
     m.def("cross_entropy", &vkml::cross_entropy, "logits"_a, "target"_a,
           "reduction"_a = vkml::Reduction::Mean);
+    m.def(
+        "rand",
+        [](const std::vector<int64_t>& dims, uint64_t seed, uint64_t offset, vkml::Device device) {
+            return vkml::rand(dims, seed, offset, device);
+        },
+        "shape"_a, "seed"_a, "offset"_a = 0, "device"_a = vkml::Device::cpu());
+    m.def("dropout", &vkml::dropout, "input"_a, "p"_a, "seed"_a, "offset"_a = 0,
+          "training"_a = true);
     m.def("batch_norm", &vkml::batch_norm, "input"_a, "mean"_a, "variance"_a,
           "weight"_a = vkml::Tensor{}, "bias"_a = vkml::Tensor{}, "eps"_a = 1e-5);
     m.def("max_pool2d", &vkml::max_pool2d, "input"_a, "kernel"_a,

@@ -35,6 +35,7 @@ enum class OpKind : uint16_t {
     // -- creation ----------------------------------------------------------
     Full,
     Arange,
+    Rand,
 
     // -- views: zero-copy, produce a new Shape over the same storage --------
     Reshape,
@@ -117,7 +118,6 @@ enum class OpKind : uint16_t {
 
     // -- misc --------------------------------------------------------------
     Where,
-    Dropout,
     Triu,
     Tril,
 
@@ -244,6 +244,18 @@ struct FullParams {
 struct ArangeParams {
     double start = 0.0;
     double step = 1.0;
+};
+
+/// Counter-based RNG coordinates. `rand(seed, offset)` is a pure function of
+/// these and the element index, so it needs no state, parallelises trivially,
+/// and reproduces exactly -- docs/ARCHITECTURE.md 5.4.
+///
+/// The caller advances `offset` between draws; two draws sharing a seed and an
+/// offset are the same numbers, which is a feature for testing and a bug in a
+/// training loop.
+struct RandParams {
+    uint64_t seed = 0;
+    uint64_t offset = 0;
 };
 
 /// Geometry of a sliding-window operation, shared by im2col and col2im.

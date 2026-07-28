@@ -1,0 +1,70 @@
+#version 450
+
+// Philox4x32-10: uniform values in [0, 1) from a counter-based generator.
+//
+// The twin of src/backend/cpu/philox.h and it must stay identical to it. The
+// constants are specified by Salmon et al. (SC11), so neither side is free to
+// choose them, and the round structure is the thing that has to match -- a
+// divergence would show up as two backends disagreeing on every random draw
+// while each looked perfectly uniform on its own.
+//
+// Counter-based means value n is computed FROM n, not by advancing a state.
+// That is what makes this possible on a GPU at all: every invocation computes
+// its own value with nothing shared and nothing to synchronise.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t dst;
+    uint     n;
+    uint64_t seed;
+    uint64_t offset;
+} p;
+
+// Weyl constants: fractional parts of the golden ratio and of sqrt(3).
+const uint kWeyl0 = 0x9E3779B9u;
+const uint kWeyl1 = 0xBB67AE85u;
+const uint kMul0  = 0xD2511F53u;
+const uint kMul1  = 0xCD9E8D57u;
+const int  kRounds = 10;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    // The counter is the element index; the key is the seed. The offset
+    // occupies the counter's upper words, so advancing it between draws moves
+    // to an unrelated part of the stream.
+    uint c0 = i;
+    uint c1 = 0u;
+    uint c2 = uint(p.offset);
+    uint c3 = uint(p.offset >> 32);
+    uint k0 = uint(p.seed);
+    uint k1 = uint(p.seed >> 32);
+
+    for (int round = 0; round < kRounds; ++round) {
+        const uint64_t prod0 = uint64_t(kMul0) * uint64_t(c0);
+        const uint64_t prod1 = uint64_t(kMul1) * uint64_t(c2);
+
+        const uint hi0 = uint(prod0 >> 32);
+        const uint lo0 = uint(prod0);
+        const uint hi1 = uint(prod1 >> 32);
+        const uint lo1 = uint(prod1);
+
+        c0 = hi1 ^ c1 ^ k0;
+        c1 = lo1;
+        c2 = hi0 ^ c3 ^ k1;
+        c3 = lo0;
+
+        k0 += kWeyl0;
+        k1 += kWeyl1;
+    }
+
+    // Top 24 bits: the float significand's width, so every result is exactly
+    // representable and strictly below 1. Scaling all 32 would round the
+    // largest value up to exactly 1.0 and break the half-open range.
+    F32Buf(p.dst).v[i] = float(c0 >> 8) * (1.0 / 16777216.0);
+}
