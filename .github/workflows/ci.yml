@@ -327,15 +327,28 @@ jobs:
         # VK_ERROR_LAYER_NOT_PRESENT while the layer-free probe still saw a
         # usable device. The job passed having skipped all 441 Vulkan tests.
         run: |
-          dir="$(brew --prefix vulkan-validationlayers)/share/vulkan/explicit_layer.d"
-          find "$(brew --prefix)" -name 'VkLayer_*.json' 2>/dev/null | head
-          if [ -f "$dir/VkLayer_khronos_validation.json" ]; then
-            echo "using layer path: $dir"
-            echo "VK_LAYER_PATH=$dir" >> "$GITHUB_ENV"
-          else
+          root="$(brew --prefix vulkan-validationlayers)"
+          dir="$root/share/vulkan/explicit_layer.d"
+          if [ ! -f "$dir/VkLayer_khronos_validation.json" ]; then
             echo "::error::validation layer manifest not found under $dir"
             exit 1
           fi
+          echo "using layer path: $dir"
+          echo "VK_LAYER_PATH=$dir" >> "$GITHUB_ENV"
+
+          # The manifest names its library as a bare filename, so the loader
+          # dlopen()s it against dyld's search path and finds nothing --
+          # "libVkLayer_khronos_validation.dylib (no such file)", after which
+          # every vkCreateInstance fails with VK_ERROR_LAYER_NOT_PRESENT. The
+          # directory holding the dylib has to be on that path, and is located
+          # rather than assumed, twice having guessed a Homebrew layout wrong.
+          lib=$(find "$root" -name 'libVkLayer_khronos_validation.dylib' 2>/dev/null | head -1)
+          if [ -z "$lib" ]; then
+            echo "::error::layer manifest present but its dylib is missing under $root"
+            exit 1
+          fi
+          echo "using layer library: $lib"
+          echo "DYLD_LIBRARY_PATH=$(dirname "$lib")" >> "$GITHUB_ENV"
 
       - name: Install Python dependencies
         run: |
