@@ -139,6 +139,30 @@ enum class Reduction {
                             std::array<int, 2> padding = {0, 0},
                             std::array<int, 2> dilation = {1, 1});
 
+/// Applies a batch normalisation given the statistics to use:
+/// `(input - mean) / sqrt(variance + eps) * weight + bias`.
+///
+/// `mean` and `variance` are rank-1 with one entry per channel, where the
+/// channel is axis 1. `weight` and `bias` are optional and likewise per-channel.
+///
+/// TAKES THE STATISTICS; IT DOES NOT CHOOSE OR UPDATE THEM. Whether to use the
+/// batch's own statistics or the running estimate is a property of training
+/// mode, and updating the running estimate is a mutation across calls -- both
+/// belong to the `nn` module, which owns that state, exactly as the optimisers
+/// own theirs. Keeping this function pure is what makes it directly comparable
+/// against `torch.nn.functional.batch_norm`.
+///
+/// A CALLER COMPUTING BATCH STATISTICS MUST USE THE BIASED VARIANCE (divide by
+/// N, not N-1) here, while updating a running estimate with the UNBIASED one.
+/// That is torch's behaviour, verified, and the asymmetry is deliberate on
+/// their part: the biased estimate is the right normaliser for the batch in
+/// hand, and the unbiased one the right estimator of the population. Using one
+/// for both makes evaluation drift away from training as the running estimate
+/// converges to the wrong value -- invisible in a single-step comparison.
+[[nodiscard]] Tensor batch_norm(const Tensor& input, const Tensor& mean, const Tensor& variance,
+                                const Tensor& weight = Tensor{}, const Tensor& bias = Tensor{},
+                                double eps = 1e-5);
+
 /// 2D max pooling, following torch.nn.functional.max_pool2d.
 ///
 /// PADS WITH -INFINITY, not zero. A padded window must not report 0 as its

@@ -71,7 +71,6 @@ constexpr std::array<std::string_view, kNumOps> kOpNames = {
 
     "softmax",
     "log_softmax",
-    "batch_norm",
 
     "im2col",
     "col2im",

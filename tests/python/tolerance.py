@@ -195,6 +195,10 @@ POLICY: dict[str, Tolerance] = {
     # error is log_softmax's, and the batch mean contributes gamma_N on top.
     "cross_entropy": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
                                note="log_softmax error plus the batch mean's gamma_N"),
+    # Same shape as layer_norm, one step shorter: the statistics arrive
+    # already computed, so the only error here is the rsqrt and the affine.
+    "batch_norm": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
+                            note="rsqrt then affine over supplied statistics"),
     "layer_norm": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
                             note="two pairwise means then rsqrt; see derivation above"),
     "rms_norm": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,

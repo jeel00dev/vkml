@@ -1142,3 +1142,70 @@ def test_max_pool2d_rejects_padding_beyond_half_the_kernel():
     v = V.tensor(make_input((1, 1, 5, 5), seed=143))
     with pytest.raises(V.ShapeError):
         V.max_pool2d(v, [2, 2], [1, 1], [2, 2])
+
+
+@pytest.mark.parametrize("shape", [(4, 3), (2, 3, 5), (2, 3, 4, 4)])
+@pytest.mark.parametrize("affine", [False, True])
+def test_batch_norm(shape, affine):
+    """Compared against torch's functional form in EVAL mode, where the
+    statistics are supplied rather than computed -- which is exactly this
+    function's contract."""
+    x = make_input(shape, seed=150)
+    c = shape[1]
+    mean = make_input((c,), seed=151)
+    var = np.abs(make_input((c,), seed=152)) + 0.5   # variance must be positive
+    w = make_input((c,), seed=153) if affine else None
+    b = make_input((c,), seed=154) if affine else None
+
+    vx, tx = pair(x)
+    got = V.batch_norm(vx, V.tensor(mean), V.tensor(var),
+                       V.tensor(w) if affine else V.Tensor(),
+                       V.tensor(b) if affine else V.Tensor())
+    want = torch.nn.functional.batch_norm(
+        tx, torch.from_numpy(mean.copy()), torch.from_numpy(var.copy()),
+        torch.from_numpy(w.copy()) if affine else None,
+        torch.from_numpy(b.copy()) if affine else None,
+        training=False)
+
+    assert_close(f"batch_norm(affine={affine})", got, want, TOLERANCES["transcendental"],
+                 inputs=[x])
+
+
+def test_batch_norm_with_batch_statistics_matches_training_mode():
+    """The training-mode path a module would build: compute the BIASED variance
+    over the non-channel axes, then normalise with it. Pins the biased choice,
+    which is the trap -- the unbiased estimate is what the *running* average
+    wants, and using it here diverges from torch by a factor of n/(n-1)."""
+    x = make_input((4, 3, 5, 5), seed=155)
+    vx, tx = pair(x)
+
+    axes = [0, 2, 3]
+    mean = V.mean(vx, axes)
+    biased_var = V.mean(V.square(V.sub(vx, mean.reshape([1, 3, 1, 1]))), axes)
+
+    got = V.batch_norm(vx, mean, biased_var)
+    want = torch.nn.functional.batch_norm(tx, None, None, training=True)
+
+    assert_close("batch_norm(training)", got, want, TOLERANCES["transcendental"], inputs=[x])
+
+
+def test_batch_norm_normalises_each_channel():
+    """Independent of torch: with the batch's own statistics, every channel of
+    the output has mean 0 and variance 1. A wrong axis still produces
+    plausible numbers but fails this."""
+    x = make_input((8, 4, 3, 3), seed=156, low=-20.0, high=20.0)
+    vx = V.tensor(x)
+    axes = [0, 2, 3]
+    mean = V.mean(vx, axes)
+    var = V.mean(V.square(V.sub(vx, mean.reshape([1, 4, 1, 1]))), axes)
+
+    y = V.batch_norm(vx, mean, var).numpy()
+    assert np.allclose(y.mean(axis=(0, 2, 3)), 0.0, atol=1e-4), y.mean(axis=(0, 2, 3))
+    assert np.allclose(y.var(axis=(0, 2, 3)), 1.0, atol=1e-3), y.var(axis=(0, 2, 3))
+
+
+def test_batch_norm_rejects_wrong_statistic_shape():
+    x = V.tensor(make_input((2, 3, 4, 4), seed=157))
+    with pytest.raises(V.ShapeError):
+        V.batch_norm(x, V.tensor(make_input((5,), seed=158)),
+                     V.tensor(make_input((5,), seed=159)))

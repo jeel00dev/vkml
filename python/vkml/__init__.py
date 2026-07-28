@@ -78,6 +78,7 @@ Reduction = _C.Reduction
 mse_loss = _C.mse_loss
 cross_entropy = _C.cross_entropy
 conv2d = _C.conv2d
+batch_norm = _C.batch_norm
 max_pool2d = _C.max_pool2d
 avg_pool2d = _C.avg_pool2d
 im2col = _C.im2col

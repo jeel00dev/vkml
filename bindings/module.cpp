@@ -528,6 +528,8 @@ NB_MODULE(_vkml_core, m) {
           "reduction"_a = vkml::Reduction::Mean);
     m.def("cross_entropy", &vkml::cross_entropy, "logits"_a, "target"_a,
           "reduction"_a = vkml::Reduction::Mean);
+    m.def("batch_norm", &vkml::batch_norm, "input"_a, "mean"_a, "variance"_a,
+          "weight"_a = vkml::Tensor{}, "bias"_a = vkml::Tensor{}, "eps"_a = 1e-5);
     m.def("max_pool2d", &vkml::max_pool2d, "input"_a, "kernel"_a,
           "stride"_a = std::array<int, 2>{0, 0}, "padding"_a = std::array<int, 2>{0, 0},
           "dilation"_a = std::array<int, 2>{1, 1});

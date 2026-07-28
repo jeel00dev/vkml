@@ -101,7 +101,6 @@ enum class OpKind : uint16_t {
     // -- composite ---------------------------------------------------------
     Softmax,
     LogSoftmax,
-    BatchNorm,
 
     // -- convolution / pooling ---------------------------------------------
     Im2Col,

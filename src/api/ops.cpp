@@ -466,6 +466,39 @@ std::array<int, 2> pool_stride(std::array<int, 2> stride, std::array<int, 2> ker
 
 }  // namespace
 
+Tensor batch_norm(const Tensor& input, const Tensor& mean, const Tensor& variance,
+                  const Tensor& weight, const Tensor& bias, double eps) {
+    VKML_CHECK(input.ndim() >= 2, ShapeError,
+               "batch_norm() needs rank 2 or higher so axis 1 is the channel, got rank {}",
+               input.ndim());
+    const int64_t channels = input.size(1);
+
+    // Every per-channel operand is reshaped to (1, C, 1, ...) so it broadcasts
+    // across batch and space with stride 0 rather than being materialised.
+    std::vector<int64_t> stat_shape(static_cast<size_t>(input.ndim()), 1);
+    stat_shape[1] = channels;
+
+    const auto as_channel_vector = [&](const Tensor& t, const char* what) {
+        VKML_CHECK(t.ndim() == 1 && t.numel() == channels, ShapeError,
+                   "batch_norm(): {} must be rank 1 with {} entries, got rank {} with {}", what,
+                   channels, t.ndim(), t.numel());
+        check_same_device(input, t, "batch_norm");
+        check_same_dtype(input, t, "batch_norm");
+        return t.reshape(stat_shape);
+    };
+
+    Tensor out = mul(sub(input, as_channel_vector(mean, "mean")),
+                     rsqrt(add(as_channel_vector(variance, "variance"), eps)));
+
+    if (weight.defined()) {
+        out = mul(out, as_channel_vector(weight, "weight"));
+    }
+    if (bias.defined()) {
+        out = add(out, as_channel_vector(bias, "bias"));
+    }
+    return out;
+}
+
 Tensor max_pool2d(const Tensor& input, std::array<int, 2> kernel, std::array<int, 2> stride,
                   std::array<int, 2> padding, std::array<int, 2> dilation) {
     VKML_CHECK(input.ndim() == 4, ShapeError, "max_pool2d() expects (N, C, H, W), got rank {}",
