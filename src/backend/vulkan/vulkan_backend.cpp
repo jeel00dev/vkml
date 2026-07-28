@@ -2200,7 +2200,11 @@ std::vector<PipelineStats> VulkanBackend::pipeline_stats() const {
 void VulkanBackend::set_profiling(bool enabled) { impl_->recorder.set_profiling(enabled); }
 
 bool VulkanBackend::timestamps_supported() const {
-    return impl_->ctx.info().timestamp_valid_bits != 0;
+    // BOTH halves are required to get a duration out. Ticks with no bits are
+    // meaningless, and ticks with a zero period convert to zero nanoseconds
+    // however many of them elapsed -- vk_command.cpp multiplies by this.
+    const vk::DeviceInfo& info = impl_->ctx.info();
+    return info.timestamp_valid_bits != 0 && info.timestamp_period > 0.0F;
 }
 
 std::vector<std::pair<std::string, double>> VulkanBackend::last_profile() const {
@@ -2296,6 +2300,7 @@ std::vector<DeviceReport> vulkan_device_reports() {
         r.max_allocation_size = info.max_allocation_size;
         r.device_local_bytes = info.device_local_bytes;
         r.host_visible_device_local_bytes = info.host_visible_device_local_bytes;
+        r.timestamp_period = info.timestamp_period;
 
         reports.push_back(std::move(r));
     }

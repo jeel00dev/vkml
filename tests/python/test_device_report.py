@@ -51,6 +51,7 @@ REQUIRED_KEYS = {
     "max_allocation_size",
     "device_local_bytes",
     "host_visible_device_local_bytes",
+    "timestamp_period",
 }
 
 

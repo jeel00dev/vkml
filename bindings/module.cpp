@@ -685,6 +685,7 @@ NB_MODULE(_vkml_core, m) {
                 d["max_allocation_size"] = r.max_allocation_size;
                 d["device_local_bytes"] = r.device_local_bytes;
                 d["host_visible_device_local_bytes"] = r.host_visible_device_local_bytes;
+                d["timestamp_period"] = r.timestamp_period;
                 out.append(d);
             }
             return out;

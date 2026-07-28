@@ -139,6 +139,12 @@ def print_device(index: int, d: dict) -> None:
     print(f"    device-local ...... {gib(d['device_local_bytes'])}")
     print(f"    host-visible ...... {gib(d['host_visible_device_local_bytes'])}")
     print(f"    compute units ..... {cores if cores else 'not reported'}")
+    # Zero here means every GPU timing reads 0.000 ms, because the tick-to-
+    # nanosecond conversion multiplies by it. Worth surfacing: the symptom
+    # otherwise looks like an impossibly fast kernel rather than a missing clock.
+    period = d["timestamp_period"]
+    note = "" if period else "   <- GPU profiling unavailable"
+    print(f"    timestamp period .. {period} ns{note}")
 
 
 def unusable_reason(devices: list, no_device_detail: str = "") -> str | None:

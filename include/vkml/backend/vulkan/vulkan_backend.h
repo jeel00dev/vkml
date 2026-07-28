@@ -103,6 +103,12 @@ struct DeviceReport {
     uint64_t max_allocation_size = 0;
     uint64_t device_local_bytes = 0;
     uint64_t host_visible_device_local_bytes = 0;
+
+    /// Nanoseconds per timestamp tick. Zero means GPU timings are unobtainable
+    /// on this device however many ticks elapse, since the conversion
+    /// multiplies by it -- worth reporting, because the symptom is a profile
+    /// full of 0.000 ms that reads as an impossibly fast kernel.
+    float timestamp_period = 0.0F;
 };
 
 /// GPU backend. Created on demand; never at static initialisation.
