@@ -319,16 +319,22 @@ jobs:
         # Exported only when a manifest is found. An empty VK_LAYER_PATH
         # suppresses the loader's own search instead of falling back to it,
         # which would silently disable the very thing this step is for.
+        # `brew --prefix <formula>` is asked directly rather than guessed at.
+        # The first attempt searched $(brew --prefix)/share and /etc, missed it --
+        # Homebrew keeps these under opt/vulkan-validationlayers rather than
+        # linking them into the top-level share -- and the layer then enumerated
+        # without being loadable, so every real vkCreateInstance failed with
+        # VK_ERROR_LAYER_NOT_PRESENT while the layer-free probe still saw a
+        # usable device. The job passed having skipped all 441 Vulkan tests.
         run: |
-          prefix=$(brew --prefix)
-          find "$prefix" -name 'VkLayer_*.json' 2>/dev/null | head
-          dir=$(find "$prefix/share/vulkan/explicit_layer.d" "$prefix/etc/vulkan/explicit_layer.d" \
-                     -name 'VkLayer_khronos_validation.json' 2>/dev/null | head -1)
-          if [ -n "$dir" ]; then
-            echo "using layer path: $(dirname "$dir")"
-            echo "VK_LAYER_PATH=$(dirname "$dir")" >> "$GITHUB_ENV"
+          dir="$(brew --prefix vulkan-validationlayers)/share/vulkan/explicit_layer.d"
+          find "$(brew --prefix)" -name 'VkLayer_*.json' 2>/dev/null | head
+          if [ -f "$dir/VkLayer_khronos_validation.json" ]; then
+            echo "using layer path: $dir"
+            echo "VK_LAYER_PATH=$dir" >> "$GITHUB_ENV"
           else
-            echo "no validation layer manifest found; the run below proves nothing about validity"
+            echo "::error::validation layer manifest not found under $dir"
+            exit 1
           fi
 
       - name: Install Python dependencies
