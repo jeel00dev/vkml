@@ -1382,10 +1382,11 @@ def test_module_to_moves_parameters_and_buffers():
 
     model.to(gpu_device())
 
+    expected = str(gpu_device())
     for _, p in model.named_parameters():
-        assert str(p.device) == "vulkan:0", p.device
+        assert str(p.device) == expected, p.device
     for _, b in model.named_buffers():
-        assert str(b.device) == "vulkan:0", b.device
+        assert str(b.device) == expected, b.device
 
     # Values survive the move unchanged; only their residence differs.
     after = model.state_dict()

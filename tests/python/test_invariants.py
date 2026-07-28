@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python"))
 
 import vkml as V  # noqa: E402
-from vkvalidate import gpu_device, requires_vulkan  # noqa: E402
+from vkvalidate import VULKAN_DEVICE, gpu_device, requires_vulkan  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -497,18 +497,21 @@ def test_profiler_reports_nonzero_for_a_real_dispatch():
     """Regression: resolve_timestamps() once cleared the profile before checking
     whether anything was pending, so a download wiped the compute profile and
     every kernel reported 0.000 ms."""
-    V.vulkan_set_profiling(True)
+    # The device index matters: profiling is per backend instance and these
+    # default to 0, so asking device 0 for a profile of work that ran on device 1
+    # returns an empty list. Found by running the suite on a second GPU.
+    V.vulkan_set_profiling(True, VULKAN_DEVICE)
     try:
         dev = gpu_device()
         rng = np.random.default_rng(1)
         a = V.tensor(rng.standard_normal((256, 256), dtype=np.float32), device=dev)
         b = V.tensor(rng.standard_normal((256, 256), dtype=np.float32), device=dev)
         V.matmul(a, b).numpy()          # .numpy() submits a DOWNLOAD after the compute
-        profile = V.vulkan_last_profile()
+        profile = V.vulkan_last_profile(VULKAN_DEVICE)
         assert profile, "profile empty after a real dispatch"
         assert sum(ms for _, ms in profile) > 0.0, "profile reports 0.000 ms"
     finally:
-        V.vulkan_set_profiling(False)
+        V.vulkan_set_profiling(False, VULKAN_DEVICE)
 
 
 @requires_vulkan

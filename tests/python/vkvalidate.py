@@ -43,9 +43,18 @@ from tolerance import (  # noqa: E402
 
 _VULKAN_READY: bool | None = None
 
+# Which physical device the suite runs against. Selectable because a framework
+# that claims to run on any Vulkan device has to be run on more than one to make
+# that claim mean anything, and a hardcoded 0 makes the second device
+# untestable. Devices differ in ways the kernels can depend on -- subgroup size
+# and its controllable range, shared memory, the size of the host-visible heap.
+#
+#     VKML_TEST_DEVICE=1 python -m pytest tests/python -q
+VULKAN_DEVICE = int(os.environ.get("VKML_TEST_DEVICE", "0"))
+
 
 def vulkan_ready() -> bool:
-    """True when a Vulkan device exists and its backend initialised.
+    """True when the selected Vulkan device exists and its backend initialised.
 
     Cached: initialising the backend creates a device and allocates a staging
     buffer, which should happen once per session, not once per test.
@@ -55,7 +64,7 @@ def vulkan_ready() -> bool:
         try:
             _VULKAN_READY = bool(V.has_vulkan) and V.vulkan_available()
             if _VULKAN_READY:
-                V.init_vulkan(0)
+                V.init_vulkan(VULKAN_DEVICE)
         except Exception:  # noqa: BLE001 - absence must never be an error
             _VULKAN_READY = False
     return _VULKAN_READY
@@ -67,7 +76,7 @@ requires_vulkan = pytest.mark.skipif(
 
 
 def gpu_device():
-    return V.device("vulkan:0")
+    return V.device(f"vulkan:{VULKAN_DEVICE}")
 
 
 # ---------------------------------------------------------------------------

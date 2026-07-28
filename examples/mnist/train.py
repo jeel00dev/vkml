@@ -105,7 +105,17 @@ def resolve_device(name: str):
             return V.cpu
         name = "vulkan:0"
 
-    V.init_vulkan(0)
+    # Initialise the device that was ASKED FOR, not device 0. This used to
+    # init_vulkan(0) unconditionally and then hand back V.device(name), so
+    # `--device vulkan:1` returned a device with no backend behind it and failed
+    # at the first .to(device). Machines with two GPUs are ordinary -- a
+    # discrete card and an integrated one -- and this only surfaced when the
+    # second one was finally used.
+    _, _, index = name.partition(":")
+    if not index.isdigit():
+        raise SystemExit(f"expected a device like 'vulkan:0', got '{name}'")
+
+    V.init_vulkan(int(index))
     return V.device(name)
 
 

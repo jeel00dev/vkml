@@ -167,17 +167,22 @@ trees, and a counter-based RNG that is a pure function of seed and index.
 
 ## Project status
 
-**Alpha.** It trains real models and is tested hard, but it has been run on one
-machine and does not cover everything a mature framework does.
+**Alpha.** It trains real models and is tested hard, but everything below has
+been verified on a single machine — two GPUs in it, one driver, one OS — and it
+does not cover everything a mature framework does.
 
 **What works** — the MNIST MLP and CNN train end to end on the GPU and agree
 with PyTorch to well inside tolerance; 65 operators across both backends;
-1,176 tests.
+1,176 tests, passing on two different GPUs.
 
 **What does not, stated plainly:**
 
-- **Tested on one GPU.** An AMD RX 5600M (RDNA1) with RADV on Linux. Nothing yet
-  proves it runs on NVIDIA, Intel, Windows or macOS.
+- **Tested on two GPUs, one driver, one OS.** A discrete RX 5600M (RDNA1, 36
+  compute units) and an integrated Renoir iGPU (6 compute units), both RADV on
+  Linux — the full suite passes on each, and MNIST trains to the same accuracy
+  and the same maximum divergence from PyTorch on both. Nothing yet proves it
+  runs on NVIDIA, Intel, Windows or macOS, where the *driver* differs rather
+  than the hardware.
 - **Vulkan is all-or-nothing.** An operator the GPU cannot run raises rather than
   falling back to the CPU. Two cases exist: `prod`, and `max_pool2d` given a
   non-contiguous input.
