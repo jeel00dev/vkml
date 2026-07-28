@@ -36,8 +36,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path("/home/jeel/Projects/vkml")
-PY = ROOT / ".venv/bin/python"
+# Derived from this file's location, like the other scripts here. It used to be
+# an absolute path to one machine, which meant the campaign could not run for
+# anyone who cloned the repository -- including from the README, which tells
+# them to.
+ROOT = Path(__file__).resolve().parent.parent
+
+# The project virtualenv if there is one, otherwise whatever interpreter is on
+# the path. A contributor without a .venv should still be able to run this.
+_VENV = ROOT / ".venv/bin/python"
+PY = _VENV if _VENV.is_file() else Path(sys.executable)
 
 # (label, file, find, replace, test selector)
 # Each mutation changes MEANING, not syntax -- a compile error would prove
