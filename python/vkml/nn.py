@@ -22,6 +22,27 @@ import numpy as _np
 
 import vkml as V
 
+# Weight initialisation draws from here, so that seeding it makes a model
+# reproducible. Layers must not call default_rng() themselves: an unseeded
+# generator gives every run different weights, which makes a training result
+# impossible to reproduce and a divergence impossible to investigate.
+#
+# Computation is deterministic regardless (docs/ARCHITECTURE.md); this is about
+# the one place randomness legitimately enters.
+_INIT_RNG = _np.random.default_rng()
+
+
+def manual_seed(seed: int) -> None:
+    """Make subsequent weight initialisation reproducible.
+
+    Mirrors torch.manual_seed in spirit, not in stream: the two libraries draw
+    from different generators by design (docs/ARCHITECTURE.md 7.2), so equal
+    seeds do not give equal weights. To compare against torch, copy a
+    state_dict rather than seeding both.
+    """
+    global _INIT_RNG
+    _INIT_RNG = _np.random.default_rng(seed)
+
 
 class Module:
     """Base class for layers."""
@@ -242,7 +263,7 @@ class Linear(Module):
         self.out_features = out_features
 
         bound = 1.0 / math.sqrt(in_features)
-        rng = _np.random.default_rng()
+        rng = _INIT_RNG
         w = rng.uniform(-bound, bound, size=(out_features, in_features)).astype(_np.float32)
         self.weight = V.tensor(w, requires_grad=True)
 
@@ -546,7 +567,7 @@ class Embedding(Module):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
-        rng = _np.random.default_rng()
+        rng = _INIT_RNG
         w = rng.normal(0.0, 1.0, size=(num_embeddings, embedding_dim)).astype(_np.float32)
         self.weight = V.tensor(w, requires_grad=True)
 
@@ -600,7 +621,7 @@ class Conv2d(Module):
         # whole receptive field.
         fan_in = in_channels * self.kernel_size[0] * self.kernel_size[1]
         bound = 1.0 / math.sqrt(fan_in)
-        rng = _np.random.default_rng()
+        rng = _INIT_RNG
         w = rng.uniform(-bound, bound,
                         size=(out_channels, in_channels, *self.kernel_size)).astype(_np.float32)
         self.weight = V.tensor(w, requires_grad=True)
@@ -722,7 +743,7 @@ class MultiheadAttention(Module):
         self.batch_first = batch_first
 
         bound = 1.0 / math.sqrt(embed_dim)
-        rng = _np.random.default_rng()
+        rng = _INIT_RNG
         self.in_proj_weight = V.tensor(
             rng.uniform(-bound, bound, size=(3 * embed_dim, embed_dim)).astype(_np.float32),
             requires_grad=True,
