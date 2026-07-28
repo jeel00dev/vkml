@@ -525,12 +525,29 @@ enum class BinaryOp : uint32_t {
     }
 }
 
-/// Both operands present and F32. Comparisons narrow the *output* to Bool but
-/// still consume floats, so this is asked of the sources independently of the
-/// node's own dtype.
-[[nodiscard]] bool binary_srcs_are_f32(const Node& node) {
-    return node.src[0] != nullptr && node.src[0]->dtype == DType::F32 && node.src[1] != nullptr &&
-           node.src[1]->dtype == DType::F32;
+/// Both operands present, floating, and agreeing. Comparisons narrow the
+/// *output* to Bool but still consume floats, so this is asked of the sources
+/// independently of the node's own dtype.
+///
+/// Agreement is required rather than assumed: `check_same_dtype` in api/ops.cpp
+/// already rejects mixed operands, and this is the backend-side statement of
+/// the same contract -- one DTYPE constant selects the width for both.
+[[nodiscard]] bool binary_srcs_are_float(const Node& node) {
+    return node.src[0] != nullptr && node.src[1] != nullptr && is_floating(node.src[0]->dtype) &&
+           node.src[0]->dtype == node.src[1]->dtype;
+}
+
+/// A dtype as the shader's DTYPE specialisation constant.
+///
+/// The enum values are the shader's T_* codes by construction (cast.comp
+/// mirrors vkml::DType). This is that cast with the precondition attached: the
+/// elementwise, reduction and softmax shaders handle only the two floating
+/// types, and an integer arriving here would silently select the f32 path and
+/// read the wrong width. `supports()` is what guarantees it cannot.
+[[nodiscard]] uint32_t spec_dtype(DType dt) {
+    VKML_ASSERT(is_floating(dt), "shader DTYPE constant expects a floating dtype, got {}",
+                dtype_name(dt));
+    return static_cast<uint32_t>(dt);
 }
 
 /// OpKind -> shader code. Returns nullopt for anything this shader does not
@@ -759,7 +776,7 @@ bool VulkanBackend::supports(const Node& node) const {
         // Same kernel: fill is arange with a zero slope. F32 only, because the
         // shader writes through F32Buf -- an I64 arange still falls to the CPU.
         case OpKind::Full:
-        case OpKind::Arange: return node.dtype == DType::F32;
+        case OpKind::Arange: return is_floating(node.dtype);
         // Counter-based, so the value depends only on the element index and the
         // push constants -- nothing to seed per invocation, nothing shared.
         case OpKind::Rand: return node.dtype == DType::F32;
@@ -787,30 +804,37 @@ bool VulkanBackend::supports(const Node& node) const {
         case OpKind::Sigmoid:
         case OpKind::Gelu:
         case OpKind::Silu:
-        case OpKind::Clamp: return node.dtype == DType::F32;
-        // Binary elementwise arithmetic: F32 in, F32 out.
+        // Contiguous is here too: it reaches unary.comp as a copy, so it gains
+        // f16 with the rest rather than needing its own path.
+        case OpKind::Clamp:
+            return is_floating(node.dtype) && node.src[0] != nullptr &&
+                   node.src[0]->dtype == node.dtype;
+        // Binary elementwise arithmetic: floating in, the same floating out.
         case OpKind::Add:
         case OpKind::Sub:
         case OpKind::Mul:
         case OpKind::Div:
         case OpKind::Pow:
         case OpKind::Maximum:
-        case OpKind::Minimum: return node.dtype == DType::F32 && binary_srcs_are_f32(node);
-        // Comparisons: F32 in, Bool out. The output dtype differs from the
-        // inputs', so both ends are checked rather than inferring one.
+        case OpKind::Minimum:
+            return is_floating(node.dtype) && binary_srcs_are_float(node) &&
+                   node.src[0]->dtype == node.dtype;
+        // Comparisons: floating in, Bool out. The output dtype differs from the
+        // inputs', so both ends are checked rather than inferring one -- getting
+        // that backwards is precisely the defect the CPU kernel carried.
         case OpKind::Equal:
         case OpKind::Less:
         case OpKind::Greater:
         case OpKind::LessEqual:
         case OpKind::GreaterEqual:
-        case OpKind::NotEqual: return node.dtype == DType::Bool && binary_srcs_are_f32(node);
+        case OpKind::NotEqual: return node.dtype == DType::Bool && binary_srcs_are_float(node);
         // Ternary select. The condition is Bool while the values are F32, so
         // all three sources are checked rather than assumed uniform.
         case OpKind::Where:
-            return node.dtype == DType::F32 && node.src[0] != nullptr &&
+            return is_floating(node.dtype) && node.src[0] != nullptr &&
                    node.src[0]->dtype == DType::Bool && node.src[1] != nullptr &&
-                   node.src[1]->dtype == DType::F32 && node.src[2] != nullptr &&
-                   node.src[2]->dtype == DType::F32;
+                   node.src[1]->dtype == node.dtype && node.src[2] != nullptr &&
+                   node.src[2]->dtype == node.dtype;
         // Triangular masks. Rank >= 2 is guaranteed by the API, but the shader
         // indexes the last two extents directly, so it is re-checked here
         // rather than trusted across a layer boundary.
@@ -818,7 +842,7 @@ bool VulkanBackend::supports(const Node& node) const {
         case OpKind::Tril: return node.dtype == DType::F32 && node.shape.ndim() >= 2;
         // The CPU kernel is byte-wise and so dtype-generic; the shader reads
         // through F32Buf, so it claims only F32 and everything else falls back.
-        case OpKind::Cat: return node.dtype == DType::F32 && binary_srcs_are_f32(node);
+        case OpKind::Cat: return node.dtype == DType::F32 && binary_srcs_are_float(node);
         // Values are F32, the index is I64. Both shaders read the index through
         // I64Buf, so the dtype is checked rather than assumed.
         // Window geometry is carried in params and the output is freshly
@@ -842,17 +866,35 @@ bool VulkanBackend::supports(const Node& node) const {
                    node.src[0]->dtype == DType::F32 && node.src[1] != nullptr &&
                    node.src[1]->dtype == DType::I64;
         case OpKind::Cast: return true;
+        // Value reductions keep their input's dtype. The shader accumulates in
+        // shared floats whatever it reads, so fp32 accumulation holds for f16
+        // input without the kernel changing (ARCHITECTURE.md 7.3).
         case OpKind::Sum:
         case OpKind::Mean:
         case OpKind::Max:
-        case OpKind::Min: return node.dtype == DType::F32;
+        case OpKind::Min:
+            return is_floating(node.dtype) && node.src[0] != nullptr &&
+                   node.src[0]->dtype == node.dtype;
+        // Index reductions: floating in, I64 out, so the checked dtype is the
+        // source's and not this node's.
         case OpKind::ArgMax:
-        case OpKind::ArgMin: return node.dtype == DType::I64;
+        case OpKind::ArgMin:
+            return node.dtype == DType::I64 && node.src[0] != nullptr &&
+                   is_floating(node.src[0]->dtype);
         case OpKind::Softmax:
-        case OpKind::LogSoftmax: return node.dtype == DType::F32;
+        case OpKind::LogSoftmax:
+            return is_floating(node.dtype) && node.src[0] != nullptr &&
+                   node.src[0]->dtype == node.dtype;
         case OpKind::Matmul:
             // Operands arrive normalised to rank 4 by the graph builder, and
             // the output is always freshly allocated and contiguous.
+            //
+            // F32 ONLY, deliberately. The GEMM family is six tuned shaders with
+            // shared-memory tiling, double buffering and vec4 loads, and giving
+            // them an f16 storage path is a change to the most delicate code in
+            // the project rather than a load/store swap. Held back so it can be
+            // done and measured on its own; f16 matmul runs on the CPU and
+            // raises here, which is loud rather than silent.
             return node.dtype == DType::F32 && node.shape.ndim() == 4 && node.shape.is_contiguous();
         default: return false;
     }
@@ -899,7 +941,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
             case OpKind::Arange: {
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg};
+                cfg.spec_constants = {wg, spec_dtype(node->dtype)};
 
                 // A fill is an arange whose slope is zero, so both reach the
                 // same kernel and differ only in what the push constants say.
@@ -955,7 +997,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg, static_cast<uint32_t>(*op), contiguous ? 1U : 0U};
+                cfg.spec_constants = {wg, static_cast<uint32_t>(*op), contiguous ? 1U : 0U,
+                                      spec_dtype(node->dtype)};
 
                 UnaryPush push{};
                 push.src = address_of(src);
@@ -1021,7 +1064,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg, static_cast<uint32_t>(*op), contiguous ? 1U : 0U};
+                cfg.spec_constants = {wg, static_cast<uint32_t>(*op), contiguous ? 1U : 0U,
+                                      spec_dtype(a.dtype)};
 
                 BinaryPush push{};
                 push.a = address_of(a);
@@ -1260,7 +1304,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg, contiguous ? 1U : 0U};
+                cfg.spec_constants = {wg, contiguous ? 1U : 0U, spec_dtype(node->dtype)};
 
                 CatPush push{};
                 push.a = address_of(a);
@@ -1329,7 +1373,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg, contiguous ? 1U : 0U};
+                cfg.spec_constants = {wg, contiguous ? 1U : 0U, spec_dtype(node->dtype)};
 
                 WherePush push{};
                 push.cond = address_of(cond);
@@ -1419,7 +1463,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 if (impl_->subgroup_override != 0) {
                     cfg.required_subgroup_size = impl_->subgroup_override;
                 }
-                cfg.spec_constants = {wg, op_id, wg};
+                cfg.spec_constants = {wg, op_id, wg, spec_dtype(src.dtype)};
 
                 const size_t esz = dtype_size(src.dtype);
                 ReducePush push{};
@@ -1472,7 +1516,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     return v == nullptr ? 0U : static_cast<uint32_t>(std::atoi(v)) * 256U;
                 }();
                 cfg.shared_memory_bytes += sm_pad * sizeof(float);
-                cfg.spec_constants = {wg, node->op == OpKind::LogSoftmax ? 1U : 0U, wg, sm_pad};
+                cfg.spec_constants = {wg, node->op == OpKind::LogSoftmax ? 1U : 0U, wg, sm_pad,
+                                      spec_dtype(node->dtype)};
 
                 const size_t esz = dtype_size(src.dtype);
                 SoftmaxPush push{};

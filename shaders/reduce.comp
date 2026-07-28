@@ -37,6 +37,10 @@ layout(local_size_x_id = 0) in;
 
 layout(constant_id = 1) const uint OP = 0;
 layout(constant_id = 2) const uint WG = 256;
+// Storage type of the INPUT. argmax and argmin produce an index and are
+// unaffected; the shared-memory accumulator is float either way, which is
+// what keeps fp32 accumulation (ARCHITECTURE.md 7.3) true for f16 input.
+layout(constant_id = 3) const uint DTYPE = T_F32;
 
 #define OP_SUM    0
 #define OP_MEAN   1
@@ -86,7 +90,7 @@ void main() {
         acc_idx = 0xFFFFFFFFu;
 
         for (uint k = lane; k < p.n_red; k += WG) {
-            const float v = F32Buf(p.src).v[base + operand_offset(k, p.reduced)];
+            const float v = load_f(p.src, base + operand_offset(k, p.reduced), DTYPE);
             if (OP == OP_MAX || OP == OP_ARGMAX) {
                 // Strict > keeps the FIRST extremum, matching torch.argmax and
                 // the CPU backend. >= would silently return the last.
@@ -108,7 +112,7 @@ void main() {
         while (k < p.n_red) {
             float block = 0.0;
             for (uint b = 0; b < 32u && k < p.n_red; ++b, k += WG) {
-                block += F32Buf(p.src).v[base + operand_offset(k, p.reduced)];
+                block += load_f(p.src, base + operand_offset(k, p.reduced), DTYPE);
             }
 
             uint c = count++;
@@ -156,8 +160,8 @@ void main() {
     if (is_arg()) {
         I64Buf(p.dst).v[out_id] = int64_t(s_idx[0]);
     } else if (OP == OP_MEAN) {
-        F32Buf(p.dst).v[out_id] = s_val[0] / float(p.n_red);
+        store_f(p.dst, out_id, s_val[0] / float(p.n_red), DTYPE);
     } else {
-        F32Buf(p.dst).v[out_id] = s_val[0];
+        store_f(p.dst, out_id, s_val[0], DTYPE);
     }
 }

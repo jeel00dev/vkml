@@ -18,6 +18,7 @@ layout(local_size_x_id = 0) in;
 
 // Set when all four operands are contiguous.
 layout(constant_id = 1) const bool CONTIGUOUS = false;
+layout(constant_id = 2) const uint DTYPE = T_F32;
 
 layout(push_constant, scalar) uniform Params {
     uint64_t cond;
@@ -42,6 +43,10 @@ void main() {
 
     // Selecting rather than blending matters: the unselected operand may hold
     // NaN or an infinity, and any arithmetic form of this would propagate it.
-    F32Buf(p.dst).v[di] =
-        U8Buf(p.cond).v[ci] != uint8_t(0) ? F32Buf(p.a).v[ai] : F32Buf(p.b).v[bi];
+    // A round trip through float is exact for both storage types -- every f16
+    // value is representable in f32 -- so selection stays value-preserving.
+    store_f(p.dst, di,
+            U8Buf(p.cond).v[ci] != uint8_t(0) ? load_f(p.a, ai, DTYPE)
+                                              : load_f(p.b, bi, DTYPE),
+            DTYPE);
 }

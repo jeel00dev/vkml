@@ -43,6 +43,41 @@ layout(buffer_reference, scalar, buffer_reference_align = 2) buffer U16Buf { uin
 layout(buffer_reference, scalar, buffer_reference_align = 2) buffer F16Buf { float16_t v[]; };
 layout(buffer_reference, scalar, buffer_reference_align = 1) buffer U8Buf  { uint8_t v[]; };
 
+// ---------------------------------------------------------------------------
+// Floating storage access
+//
+// Mirrors vkml::DType. Only the two floating types appear here: the integer
+// types are storage and indices, not arithmetic (see the dtype contract in
+// include/vkml/core/dtype.h), and their kernels read them through their own
+// typed buffer references.
+#define T_F32 0
+#define T_F16 1
+
+// F16 IS STORAGE, NOT ARITHMETIC. Both helpers convert at the memory boundary
+// and everything between them is `float`, which is the fp32-accumulation half
+// of docs/ARCHITECTURE.md 7.3 -- the same contract the CPU backend's `widen`
+// implements, deliberately written to look the same.
+//
+// `dtype` is a specialisation constant at every call site, so the branch is
+// folded away at pipeline creation and an f32 kernel is byte-identical to what
+// it compiled to before this existed. It is a parameter rather than a shared
+// constant because the shaders reached different constant_id numbers before
+// this was added, and renumbering them would invalidate cached pipelines.
+float load_f(uint64_t buf, uint idx, uint dtype) {
+    if (dtype == T_F16) {
+        return float(F16Buf(buf).v[idx]);
+    }
+    return F32Buf(buf).v[idx];
+}
+
+void store_f(uint64_t buf, uint idx, float value, uint dtype) {
+    if (dtype == T_F16) {
+        F16Buf(buf).v[idx] = float16_t(value);
+        return;
+    }
+    F32Buf(buf).v[idx] = value;
+}
+
 /// Layout of one strided operand. Mirrors vkml::Shape.
 ///
 /// Strides are in ELEMENTS here, not bytes as on the host side. The conversion

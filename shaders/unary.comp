@@ -22,6 +22,8 @@ layout(constant_id = 1) const uint OP = 0;
 // arithmetic entirely. Measured 31x on the CPU (docs/BASELINE-CPU.md); a GPU
 // integer divide is proportionally more expensive still.
 layout(constant_id = 2) const bool CONTIGUOUS = false;
+// Storage type of both operands. They always match: vkml does not promote.
+layout(constant_id = 3) const uint DTYPE = T_F32;
 
 // Codes 0-4 are frozen: they are what the M1 pipelines were built with, and
 // renumbering would silently change which kernel an existing cache entry runs.
@@ -170,5 +172,5 @@ void main() {
     const uint si = CONTIGUOUS ? i : operand_offset(i, p.in_op);
     const uint di = CONTIGUOUS ? i : operand_offset(i, p.out_op);
 
-    F32Buf(p.dst).v[di] = apply_op(F32Buf(p.src).v[si]);
+    store_f(p.dst, di, apply_op(load_f(p.src, si, DTYPE)), DTYPE);
 }

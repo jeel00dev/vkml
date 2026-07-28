@@ -20,6 +20,8 @@
 
 layout(local_size_x_id = 0) in;
 
+layout(constant_id = 1) const uint DTYPE = T_F32;
+
 layout(push_constant, scalar) uniform Params {
     uint64_t dst;
     uint     n;
@@ -30,5 +32,5 @@ layout(push_constant, scalar) uniform Params {
 void main() {
     const uint i = gl_GlobalInvocationID.x;
     if (i >= p.n) { return; }
-    F32Buf(p.dst).v[i] = p.value + float(i) * p.step;
+    store_f(p.dst, i, p.value + float(i) * p.step, DTYPE);
 }

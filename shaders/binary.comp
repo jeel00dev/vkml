@@ -25,6 +25,10 @@ layout(constant_id = 1) const uint OP = 0;
 // Set when all three operands are contiguous, which removes the per-element
 // stride arithmetic entirely.
 layout(constant_id = 2) const bool CONTIGUOUS = false;
+// Storage type of the INPUTS. A comparison's output is always Bool, so it is
+// unaffected -- which is exactly the distinction the CPU kernel got wrong by
+// checking the output dtype and reading the inputs as f32 regardless.
+layout(constant_id = 3) const uint DTYPE = T_F32;
 
 #define OP_ADD 0
 #define OP_SUB 1
@@ -117,12 +121,12 @@ void main() {
     const uint bi = CONTIGUOUS ? i : operand_offset(i, p.b_op);
     const uint di = CONTIGUOUS ? i : operand_offset(i, p.out_op);
 
-    const float x = F32Buf(p.a).v[ai];
-    const float y = F32Buf(p.b).v[bi];
+    const float x = load_f(p.a, ai, DTYPE);
+    const float y = load_f(p.b, bi, DTYPE);
 
     if (IS_COMPARE) {
         U8Buf(p.dst).v[di] = comparison(x, y) ? uint8_t(1) : uint8_t(0);
     } else {
-        F32Buf(p.dst).v[di] = arithmetic(x, y);
+        store_f(p.dst, di, arithmetic(x, y), DTYPE);
     }
 }

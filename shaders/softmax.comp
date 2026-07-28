@@ -53,6 +53,7 @@ shared float s_red[gl_WorkGroupSize.x];
 // so P1'' can be tested on a kernel it was not derived from. Zero in
 // production; the guard below depends on a runtime value so it is not elided.
 layout(constant_id = 3) const uint PAD_FLOATS = 0;
+layout(constant_id = 4) const uint DTYPE = T_F32;
 const uint PAD_ALLOC = PAD_FLOATS > 0u ? PAD_FLOATS : 1u;
 shared float pad_buf[PAD_ALLOC];
 
@@ -69,7 +70,7 @@ void main() {
     // -- pass 1: row maximum ------------------------------------------------
     float peak = -1.0 / 0.0;
     for (uint k = lane; k < p.n_axis; k += WG) {
-        peak = max(peak, F32Buf(p.src).v[in_base + operand_offset(k, p.in_axis)]);
+        peak = max(peak, load_f(p.src, in_base + operand_offset(k, p.in_axis), DTYPE));
     }
     s_red[lane] = peak;
     barrier();
@@ -106,7 +107,7 @@ void main() {
         while (k < p.n_axis) {
             float block = 0.0;
             for (uint b = 0; b < 32u && k < p.n_axis; ++b, k += WG) {
-                block += exp(F32Buf(p.src).v[in_base + operand_offset(k, p.in_axis)] - peak);
+                block += exp(load_f(p.src, in_base + operand_offset(k, p.in_axis), DTYPE) - peak);
             }
             uint c = count++;
             uint level = 0;
@@ -131,8 +132,8 @@ void main() {
 
     // -- pass 3: normalise --------------------------------------------------
     for (uint k = lane; k < p.n_axis; k += WG) {
-        const float shifted = F32Buf(p.src).v[in_base + operand_offset(k, p.in_axis)] - peak;
+        const float shifted = load_f(p.src, in_base + operand_offset(k, p.in_axis), DTYPE) - peak;
         const float v = (LOG == 1u) ? (shifted - log_denom) : (exp(shifted) / denom);
-        F32Buf(p.dst).v[out_base + operand_offset(k, p.out_axis)] = v;
+        store_f(p.dst, out_base + operand_offset(k, p.out_axis), v, DTYPE);
     }
 }
