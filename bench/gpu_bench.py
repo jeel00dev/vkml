@@ -173,6 +173,23 @@ def run_all(device) -> list[Sample]:
         out.append(measure(f"mul {label} 2^24", "elementwise",
                            lambda a=a, b=b: (a * b).realize()))
 
+    # -- f16 against f32 in a GEMM ------------------------------------------
+    #
+    # Tracked because f16 is currently SLOWER here, not faster: the vectorised
+    # tile load is f32-only, so f16 falls back to scalar loads. Measured at
+    # 2048^3, f32 runs 6.74 ms with vec4 and 9.89 ms without, and f16 runs
+    # 9.74 ms -- so the gap is the vectorisation, and at equal vectorisation
+    # f16 gains only a few per cent, because a tiled GEMM is compute-bound
+    # rather than bandwidth-bound. This pair is here to notice if that changes.
+    for label, npdt in (("f32", np.float32), ("f16", np.float16)):
+        sz = 1024
+        a = V.tensor((rng.standard_normal((sz, sz)) * 0.1).astype(npdt), device=device)
+        b = V.tensor((rng.standard_normal((sz, sz)) * 0.1).astype(npdt), device=device)
+        a.realize()
+        b.realize()
+        out.append(measure(f"matmul {label} 1024^3", "gemm",
+                           lambda a=a, b=b: V.matmul(a, b).realize()))
+
     # -- reductions ---------------------------------------------------------
     for rows, cols in ((64, 4096), (1024, 1024), (4096, 256), (1, 1048576)):
         x = V.tensor(rng.random((rows, cols), dtype=np.float32), device=device)

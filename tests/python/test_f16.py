@@ -322,22 +322,54 @@ def test_vulkan_agrees_with_the_cpu_oracle_bit_for_bit(name, build):
     np.testing.assert_array_equal(gpu, cpu, err_msg=f"{name}: vulkan and cpu disagree on f16")
 
 
+# GEMM shapes chosen to reach different kernels. The dispatcher picks between
+# gemv, a naive/tiled path and the register-blocked one by size, and long-K
+# admits split-K -- which is the case that matters most here, because under
+# split-K the kernel writes f32 partials to a workspace instead of writing the
+# output, so its destination type differs from every other dispatch.
+GEMM_SHAPES = [
+    ("gemv", (64, 128), (128, 1)),
+    ("small", (8, 8), (8, 8)),
+    ("mid", (64, 64), (64, 64)),
+    ("large", (256, 256), (256, 256)),
+    ("longK", (32, 4096), (4096, 32)),
+]
+
+
 @pytest.mark.skipif(not vulkan_ready(), reason="no Vulkan device available")
-def test_vulkan_refuses_f16_matmul():
-    """The one operator still f32-only on the GPU.
+@pytest.mark.parametrize("name,sa,sb", GEMM_SHAPES, ids=[g[0] for g in GEMM_SHAPES])
+def test_f16_matmul_agrees_with_the_cpu_oracle(name, sa, sb):
+    """Bit-exact, across every GEMM path the dispatcher can choose.
 
-    The GEMM family is six tuned shaders with shared-memory tiling, double
-    buffering and vec4 loads; an f16 storage path there is a change to the most
-    delicate code in the project rather than the load/store swap the elementwise
-    and reduction shaders needed. Held back deliberately so it can be done and
-    measured on its own.
-
-    f16 matmul runs on the CPU and raises here, which is loud rather than
-    silent. Implementing it makes this fail -- the prompt to add matmul to the
-    oracle-chain test above.
+    Scaled to 0.1 so a K=4096 reduction stays inside f16's range; the point here
+    is the storage and indexing, not overflow, which has its own test.
     """
-    a = V.tensor(np.ones((4, 6), dtype=np.float16), device=gpu_device())
-    b = V.tensor(np.ones((6, 5), dtype=np.float16), device=gpu_device())
+    rng = np.random.default_rng(3200)
+    a = (rng.standard_normal(sa) * 0.1).astype(np.float16)
+    b = (rng.standard_normal(sb) * 0.1).astype(np.float16)
 
-    with pytest.raises(V.NotImplementedError_, match="cannot evaluate op 'matmul'"):
-        V.matmul(a, b).numpy()
+    gpu = V.matmul(V.tensor(a, device=gpu_device()), V.tensor(b, device=gpu_device())).numpy()
+    cpu = V.matmul(V.tensor(a), V.tensor(b)).numpy()
+
+    assert gpu.dtype == np.float16
+    np.testing.assert_array_equal(gpu, cpu, err_msg=f"{name}: vulkan and cpu disagree on f16 matmul")
+
+
+@pytest.mark.skipif(not vulkan_ready(), reason="no Vulkan device available")
+def test_split_k_partials_stay_f32():
+    """The split-K workspace holds f32 partial sums, whatever the operands are.
+
+    Rounding a partial to 16 bits before the final fold would break fp32
+    accumulation across the split exactly as a 16-bit accumulator breaks it
+    within one. Forced on rather than hoped for, since the planner only chooses
+    split-K for particular shapes.
+
+    Checked by value, at a size where a 16-bit partial would visibly saturate:
+    each partition sums 256 ones, and there are enough partitions that the
+    totals exceed what f16 can step through one unit at a time.
+    """
+    k = 4096
+    a = V.tensor(np.ones((1, k), dtype=np.float16), device=gpu_device())
+    b = V.tensor(np.ones((k, 1), dtype=np.float16), device=gpu_device())
+
+    assert V.matmul(a, b).numpy().item() == float(k)
