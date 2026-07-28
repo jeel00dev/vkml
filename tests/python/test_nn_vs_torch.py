@@ -108,12 +108,11 @@ def test_mse_loss():
 def test_cross_entropy():
     logits = make_input((6, 5), seed=2300, low=-3.0, high=3.0)
     labels = np.array([0, 3, 1, 4, 2, 0], dtype=np.int64)
-    onehot = np.eye(5, dtype=np.float32)[labels]
 
     vl_in = V.tensor(logits, requires_grad=True)
     tl_in = torch.from_numpy(logits.copy()).requires_grad_(True)
 
-    vl = V.nn.cross_entropy(vl_in, V.tensor(onehot))
+    vl = V.nn.cross_entropy(vl_in, V.tensor(labels))
     tl = torch.nn.functional.cross_entropy(tl_in, torch.from_numpy(labels))
 
     assert_close("cross_entropy", vl, tl, TOLERANCES["transcendental"], inputs=[logits])
@@ -126,10 +125,9 @@ def test_cross_entropy():
 def test_cross_entropy_extreme_logits():
     """Where -log(softmax(x)) would be inf but log_softmax stays finite."""
     logits = np.array([[0.0, -300.0, -600.0]], dtype=np.float32)
-    onehot = np.array([[0.0, 0.0, 1.0]], dtype=np.float32)
     labels = np.array([2], dtype=np.int64)
 
-    vl = V.nn.cross_entropy(V.tensor(logits), V.tensor(onehot))
+    vl = V.nn.cross_entropy(V.tensor(logits), V.tensor(labels))
     tl = torch.nn.functional.cross_entropy(torch.from_numpy(logits.copy()),
                                            torch.from_numpy(labels))
     assert np.isfinite(vl.item())
@@ -225,7 +223,6 @@ def test_mnist_style_mlp_training_parity():
     rng = np.random.default_rng(42)
     x = rng.normal(0, 1, size=(64, 784)).astype(np.float32)
     labels = rng.integers(0, 10, size=(64,))
-    onehot = np.eye(10, dtype=np.float32)[labels]
 
     v_opt = V.optim.SGD(vkml_model.parameters(), lr=0.1)
     t_opt = torch.optim.SGD(torch_model.parameters(), lr=0.1)
@@ -233,13 +230,13 @@ def test_mnist_style_mlp_training_parity():
     tx = torch.from_numpy(x.copy())
     tlabels = torch.from_numpy(labels.copy())
     vx = V.tensor(x)
-    vonehot = V.tensor(onehot)
+    vlabels = V.tensor(labels)
 
     v_losses, t_losses = [], []
 
     for step in range(100):
         v_opt.zero_grad()
-        v_loss = V.nn.cross_entropy(vkml_model(vx), vonehot)
+        v_loss = V.nn.cross_entropy(vkml_model(vx), vlabels)
         v_loss.backward()
         v_opt.step()
         v_losses.append(v_loss.item())

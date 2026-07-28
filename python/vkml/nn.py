@@ -223,40 +223,39 @@ class Sequential(Module):
 
 # ---------------------------------------------------------------------------
 # Losses
+#
+# Thin wrappers that translate torch's string `reduction` into the enum the
+# C++ API takes. The numerics -- log-sum-exp stability, the tolerance policy,
+# the one-hot masking -- live there and are stated once, so these cannot drift
+# away from the operators the validation suite actually pins.
 # ---------------------------------------------------------------------------
+
+_REDUCTIONS = {
+    "mean": V.Reduction.mean,
+    "sum": V.Reduction.sum,
+    "none": V.Reduction.none,
+}
+
+
+def _reduction(name: str) -> "V.Reduction":
+    try:
+        return _REDUCTIONS[name]
+    except KeyError:
+        raise ValueError(
+            f"unknown reduction {name!r}; expected one of {sorted(_REDUCTIONS)}"
+        ) from None
 
 
 def mse_loss(pred: V.Tensor, target: V.Tensor, reduction: str = "mean") -> V.Tensor:
-    diff = pred - target
-    sq = diff * diff
-    if reduction == "mean":
-        return V.mean(sq)
-    if reduction == "sum":
-        return V.sum(sq)
-    if reduction == "none":
-        return sq
-    raise ValueError(f"unknown reduction {reduction!r}")
+    return V.mse_loss(pred, target, _reduction(reduction))
 
 
-def cross_entropy(logits: V.Tensor, target_onehot: V.Tensor, reduction: str = "mean") -> V.Tensor:
-    """Cross-entropy from logits against a one-hot target.
+def cross_entropy(logits: V.Tensor, target: V.Tensor, reduction: str = "mean") -> V.Tensor:
+    """Softmax cross-entropy from logits against I64 class indices.
 
-    Computed as ``-sum(target * log_softmax(logits))`` rather than
-    ``-log(softmax(logits))``: log_softmax subtracts the max internally and
-    never forms the exponential, so it stays finite for logits where softmax
-    would underflow to zero and log would then return -inf. This is the same
-    reason torch.nn.functional.cross_entropy fuses the two.
-
-    Takes a one-hot target rather than class indices because index-based
-    gathering needs an IndexSelect kernel, which is M0-out-of-scope. The
-    validation suite compares against torch with the same one-hot encoding.
+    TAKES CLASS INDICES, as torch does. An earlier version took a one-hot
+    target, because selecting by index needed a gather kernel that did not yet
+    exist. It does now, so the signature matches torch and callers no longer
+    build an encoding the library can do itself.
     """
-    logp = V.log_softmax(logits, -1)
-    per_sample = V.neg(V.sum(target_onehot * logp, -1))
-    if reduction == "mean":
-        return V.mean(per_sample)
-    if reduction == "sum":
-        return V.sum(per_sample)
-    if reduction == "none":
-        return per_sample
-    raise ValueError(f"unknown reduction {reduction!r}")
+    return V.cross_entropy(logits, target, _reduction(reduction))
