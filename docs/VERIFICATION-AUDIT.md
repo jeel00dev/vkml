@@ -307,6 +307,48 @@ parity was an unstated assumption, so nothing could check it.
 
 ---
 
+## 4c. The Python suite now runs under AddressSanitizer
+
+`ctest --preset asan` sanitises `tests/cpp`, and most of the operator surface is
+not tested there. That gap has a name: the `cat` use-after-free that reached the
+Python suite as "rank 43020 exceeds kMaxDims=4" and that ASan never saw, because
+ASan was not in the build the Python suite loads.
+
+`scripts/asan_python.py` builds an instrumented extension and runs the same
+suite against it; CI runs it as a separate job.
+
+**Verified against that exact bug.** Reintroducing the dangling-iterator
+construction in `cat`'s shape inference produces
+`ERROR: AddressSanitizer: heap-buffer-overflow`, with the trace landing in
+`vkml::cat` → `vector::_M_range_initialize_n`, and the run aborts. Restoring the
+fix returns the suite to green. So this gate detects the class of defect it was
+created for, rather than merely running.
+
+Three things the mechanics forced, each verified rather than assumed:
+
+- **The runtime must be preloaded.** Python is not instrumented, so an ASan
+  extension imports with `undefined symbol: __asan_option_detect_stack_use_after_return`
+  until `LD_PRELOAD` supplies it.
+- **pytest's capture swallows the report.** With capture on, the process aborts
+  with exit 134 and *stderr arrives empty* — the least useful possible failure.
+  The runner passes `-s` for that reason alone.
+- **Leaks are off.** CPython, numpy and torch all hold allocations at exit by
+  design; LeakSanitizer would bury a real finding under them. What this gate is
+  for is use-after-free, overflow and invalid free — the class that produced
+  wrong output rather than a crash.
+
+**Scope, stated because "the suite passed under ASan" would otherwise sound
+broader than it is.** This covers the CPU backend and every host-side layer
+above it, which is where the motivating bug was. Vulkan is absent: the runner
+has no GPU, and a memory bug inside a compute shader is not something ASan can
+see in any configuration. The suite reports 678 passed and 440 skipped for that
+reason.
+
+Cost: about 4x the wall time (82 s against 21 s) and a ~20x larger extension, so
+it is a separate CI job rather than a flag on the existing one.
+
+---
+
 ## 5. Findings
 
 Each cost real time, and none was predictable from reading code.
@@ -364,7 +406,7 @@ rather than converted.
 | 32 | **An f16 vectorised tile load for the GEMM shaders** | §2. f16 matmul is 1.45× slower than f32 purely because `load4` is f32-only. Restores parity; measured not to be a speedup, so it waits on someone actually running f16 GEMMs |
 | 27 | Reconcile the backends' input requirements, or document the divergence | §5. Sharpens item 16 |
 | ~~28~~ | ~~Implement `prod` on Vulkan, or state it is CPU-only~~ | **Done** — stated CPU-only, with the ordering argument and a test (§4) |
-| 15 | Run the Python suite under a sanitizer in CI | Unchanged; still open |
+| ~~15~~ | ~~Run the Python suite under a sanitizer in CI~~ | **Done** — `scripts/asan_python.py` plus a CI job; verified against the bug that motivated it (§4c) |
 | 16 | CPU fallback via graph splitting, or Vulkan all-or-nothing | Now has a reproduction (§5) |
 | 29 | Make the coverage report a CI gate against a baseline of accepted gaps | Once §2 is decided; a ratchet is only useful when the accepted set is stable |
 

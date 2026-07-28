@@ -104,6 +104,38 @@ jobs:
           echo "collected $COUNT tests"
           test "$COUNT" -ge 250
 
+  python-asan:
+    name: Python suite under AddressSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install toolchain
+        # clang for the sanitizer runtime, llvm for llvm-symbolizer -- without
+        # the latter a report still fires but gives offsets instead of names.
+        run: sudo apt-get update -qq && sudo apt-get install -y cmake ninja-build clang llvm
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pytest nanobind
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run the suite against an instrumented build
+        # A separate job rather than a flag on the existing one: the sanitised
+        # extension is ~20x larger and the suite takes ~4x as long, and it
+        # overwrites python/vkml/, so it cannot share a workspace with the
+        # ordinary Python job.
+        #
+        # This covers the CPU backend and everything above it. Vulkan is absent
+        # by default and the runner has no GPU, so those tests skip -- stated
+        # rather than implied, because "the suite passed under ASan" would
+        # otherwise sound like it covered the shaders.
+        run: python scripts/asan_python.py
+
   benchmark:
     name: Benchmark smoke run
     runs-on: ubuntu-latest
