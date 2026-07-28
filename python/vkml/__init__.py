@@ -130,6 +130,7 @@ vulkan_device_count = _C.vulkan_device_count
 # to work on the machines that cannot run the backend -- those are the ones
 # worth hearing about.
 vulkan_device_reports = _C.vulkan_device_reports
+vulkan_unavailable_reason = _C.vulkan_unavailable_reason
 if has_vulkan:
     init_vulkan = _C.init_vulkan
     vulkan_device_names = _C.vulkan_device_names

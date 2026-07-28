@@ -101,6 +101,39 @@ def test_identity_fields_are_populated():
         assert report["max_workgroup_invocations"] > 0
 
 
+def test_unavailable_reason_is_empty_exactly_when_a_device_exists():
+    reason = V.vulkan_unavailable_reason()
+    assert bool(reason) == (len(V.vulkan_device_reports()) == 0)
+
+
+def test_unavailable_reason_names_the_loader_failure():
+    """A machine with no usable driver must say WHY, not just "none".
+
+    Driven with the loader pointed at a file that does not exist, because the
+    two causes of zero devices -- no instance, versus an instance that
+    enumerates nothing -- need different advice and previously looked identical.
+    """
+    source = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import vkml as V
+assert V.vulkan_device_reports() == [], "expected no devices with a bogus ICD"
+print(V.vulkan_unavailable_reason())
+"""
+    python_dir = os.path.join(os.path.dirname(__file__), "..", "..", "python")
+    result = subprocess.run(
+        [sys.executable, "-c", source, python_dir],
+        env=dict(os.environ, VK_ICD_FILENAMES="/nonexistent-vkml-test.json"),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        # A build without Vulkan, or a loader that ignores the override.
+        return
+    assert result.stdout.strip(), "no devices and no explanation is the old behaviour"
+
+
 def test_unusable_reason_distinguishes_the_three_outcomes():
     """The CI gate's logic, on inputs no machine here can produce.
 

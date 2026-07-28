@@ -6,6 +6,19 @@
 add_library(doctest INTERFACE)
 target_include_directories(doctest SYSTEM INTERFACE ${CMAKE_SOURCE_DIR}/third_party/doctest)
 
+# Without this, doctest forward-declares std::ostream inside namespace std --
+# something its own source comments admit "is not permitted by the C++
+# Standard". It disables the hack automatically for libc++, but not for MSVC,
+# whose STL rejects the declaration outright (C2027: use of undefined type
+# 'std::basic_ostream'). That is how the Windows job failed on its second run,
+# once the real library defects it found first had been fixed.
+#
+# Set unconditionally rather than only for MSVC. There is no reason for the
+# platforms to differ here, and one path compiled everywhere is worth more than
+# a branch only a single CI job ever exercises. The cost is <ostream> and
+# <istream> in each test translation unit.
+target_compile_definitions(doctest INTERFACE DOCTEST_CONFIG_USE_STD_HEADERS)
+
 set(VKML_TEST_SOURCES
     main.cpp
     test_util.cpp

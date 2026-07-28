@@ -141,8 +141,11 @@ def print_device(index: int, d: dict) -> None:
     print(f"    compute units ..... {cores if cores else 'not reported'}")
 
 
-def unusable_reason(devices: list) -> str | None:
+def unusable_reason(devices: list, no_device_detail: str = "") -> str | None:
     """Why this machine cannot run vkML, or None if it can.
+
+    Pure: `no_device_detail` is passed in rather than queried, so the decision
+    can be tested against device lists no machine here can produce.
 
     Exists for CI. A job that finds no device and then reports success is
     indistinguishable from one that proved the backend works, and the second is
@@ -150,7 +153,7 @@ def unusable_reason(devices: list) -> str | None:
     tests skip themselves when no device is present.
     """
     if not devices:
-        return "no Vulkan device is visible"
+        return no_device_detail or "no Vulkan device is visible"
     rejected = [
         f"{d['name']} (missing {d['missing_requirement']})" for d in devices if not d["supported"]
     ]
@@ -218,8 +221,7 @@ def main() -> int:
         print_environment(env)
         if not devices:
             print("\n  no Vulkan devices found.")
-            if not V.has_vulkan:
-                print("  (this build was compiled without the Vulkan backend)")
+            print(f"  why: {V.vulkan_unavailable_reason()}")
         for index, device in enumerate(devices):
             print_device(index, device)
 
@@ -246,7 +248,7 @@ def main() -> int:
         print("=" * 72)
 
     if args.require_device:
-        reason = unusable_reason(devices)
+        reason = unusable_reason(devices, V.vulkan_unavailable_reason())
         if reason:
             print(f"\nrequired a usable device: {reason}", file=sys.stderr)
             return 2

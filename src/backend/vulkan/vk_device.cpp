@@ -69,8 +69,14 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
     return devices;
 }
 
-/// Creates a bare instance for enumeration only.
-[[nodiscard]] VkInstance make_probe_instance() {
+/// Creates a bare instance for enumeration only, reporting why if it cannot.
+///
+/// The result is kept rather than collapsed to a null handle because the two
+/// ways to see zero devices -- the loader refusing to create an instance, and
+/// an instance that enumerates nothing -- need completely different advice, and
+/// a report that cannot tell them apart sends the reader looking in the wrong
+/// place.
+[[nodiscard]] VkResult create_probe_instance(VkInstance* out) {
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "vkml-probe";
@@ -80,8 +86,12 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
     ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ci.pApplicationInfo = &app;
 
+    return vkCreateInstance(&ci, nullptr, out);
+}
+
+[[nodiscard]] VkInstance make_probe_instance() {
     VkInstance instance = VK_NULL_HANDLE;
-    if (vkCreateInstance(&ci, nullptr, &instance) != VK_SUCCESS) {
+    if (create_probe_instance(&instance) != VK_SUCCESS) {
         return VK_NULL_HANDLE;
     }
     return instance;
@@ -474,6 +484,27 @@ std::string missing_requirement(const DeviceInfo& info) {
     }
     if (!info.timeline_semaphore) {
         return "timelineSemaphore";
+    }
+    return {};
+}
+
+std::string unavailable_reason() {
+    VkInstance probe = VK_NULL_HANDLE;
+    const VkResult result = create_probe_instance(&probe);
+    if (result != VK_SUCCESS) {
+        return std::format(
+            "the Vulkan loader could not create an instance ({}); either no driver is installed, "
+            "or none of the installed drivers supports Vulkan 1.3",
+            result_string(result));
+    }
+
+    const bool none = physical_devices(probe).empty();
+    vkDestroyInstance(probe, nullptr);
+    if (none) {
+        return "a Vulkan instance was created, but the loader reported no physical device; the "
+               "driver is present and exposed no GPU. On a portability driver such as MoltenVK, "
+               "an instance that does not opt in to VK_KHR_portability_enumeration looks exactly "
+               "like this";
     }
     return {};
 }

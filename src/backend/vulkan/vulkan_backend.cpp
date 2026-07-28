@@ -2251,6 +2251,8 @@ const char* device_type_name(VkPhysicalDeviceType type) {
 
 }  // namespace
 
+std::string vulkan_unavailable_reason() { return vk::unavailable_reason(); }
+
 std::vector<DeviceReport> vulkan_device_reports() {
     std::vector<DeviceReport> reports;
     for (const vk::DeviceInfo& info : vk::enumerate_device_info()) {

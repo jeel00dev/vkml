@@ -169,6 +169,14 @@ private:
 /// "this machine has no Vulkan" is an answer a report needs to be able to give.
 [[nodiscard]] std::vector<DeviceReport> vulkan_device_reports();
 
+/// Empty when a device is visible; otherwise why none is, in a form a person
+/// reading a bug report can act on.
+///
+/// "No devices" has two quite different causes -- the loader cannot create an
+/// instance at all, or it creates one that enumerates nothing -- and telling
+/// them apart is most of the diagnosis on hardware nobody here can inspect.
+[[nodiscard]] std::string vulkan_unavailable_reason();
+
 /// Returns the process-wide backend for `index`, creating it on first call and
 /// registering it so `backend_for(Device::vulkan(index))` resolves.
 ///

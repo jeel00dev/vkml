@@ -141,6 +141,14 @@ private:
 /// DeviceInfo for every visible device, without creating a logical device.
 [[nodiscard]] std::vector<DeviceInfo> enumerate_device_info();
 
+/// Empty when at least one device is visible; otherwise why none is.
+///
+/// Separates the loader failing to create an instance from an instance that
+/// enumerates nothing. Both present as zero devices and they need entirely
+/// different advice, so a report that cannot tell them apart sends whoever
+/// reads it looking in the wrong place.
+[[nodiscard]] std::string unavailable_reason();
+
 /// Turns a VkResult into a readable string.
 [[nodiscard]] const char* result_string(VkResult r) noexcept;
 

@@ -316,6 +316,25 @@ jobs:
           cmake --preset release -DVKML_VULKAN=ON -DVKML_BUILD_PYTHON=ON
           cmake --build build/release -j$(sysctl -n hw.ncpu)
 
+      - name: Does anything at all see a device here?
+        # An INDEPENDENT oracle, and the discriminator for the previous run's
+        # result: vkML saw zero devices with the ICD correctly pointed at
+        # MoltenVK, and two very different causes produce that.
+        #
+        #   vulkaninfo lists a device -> the runner has a GPU and vkML cannot
+        #   see it. MoltenVK is a portability driver, and since loader 1.3.216
+        #   those are hidden unless the instance opts in with
+        #   VK_KHR_portability_enumeration -- which vkml's does not. That would
+        #   be a real vkML defect, and the reason the README's MoltenVK claim
+        #   is currently unsupportable.
+        #
+        #   vulkaninfo lists nothing -> the runner VM exposes no Metal device,
+        #   this job can never answer the question, and it should be cut back
+        #   to a build-only check rather than left failing.
+        #
+        # Never fails the job: it is here to produce evidence, not a verdict.
+        run: vulkaninfo --summary || echo "vulkaninfo failed or found nothing"
+
       - name: What does MoltenVK actually offer?
         # The question this job exists to answer, and the reason the report
         # queries physical devices only: it prints a verdict even for a device

@@ -642,6 +642,7 @@ NB_MODULE(_vkml_core, m) {
     m.def("vulkan_available", &vkml::vulkan_available);
     m.def("vulkan_device_count", &vkml::vulkan_device_count);
     m.def("vulkan_device_names", &vkml::vulkan_device_names);
+    m.def("vulkan_unavailable_reason", &vkml::vulkan_unavailable_reason);
     m.def(
         "vulkan_device_reports",
         [] {
@@ -787,6 +788,8 @@ NB_MODULE(_vkml_core, m) {
     // Present even here: a hardware report from a CPU-only build should say
     // "built without Vulkan" rather than fail with AttributeError.
     m.def("vulkan_device_reports", [] { return nb::list(); });
+    m.def("vulkan_unavailable_reason",
+          [] { return std::string("this build was compiled without the Vulkan backend"); });
 #endif
 
     // -- autograd -----------------------------------------------------------
