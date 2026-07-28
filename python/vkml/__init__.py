@@ -233,6 +233,7 @@ class eager_mode:
         return False
 
 
-from . import nn, optim  # noqa: E402  (placed last: they import from this module)
+from . import data, nn, optim, serialize  # noqa: E402  (last: they import from this module)
+from .serialize import Checkpoint, load, load_module, save, save_module  # noqa: E402
 
 __all__ = [name for name in dir() if not name.startswith("_")]
