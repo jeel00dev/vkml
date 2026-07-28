@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Mutation campaign: break each kernel, confirm the suite notices.
+"""Mutation campaign: break each implementation, confirm the suite notices.
 
 docs/MEASUREMENT-AUDIT.md rule 10 says to check every gate for vacuity before
 trusting a pass. A green suite proves the tests ran, not that they can fail --
 and a test that cannot fail is worse than none, because it manufactures
 confidence. This is how that rule is checked rather than asserted.
 
-Each entry applies one semantically MEANINGFUL mutation to a kernel -- an
-off-by-one, a dropped guard, a reversed fold -- rebuilds, runs the tests that
-should catch it, and reports:
+Each entry applies one semantically MEANINGFUL mutation -- an off-by-one, a
+dropped guard, a reversed fold -- rebuilds if the source is compiled, runs the
+tests that should catch it, and reports:
 
     KILLED    the suite failed. The tests detect this defect.
     SURVIVED  the suite passed. Something is untested; investigate.
 
-A syntax error would prove nothing, so every mutation compiles.
+A syntax error would prove nothing, so every mutation compiles (or, in Python,
+imports).
+
+Kernels are not the only thing worth mutating. The data pipeline and the
+checkpoint format carry no numerics at all, but they fail SILENTLY -- a shuffle
+that unpairs inputs from labels, a checkpoint that loads with a key missing --
+and a silent failure is exactly what a vacuous test hides.
 
 MAINTENANCE COST, stated plainly: each mutation is a literal string from the
 source, so a refactor silently stops it applying. That failure is reported as
@@ -84,6 +90,56 @@ MUTATIONS = [
     ("k_cat: reuse output extent for the source index", "src/backend/cpu/kernels_movement.cpp",
      "const int64_t extent = from_a ? a_extent : b_extent;",
      "const int64_t extent = out_extent;", "test_cat"),
+
+    # --- python: data pipeline ---------------------------------------------
+    # No kernel here and no numerics -- what these guard is bookkeeping, which
+    # fails silently. A shuffle that drops samples or unpairs inputs from labels
+    # trains a model that looks healthy and is not.
+    ("loader: sample with replacement instead of permuting", "python/vkml/data.py",
+     "order = _np.random.default_rng(self.seed + self._epoch).permutation(n)",
+     "order = _np.random.default_rng(self.seed + self._epoch).integers(0, n, n)",
+     "test_epoch_is_a_permutation_not_a_sample"),
+
+    ("dataset: permute each array independently", "python/vkml/data.py",
+     "return tuple(array[indices] for array in self.arrays)",
+     "return tuple(_np.random.default_rng(i).permutation(array[indices])\n"
+     "                     for i, array in enumerate(self.arrays))",
+     "test_shuffle_keeps_paired_arrays_aligned"),
+
+    ("loader: reseed identically every epoch", "python/vkml/data.py",
+     "self._epoch += 1", "pass", "test_successive_epochs_differ"),
+
+    ("loader: drop_last off-by-one", "python/vkml/data.py",
+     "limit = n - self.batch_size + 1 if self.drop_last else n",
+     "limit = n - self.batch_size + 2 if self.drop_last else n",
+     "test_drop_last_keeps_every_batch_the_same_shape"),
+
+    ("split: cut without shuffling first", "python/vkml/data.py",
+     "order = _np.random.default_rng(seed).permutation(n)\n    cut",
+     "order = _np.arange(n)\n    cut", "test_split_shuffles_before_cutting"),
+
+    # --- python: checkpoints -----------------------------------------------
+    ("checkpoint: allow pickle on load", "python/vkml/serialize.py",
+     "tensors[key] = _npy.read_array(data, allow_pickle=False)",
+     "tensors[key] = _npy.read_array(data, allow_pickle=True)",
+     "test_a_pickle_payload_is_refused_rather_than_executed"),
+
+    ("checkpoint: write straight to the destination", "python/vkml/serialize.py",
+     'temp_path = path.with_name(f"{path.name}.{os.getpid()}.partial")',
+     "temp_path = path", "test_a_save_interrupted_mid_write"),
+
+    ("checkpoint: catch Exception rather than BaseException", "python/vkml/serialize.py",
+     "except BaseException:", "except Exception:", "test_a_save_interrupted_mid_write"),
+
+    ("checkpoint: leave the partial file behind", "python/vkml/serialize.py",
+     "temp_path.unlink(missing_ok=True)", "pass", "test_a_save_interrupted_mid_write"),
+
+    ("checkpoint: accept any format version", "python/vkml/serialize.py",
+     "if version > FORMAT_VERSION:", "if False:", "test_rejects_a_newer_format_version"),
+
+    ("checkpoint: skip the missing-member check", "python/vkml/serialize.py",
+     "if member not in names:", "if False and member not in names:",
+     "test_rejects_a_missing_member"),
 ]
 
 
@@ -113,7 +169,9 @@ def main() -> int:
 
         try:
             path.write_text(original.replace(find, replace, 1))
-            if not build():
+            # Python mutations need no rebuild, and skipping it turns a minute
+            # per mutation into a second. Only compiled sources pay for it.
+            if rel.startswith(("shaders/", "src/")) and not build():
                 results.append((label, "BUILD-FAILED"))
                 print(f"  !! {label}: did not compile", flush=True)
                 continue
