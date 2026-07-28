@@ -245,3 +245,102 @@ jobs:
         with:
           name: bench-results
           path: bench-results.json
+
+  # -------------------------------------------------------------------------
+  # Platforms nothing has ever run vkML on. Both are here to produce evidence,
+  # not to defend a property that is already established.
+  # -------------------------------------------------------------------------
+
+  macos:
+    name: macOS / MoltenVK
+    runs-on: macos-15
+    # An EXPERIMENT, not yet a gate, and continue-on-error says so honestly.
+    # The README lists MoltenVK among the drivers Vulkan reaches, and that claim
+    # has never been tested. Two outcomes, two different follow-ups:
+    #
+    #   MoltenVK provides bufferDeviceAddress, scalarBlockLayout and
+    #   timelineSemaphore -> this becomes a real gate, and continue-on-error
+    #   comes off in the same commit.
+    #
+    #   It does not -> vkML cannot run on Apple hardware at all. That belongs in
+    #   the README as a stated limit, and this job should be DELETED rather than
+    #   left permanently red, because a job nobody expects to pass trains
+    #   everyone to ignore the board.
+    #
+    # Revisit trigger: the first completed run. Do not leave this flag in place
+    # once the answer is known.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install MoltenVK and a shader compiler
+        # molten-vk is the ICD -- the driver itself. vulkan-loader provides the
+        # libvulkan the build links against, and glslang supplies
+        # glslangValidator, since Homebrew has no glslc outside shaderc.
+        run: brew install molten-vk vulkan-loader vulkan-headers vulkan-tools glslang
+
+      - name: Point the loader at the ICD
+        # The loader searches /usr/local/share/vulkan/icd.d, and Homebrew on
+        # Apple Silicon installs under /opt/homebrew, so it would otherwise find
+        # nothing. Discovered rather than hardcoded: the file name is MoltenVK's
+        # to choose, and a wrong guess would look identical to "no GPU".
+        run: |
+          icd=$(find "$(brew --prefix)/share/vulkan/icd.d" -name '*.json' 2>/dev/null | head -1)
+          echo "found ICD: ${icd:-NONE}"
+          find "$(brew --prefix)" -name '*icd*.json' 2>/dev/null | head
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pytest nanobind torch
+
+      - name: Build with the Vulkan backend
+        # New compiler coverage regardless of what MoltenVK turns out to
+        # support: nothing has built this with Apple Clang.
+        run: |
+          cmake --preset release -DVKML_VULKAN=ON -DVKML_BUILD_PYTHON=ON
+          cmake --build build/release -j$(sysctl -n hw.ncpu)
+
+      - name: What does MoltenVK actually offer?
+        # The question this job exists to answer, and the reason the report
+        # queries physical devices only: it prints a verdict even for a device
+        # the backend would refuse, which is the outcome worth knowing. It also
+        # prints "no Vulkan devices found" without failing, which is the third
+        # possibility here -- a runner VM with no Metal device at all.
+        run: python scripts/hardware_report.py
+
+      - name: Run the suite
+        run: python -m pytest tests/python -q
+
+  windows:
+    name: Windows / MSVC
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build and test with MSVC
+        # bash, not the Windows default of PowerShell: Actions only checks
+        # $LASTEXITCODE after the FINAL line of a pwsh block, so a configure
+        # failure followed by anything else would be reported as success. bash
+        # runs with -e and fails on the first bad command, like every other job.
+        shell: bash
+        # Deliberately CPU-only. The runner has no GPU and no Vulkan ICD, so a
+        # Vulkan build would compile code nothing could execute; what is
+        # genuinely untested here is the COMPILER. MSVC diverges from GCC and
+        # Clang enough that this is the most likely source of real findings, and
+        # it needs no driver to produce them.
+        #
+        # Configured directly rather than through a preset: the presets set
+        # CMAKE_BUILD_TYPE, which a multi-config generator ignores in favour of
+        # --config, and inheriting one here would quietly build the wrong type.
+        run: |
+          cmake -B build/msvc -DVKML_BUILD_PYTHON=OFF -DVKML_BUILD_BENCH=OFF
+          cmake --build build/msvc --config Release --parallel
+          ctest --test-dir build/msvc -C Release --output-on-failure
