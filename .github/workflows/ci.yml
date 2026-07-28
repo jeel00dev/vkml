@@ -17,8 +17,8 @@ jobs:
     name: layering + format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -47,7 +47,7 @@ jobs:
           - preset: asan
             compiler: clang++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install toolchain
         run: |
@@ -72,8 +72,8 @@ jobs:
     name: Python + PyTorch validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -122,8 +122,8 @@ jobs:
     name: Wheel builds and installs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -156,8 +156,8 @@ jobs:
     name: Vulkan suite on a second driver (lavapipe)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -194,8 +194,8 @@ jobs:
     name: Python suite under AddressSanitizer
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -226,7 +226,7 @@ jobs:
     name: Benchmark smoke run
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install toolchain
         run: sudo apt-get update -qq && sudo apt-get install -y cmake ninja-build
 
@@ -241,7 +241,7 @@ jobs:
         # baselines are recorded in docs/BASELINE-CPU.md from a known machine.
         run: ./build/relwithdebinfo/bin/vkml_bench --json > bench-results.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: bench-results
           path: bench-results.json
