@@ -576,3 +576,178 @@ def test_cnn_trains_and_matches_torch():
         t_opt.step()
 
         assert_close(f"CNN loss @ step {step}", v_loss, t_loss, Tol(1e-4, 1e-4))
+
+
+# ---------------------------------------------------------------------------
+# Attention
+#
+# Compared against torch's OWN MultiheadAttention with weights copied across,
+# which the matching parameter layout makes possible. A reference written here
+# would only prove the two agree with each other.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("embed_dim,heads,seq,batch", [(8, 2, 5, 2), (12, 3, 7, 1), (4, 4, 3, 3)])
+def test_multihead_attention_forward(embed_dim, heads, seq, batch):
+    torch_mha = torch.nn.MultiheadAttention(embed_dim, heads, batch_first=True)
+    vkml_mha = V.nn.MultiheadAttention(embed_dim, heads)
+    _copy_weights(vkml_mha, torch_mha)
+
+    x = make_input((batch, seq, embed_dim), seed=4000)
+    vx = V.tensor(x, requires_grad=True)
+    tx = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    vy = vkml_mha(vx)
+    ty, _ = torch_mha(tx, tx, tx, need_weights=False)
+
+    assert_shape("MHA forward", vy, ty)
+    assert_close("MHA forward", vy, ty, TOLERANCES["transcendental"], inputs=[x])
+
+    V.sum(V.mul(vy, vy)).backward()
+    (ty * ty).sum().backward()
+    assert_close("MHA grad", vx.grad, tx.grad, TOLERANCES["transcendental"], inputs=[x])
+
+
+def test_multihead_attention_causal():
+    """Causal masking against torch's own is_causal path."""
+    embed_dim, heads, seq = 8, 2, 6
+    torch_mha = torch.nn.MultiheadAttention(embed_dim, heads, batch_first=True)
+    vkml_mha = V.nn.MultiheadAttention(embed_dim, heads)
+    _copy_weights(vkml_mha, torch_mha)
+
+    x = make_input((2, seq, embed_dim), seed=4100)
+    causal = torch.nn.Transformer.generate_square_subsequent_mask(seq)
+
+    vy = vkml_mha(V.tensor(x), is_causal=True)
+    ty, _ = torch_mha(*(torch.from_numpy(x.copy()),) * 3, attn_mask=causal, need_weights=False)
+
+    assert_close("MHA causal", vy, ty, TOLERANCES["transcendental"], inputs=[x])
+
+
+def test_causal_mask_actually_blocks_the_future():
+    """Independent of torch, and the property causal attention exists for: an
+    output position must not change when a LATER input position changes.
+
+    A mask applied after the softmax, or one off by a diagonal, still produces
+    plausible numbers and a falling loss -- this is what catches it.
+    """
+    seq, embed_dim = 6, 8
+    mha = V.nn.MultiheadAttention(embed_dim, 2)
+
+    x = make_input((1, seq, embed_dim), seed=4200)
+    base = mha(V.tensor(x), is_causal=True).numpy()
+
+    perturbed = x.copy()
+    perturbed[0, -1, :] += 10.0            # change only the LAST position
+    after = mha(V.tensor(perturbed), is_causal=True).numpy()
+
+    # Every position but the last must be untouched.
+    assert np.allclose(base[0, :-1], after[0, :-1], atol=1e-5), \
+        "an earlier output changed when a later input did; attention is not causal"
+    # ...and the last one must actually have moved, or the test proves nothing.
+    assert not np.allclose(base[0, -1], after[0, -1], atol=1e-5)
+
+
+def test_attention_scale_is_per_head():
+    """1/sqrt(head_dim), not 1/sqrt(embed_dim). The wrong constant leaves the
+    model trainable and merely worse, so only a direct comparison catches it --
+    and the two differ only when head_dim != embed_dim, i.e. more than one head.
+    """
+    embed_dim, heads, seq = 16, 4, 5
+    torch_mha = torch.nn.MultiheadAttention(embed_dim, heads, batch_first=True)
+    vkml_mha = V.nn.MultiheadAttention(embed_dim, heads)
+    _copy_weights(vkml_mha, torch_mha)
+
+    x = make_input((1, seq, embed_dim), seed=4300, low=-4.0, high=4.0)
+    vy = vkml_mha(V.tensor(x))
+    ty, _ = torch_mha(*(torch.from_numpy(x.copy()),) * 3, need_weights=False)
+    assert_close("MHA scale", vy, ty, TOLERANCES["transcendental"], inputs=[x])
+
+
+def test_multihead_attention_cross_attention():
+    """Query from one sequence, key and value from another -- the path where
+    the three input projections are genuinely different tensors."""
+    embed_dim, heads = 8, 2
+    torch_mha = torch.nn.MultiheadAttention(embed_dim, heads, batch_first=True)
+    vkml_mha = V.nn.MultiheadAttention(embed_dim, heads)
+    _copy_weights(vkml_mha, torch_mha)
+
+    q = make_input((2, 4, embed_dim), seed=4400)
+    kv = make_input((2, 7, embed_dim), seed=4401)
+
+    vy = vkml_mha(V.tensor(q), V.tensor(kv), V.tensor(kv))
+    ty, _ = torch_mha(torch.from_numpy(q.copy()), torch.from_numpy(kv.copy()),
+                      torch.from_numpy(kv.copy()), need_weights=False)
+
+    assert_shape("MHA cross", vy, ty)
+    assert_close("MHA cross", vy, ty, TOLERANCES["transcendental"], inputs=[q, kv])
+
+
+def test_multihead_attention_rejects_indivisible_heads():
+    with pytest.raises(ValueError):
+        V.nn.MultiheadAttention(10, 3)
+
+
+@pytest.mark.parametrize("norm_first", [False, True])
+@pytest.mark.parametrize("activation", ["relu", "gelu"])
+def test_transformer_encoder_layer(norm_first, activation):
+    """Dropout is disabled on both sides: it is the one part that cannot match,
+    since the two libraries draw from different generators by design
+    (docs/ARCHITECTURE.md 7.2)."""
+    d_model, nhead, ff = 8, 2, 16
+    torch_layer = torch.nn.TransformerEncoderLayer(
+        d_model, nhead, dim_feedforward=ff, dropout=0.0, activation=activation,
+        batch_first=True, norm_first=norm_first)
+    vkml_layer = V.nn.TransformerEncoderLayer(
+        d_model, nhead, dim_feedforward=ff, dropout=0.0, activation=activation,
+        norm_first=norm_first)
+    _copy_weights(vkml_layer, torch_layer)
+    torch_layer.eval(); vkml_layer.eval()
+
+    x = make_input((2, 6, d_model), seed=4500)
+    vx = V.tensor(x, requires_grad=True)
+    tx = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    vy, ty = vkml_layer(vx), torch_layer(tx)
+    assert_shape("encoder layer", vy, ty)
+    assert_close(f"encoder layer(norm_first={norm_first},{activation})", vy, ty,
+                 TOLERANCES["transcendental"], inputs=[x])
+
+    V.sum(V.mul(vy, vy)).backward()
+    (ty * ty).sum().backward()
+    assert_close("encoder layer grad", vx.grad, tx.grad, TOLERANCES["transcendental"],
+                 inputs=[x])
+
+
+def test_transformer_stack_trains():
+    """Two encoder layers plus an embedding and a head, trained for a few steps.
+
+    Not compared against torch -- dropout is active and the generators differ by
+    design. What is asserted is that the whole stack produces finite gradients
+    and a falling loss, which a shape-only check would not.
+    """
+    vocab, d_model, seq = 20, 8, 5
+    model = V.nn.Sequential(
+        V.nn.Embedding(vocab, d_model),
+        V.nn.TransformerEncoderLayer(d_model, 2, dim_feedforward=16, dropout=0.1, seed=7),
+        V.nn.TransformerEncoderLayer(d_model, 2, dim_feedforward=16, dropout=0.1, seed=11),
+        V.nn.Flatten(),
+        V.nn.Linear(seq * d_model, 3),
+    )
+    model.train()
+    opt = V.optim.Adam(model.parameters(), lr=1e-2)
+
+    rng = np.random.default_rng(4600)
+    tokens = V.tensor(rng.integers(0, vocab, size=(4, seq)).astype(np.int64))
+    labels = V.tensor(rng.integers(0, 3, size=4).astype(np.int64))
+
+    losses = []
+    for _ in range(20):
+        opt.zero_grad()
+        loss = V.nn.cross_entropy(model(tokens), labels)
+        loss.backward()
+        opt.step()
+        losses.append(loss.item())
+
+    assert all(np.isfinite(losses)), losses
+    assert losses[-1] < losses[0], f"loss did not fall: {losses[0]:.4f} -> {losses[-1]:.4f}"

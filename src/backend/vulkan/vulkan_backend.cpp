@@ -14,6 +14,7 @@
 #include "vkml/spv/rand.h"
 #include "vkml/spv/index_select.h"
 #include "vkml/spv/scatter_add.h"
+#include "vkml/spv/slice_backward.h"
 #include "vkml/spv/fill.h"
 #include "vkml/spv/gemm_naive.h"
 #include "vkml/spv/gemm_db.h"
@@ -202,6 +203,21 @@ struct RandPush {
 };
 
 static_assert(sizeof(RandPush) <= 256, "rand push constants exceed the device budget");
+
+struct SliceBackwardPush {
+    uint64_t src;
+    uint64_t dst;
+    uint32_t n;
+    int32_t axis;
+    int32_t start;
+    int32_t stop;
+    int32_t step;
+    GpuOperand grad_op;
+    GpuOperand out_op;
+};
+
+static_assert(sizeof(SliceBackwardPush) <= 256,
+              "slice_backward push constants exceed the device budget");
 
 struct PoolPush {
     uint64_t src;
@@ -747,6 +763,11 @@ bool VulkanBackend::supports(const Node& node) const {
         // Counter-based, so the value depends only on the element index and the
         // push constants -- nothing to seed per invocation, nothing shared.
         case OpKind::Rand: return node.dtype == DType::F32;
+        // The output is freshly allocated and contiguous; the gradient may be
+        // any view, which its own strides carry.
+        case OpKind::SliceBackward:
+            return node.dtype == DType::F32 && node.src[0] != nullptr &&
+                   node.src[0]->dtype == DType::F32 && node.shape.is_contiguous();
         // Unary elementwise: one shader, one specialisation constant per op.
         case OpKind::Contiguous:
         case OpKind::Relu:
@@ -1021,6 +1042,38 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 rec.dispatch(
                     pipes.get("binary", spv::binary, spv::binary_size, sizeof(BinaryPush), cfg),
                     &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::SliceBackward: {
+                const Node& grad = *node->src[0];
+                const size_t esz = dtype_size(node->dtype);
+                const auto sp = node->params.get<SliceParams>();
+
+                SliceBackwardPush push{};
+                push.src = address_of(grad);
+                push.dst = address_of(*node);
+                push.n = n_elems;
+                // Operands are right-padded to rank 4, so the axis moves with
+                // them; using the unpadded index would address the wrong extent.
+                push.axis = static_cast<int32_t>(kMaxDims - node->shape.ndim() + sp.axis);
+                push.start = static_cast<int32_t>(sp.start);
+                push.stop = static_cast<int32_t>(sp.stop);
+                push.step = static_cast<int32_t>(sp.step);
+                push.grad_op = to_gpu_operand(grad.shape, esz);
+                push.out_op = to_gpu_operand(node->shape, esz);
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg};
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "slice_backward", cfg, sizeof(SliceBackwardPush),
+                                   (n_elems + wg - 1) / wg, impl_->caps.subgroup_size);
+                }
+                rec.dispatch(pipes.get("slice_backward", spv::slice_backward,
+                                       spv::slice_backward_size, sizeof(SliceBackwardPush), cfg),
+                             &push, sizeof(push), n_elems);
                 break;
             }
 

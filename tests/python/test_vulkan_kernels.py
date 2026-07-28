@@ -1461,3 +1461,84 @@ def test_device_and_cpu_training_agree():
     gpu, cpu = train(gpu_device()), train(V.cpu)
     ctx = Context(op="cross_entropy", layout=Layout((6, 5)), dtype="f32", seed=SEED, inputs=[x])
     compare(ctx, gpu, cpu)
+
+
+@pytest.mark.parametrize("shape,axis,start,stop,step", [
+    ((8,), 0, 2, 6, 1),
+    ((8,), 0, 1, 8, 3),          # step > 1: skipped positions inside the range
+    ((4, 6), 1, 1, 5, 2),
+    ((4, 6), 0, 0, 4, 1),        # whole axis
+    ((2, 3, 5), 2, 3, 5, 1),
+    ((257,), 0, 5, 250, 7),      # crosses a workgroup boundary
+])
+def test_slice_backward_on_gpu(shape, axis, start, stop, step):
+    """Positions the slice skipped -- including those INSIDE its range when the
+    step exceeds one -- must receive exactly zero, not a neighbour's gradient."""
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, shape, "any")
+
+    def grad(dev):
+        v = V.tensor(x, device=dev, requires_grad=True)
+        key = [slice(None)] * len(shape)
+        key[axis] = slice(start, stop, step)
+        V.sum(v[tuple(key)] * 2.0).backward()
+        return v.grad.numpy()
+
+    ctx = Context(op="copy", layout=Layout(shape), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, grad(gpu_device()), grad(V.cpu))
+
+
+def test_transformer_trains_on_the_device():
+    """Embedding, attention, feed-forward, residuals and normalisation on
+    Vulkan, with an optimiser step.
+
+    This is what needed slice_backward: attention slices the packed
+    in_proj_weight, so its gradient scatters back through a narrowing.
+    """
+    vocab, d_model, seq = 20, 8, 5
+    model = V.nn.Sequential(
+        V.nn.Embedding(vocab, d_model),
+        V.nn.TransformerEncoderLayer(d_model, 2, dim_feedforward=16, dropout=0.0),
+        V.nn.Flatten(),
+        V.nn.Linear(seq * d_model, 3),
+    ).to(gpu_device())
+    model.train()
+    opt = V.optim.Adam(model.parameters(), lr=1e-2)
+
+    rng = np.random.default_rng(SEED)
+    tokens = V.tensor(rng.integers(0, vocab, size=(4, seq)).astype(np.int64),
+                      device=gpu_device())
+    labels = V.tensor(rng.integers(0, 3, size=4).astype(np.int64), device=gpu_device())
+
+    losses = []
+    for _ in range(25):
+        opt.zero_grad()
+        loss = V.nn.cross_entropy(model(tokens), labels)
+        loss.backward()
+        opt.step()
+        losses.append(loss.item())
+
+    assert all(np.isfinite(losses)), losses
+    assert losses[-1] < losses[0] * 0.5, f"loss did not fall: {losses[0]:.4f} -> {losses[-1]:.4f}"
+
+
+def test_attention_agrees_across_backends():
+    """The whole attention block compared between backends -- projection,
+    head split, scaled scores, softmax, context and output projection."""
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, (2, 6, 8), "any")
+    init = {
+        "in_proj_weight": make_data(rng, (24, 8), "any"),
+        "in_proj_bias": make_data(rng, (24,), "any"),
+        "out_proj.weight": make_data(rng, (8, 8), "any"),
+        "out_proj.bias": make_data(rng, (8,), "any"),
+    }
+
+    def run(dev):
+        mha = V.nn.MultiheadAttention(8, 2)
+        mha.load_state_dict(init)
+        mha.to(dev)
+        return mha(V.tensor(x, device=dev), is_causal=True).numpy()
+
+    ctx = Context(op="softmax", layout=Layout((2, 6, 8)), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, run(gpu_device()), run(V.cpu))

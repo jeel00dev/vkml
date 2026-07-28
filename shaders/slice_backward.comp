@@ -1,0 +1,70 @@
+#version 450
+
+// Adjoint of a strided narrowing: scatter the gradient back into a zero-filled
+// tensor of the ORIGINAL extent.
+//
+// One thread per OUTPUT element, pulling. Every position the slice did not
+// select writes zero; the selected ones read the gradient element they came
+// from. Pulling means no pre-zeroing pass and no contention -- and unlike
+// col2im or scatter_add there is nothing to accumulate anyway, because a slice
+// with a positive step selects each source position at most once.
+//
+// The output is contiguous (the graph builder allocates it fresh), but the
+// gradient may be an arbitrary view, so its offset goes through its own
+// strides.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;      // the incoming gradient, narrowed extent
+    uint64_t dst;      // the original extent, freshly allocated
+    uint     n;        // element count of dst
+    int      axis;     // padded to rank 4, matching the Operand layout
+    int      start;
+    int      stop;
+    int      step;
+    Operand  grad_op;
+    Operand  out_op;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+
+    // Unravel over the OUTPUT extents, keeping the per-axis indices: the axis
+    // position is needed to decide membership, and the rest are shared by both
+    // operands.
+    int idx[VKML_MAX_DIMS];
+    uint rem = i;
+    [[unroll]] for (int d = VKML_MAX_DIMS - 1; d >= 0; --d) {
+        idx[d] = int(rem % p.out_op.ne[d]);
+        rem /= p.out_op.ne[d];
+    }
+
+    uint out_off = 0;
+    [[unroll]] for (int d = 0; d < VKML_MAX_DIMS; ++d) {
+        out_off += uint(idx[d]) * p.out_op.nb[d];
+    }
+
+    const int pos = idx[p.axis];
+    // Membership is three conditions, and the modulus is the one that is easy
+    // to forget: with a step above 1 the slice skips positions inside its own
+    // range, and those must receive zero rather than a neighbour's gradient.
+    const bool selected =
+        pos >= p.start && pos < p.stop && ((pos - p.start) % p.step) == 0;
+
+    if (!selected) {
+        F32Buf(p.dst).v[out_off] = 0.0;
+        return;
+    }
+
+    idx[p.axis] = (pos - p.start) / p.step;
+    uint grad_off = 0;
+    [[unroll]] for (int d = 0; d < VKML_MAX_DIMS; ++d) {
+        grad_off += uint(idx[d]) * p.grad_op.nb[d];
+    }
+    F32Buf(p.dst).v[out_off] = F32Buf(p.src).v[grad_off];
+}

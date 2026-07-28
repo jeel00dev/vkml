@@ -683,3 +683,194 @@ class LayerNorm(Module):
 
     def __repr__(self) -> str:
         return f"LayerNorm({list(self.normalized_shape)}, eps={self.eps})"
+
+
+# ---------------------------------------------------------------------------
+# Attention
+# ---------------------------------------------------------------------------
+
+
+class MultiheadAttention(Module):
+    """Scaled dot-product attention over several heads.
+
+    Parameter layout follows torch.nn.MultiheadAttention exactly -- a packed
+    ``in_proj_weight`` of shape (3E, E) plus an ``out_proj`` submodule -- so a
+    torch state_dict loads without rearrangement. That is not cosmetic: it is
+    what lets the validation suite compare against torch's own implementation
+    rather than against a reference written here, which would only prove the two
+    agree with each other.
+
+    TWO DELIBERATE DIVERGENCES FROM TORCH, both documented and pinned by tests:
+
+    - ``batch_first`` defaults to True. torch defaults to False, meaning
+      (S, B, E), which is a legacy layout almost every caller overrides.
+    - Returns the output tensor alone, not ``(output, weights)``. The averaged
+      per-head weights torch returns second are a debugging aid, and a tuple
+      that is nearly always destructured-and-discarded is worse to use.
+    """
+
+    def __init__(self, embed_dim: int, num_heads: int, bias: bool = True,
+                 batch_first: bool = True):
+        super().__init__()
+        if embed_dim % num_heads != 0:
+            raise ValueError(
+                f"embed_dim {embed_dim} is not divisible by num_heads {num_heads}"
+            )
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.batch_first = batch_first
+
+        bound = 1.0 / math.sqrt(embed_dim)
+        rng = _np.random.default_rng()
+        self.in_proj_weight = V.tensor(
+            rng.uniform(-bound, bound, size=(3 * embed_dim, embed_dim)).astype(_np.float32),
+            requires_grad=True,
+        )
+        if bias:
+            self.in_proj_bias = V.tensor(_np.zeros(3 * embed_dim, dtype=_np.float32),
+                                         requires_grad=True)
+        self.out_proj = Linear(embed_dim, embed_dim, bias=bias)
+
+    def _split_heads(self, x: V.Tensor) -> V.Tensor:
+        """(B, S, E) -> (B, H, S, head_dim), which is what a batched matmul needs.
+
+        Rank 4 is the maximum this library expresses, and this is exactly at it:
+        two batch axes (B, H) over a 2-D matmul. Adding a fifth axis anywhere in
+        attention would not fit.
+        """
+        batch, seq, _ = x.shape
+        return x.contiguous().reshape([batch, seq, self.num_heads, self.head_dim]) \
+                .permute([0, 2, 1, 3])
+
+    def _merge_heads(self, x: V.Tensor) -> V.Tensor:
+        batch, _, seq, _ = x.shape
+        return x.permute([0, 2, 1, 3]).contiguous().reshape([batch, seq, self.embed_dim])
+
+    def _project(self, x: V.Tensor, index: int) -> V.Tensor:
+        """Apply the query, key or value third of the packed input projection.
+
+        Three separate matmuls rather than one packed one followed by a split.
+        The FLOP count is identical -- (B,S,E)@(E,E) three times against
+        (B,S,E)@(E,3E) once -- so this costs two extra dispatches and buys a
+        single path that serves self- and cross-attention alike, with no branch
+        on whether the three inputs happen to be the same tensor.
+        """
+        lo = index * self.embed_dim
+        hi = lo + self.embed_dim
+        weight = self.in_proj_weight[lo:hi]
+        y = V.matmul(x, weight.transpose(-2, -1))
+        bias = self._parameters.get("in_proj_bias")
+        if bias is not None:
+            y = y + bias[lo:hi]
+        return y
+
+    def forward(self, query: V.Tensor, key: V.Tensor = None, value: V.Tensor = None,
+                attn_mask: V.Tensor = None, is_causal: bool = False) -> V.Tensor:
+        key = query if key is None else key
+        value = query if value is None else value
+
+        if not self.batch_first:
+            query, key, value = (t.transpose(0, 1) for t in (query, key, value))
+
+        q = self._split_heads(self._project(query, 0))
+        k = self._split_heads(self._project(key, 1))
+        v = self._split_heads(self._project(value, 2))
+
+        # 1/sqrt(head_dim), NOT 1/sqrt(embed_dim). Using the model width instead
+        # is a plausible-looking error that leaves the model trainable and
+        # merely worse, so it would not surface as a failure.
+        scores = V.matmul(q, k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
+
+        mask = attn_mask
+        if is_causal:
+            if mask is not None:
+                raise ValueError("pass either attn_mask or is_causal, not both")
+            mask = self._causal_mask(q.shape[2], k.shape[2], query.device)
+
+        if mask is not None:
+            # Masked BEFORE the softmax, with -inf rather than after with zero:
+            # zeroing afterwards leaves the surviving weights un-normalised, and
+            # every row still sums to one only if the masking happens first.
+            scores = V.masked_fill(scores, mask, float("-inf"))
+
+        context = V.matmul(V.softmax(scores, -1), v)
+        out = self.out_proj(self._merge_heads(context))
+        return out if self.batch_first else out.transpose(0, 1)
+
+    @staticmethod
+    def _causal_mask(q_len: int, k_len: int, device) -> V.Tensor:
+        """True where a position must NOT attend -- torch's convention for a
+        boolean mask.
+
+        Strictly above the diagonal, so a position always sees itself. That
+        matters beyond correctness: a row masked everywhere would softmax a row
+        of -inf into NaN.
+        """
+        ones = V.full([q_len, k_len], 1.0, device=device)
+        return V.greater(V.triu(ones, 1), V.full([], 0.0, device=device))
+
+    def __repr__(self) -> str:
+        return f"MultiheadAttention(embed_dim={self.embed_dim}, num_heads={self.num_heads})"
+
+
+class TransformerEncoderLayer(Module):
+    """Self-attention followed by a feed-forward block, each residual.
+
+    Parameter names match torch.nn.TransformerEncoderLayer (``self_attn``,
+    ``linear1``, ``linear2``, ``norm1``, ``norm2``) so a state_dict loads
+    unchanged and the comparison is against torch's own layer.
+
+    ``norm_first`` selects pre- or post-normalisation. Post (torch's default) is
+    the original formulation; pre is what deep stacks use, because normalising
+    inside the residual branch keeps the gradient path to the input clean.
+    """
+
+    def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048,
+                 dropout: float = 0.1, activation: str = "relu",
+                 layer_norm_eps: float = 1e-5, batch_first: bool = True,
+                 norm_first: bool = False, seed: int = 0):
+        super().__init__()
+        self.d_model = d_model
+        self.nhead = nhead
+        self.norm_first = norm_first
+        self.batch_first = batch_first
+
+        if activation not in ("relu", "gelu"):
+            raise ValueError(f"unsupported activation {activation!r}; expected relu or gelu")
+        self.activation = activation
+
+        self.self_attn = MultiheadAttention(d_model, nhead, batch_first=batch_first)
+        self.linear1 = Linear(d_model, dim_feedforward)
+        self.linear2 = Linear(dim_feedforward, d_model)
+        self.norm1 = LayerNorm(d_model, eps=layer_norm_eps)
+        self.norm2 = LayerNorm(d_model, eps=layer_norm_eps)
+
+        # Three independent dropouts, as torch has: distinct seeds so they do
+        # not draw the same mask as each other.
+        self.dropout1 = Dropout(dropout, seed=seed + 1)
+        self.dropout2 = Dropout(dropout, seed=seed + 2)
+        self.dropout = Dropout(dropout, seed=seed + 3)
+
+    def _attention_block(self, x: V.Tensor, mask, is_causal: bool) -> V.Tensor:
+        return self.dropout1(self.self_attn(x, x, x, attn_mask=mask, is_causal=is_causal))
+
+    def _feed_forward_block(self, x: V.Tensor) -> V.Tensor:
+        hidden = self.linear1(x)
+        hidden = V.relu(hidden) if self.activation == "relu" else V.gelu(hidden)
+        return self.dropout2(self.linear2(self.dropout(hidden)))
+
+    def forward(self, src: V.Tensor, src_mask: V.Tensor = None,
+                is_causal: bool = False) -> V.Tensor:
+        x = src
+        if self.norm_first:
+            x = x + self._attention_block(self.norm1(x), src_mask, is_causal)
+            x = x + self._feed_forward_block(self.norm2(x))
+        else:
+            x = self.norm1(x + self._attention_block(x, src_mask, is_causal))
+            x = self.norm2(x + self._feed_forward_block(x))
+        return x
+
+    def __repr__(self) -> str:
+        return (f"TransformerEncoderLayer(d_model={self.d_model}, nhead={self.nhead}, "
+                f"norm_first={self.norm_first})")
