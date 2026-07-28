@@ -86,6 +86,25 @@ inline void store(Node& n, int64_t linear, T value) noexcept {
     std::memcpy(bytes + linear_to_offset(linear, n.shape), &value, sizeof(T));
 }
 
+/// Reads element `linear` as a float, whatever floating type the node stores.
+///
+/// The runtime-dispatched counterpart to `widen`, for the few kernels whose
+/// shape makes templating on the storage type awkward -- scatter_add, whose
+/// accumulator is indexed by a value only known at run time. Prefer the
+/// template where it fits: this branches per element.
+[[nodiscard]] inline float load_float(const Node& n, int64_t linear) noexcept {
+    return n.dtype == DType::F16 ? widen(load<Half>(n, linear)) : load<float>(n, linear);
+}
+
+/// Writes `value` as whatever floating type the node stores, narrowing once.
+inline void store_float(Node& n, int64_t linear, float value) noexcept {
+    if (n.dtype == DType::F16) {
+        store<Half>(n, linear, Half(value));
+        return;
+    }
+    store<float>(n, linear, value);
+}
+
 /// True when a whole-tensor walk can use a flat linear loop.
 [[nodiscard]] inline bool all_contiguous(const Node& a) noexcept { return a.shape.is_contiguous(); }
 

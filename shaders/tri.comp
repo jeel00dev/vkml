@@ -16,6 +16,10 @@ layout(local_size_x_id = 0) in;
 layout(constant_id = 1) const bool UPPER = true;
 layout(constant_id = 2) const bool CONTIGUOUS = false;
 
+// Storage type of the operands and result. Conversion happens at the memory
+// boundary; everything between is float (docs/ARCHITECTURE.md 7.3).
+layout(constant_id = 3) const uint DTYPE = T_F32;
+
 layout(push_constant, scalar) uniform Params {
     uint64_t src;
     uint64_t dst;
@@ -45,5 +49,5 @@ void main() {
     const uint si = CONTIGUOUS ? i : operand_offset(i, p.in_op);
     const uint di = CONTIGUOUS ? i : operand_offset(i, p.out_op);
 
-    F32Buf(p.dst).v[di] = keep ? F32Buf(p.src).v[si] : 0.0;
+    store_f(p.dst, di, keep ? load_f(p.src, si, DTYPE) : 0.0, DTYPE);
 }

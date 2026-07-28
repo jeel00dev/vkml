@@ -286,10 +286,11 @@ void k_clamp(Node& out) {
 /// element is, not on its value. The row and column are recovered from the
 /// linear index, which is exact because that index walks the logical shape in
 /// row-major order regardless of how the operand is strided.
-void k_tri(Node& out, bool upper) {
-    if (out.dtype != DType::F32) {
-        unsupported_dtype(out);
-    }
+/// `T` is the storage type. A triangular mask selects or zeroes whole elements
+/// rather than computing on them, so this moves the stored representation
+/// directly instead of widening -- the same reasoning as k_where.
+template <typename T>
+void tri_impl(Node& out, bool upper) {
     const Node& in = *out.src[0];
     const auto p = out.params.get<TriParams>();
 
@@ -303,7 +304,15 @@ void k_tri(Node& out, bool upper) {
         const int64_t row = (i / width) % height;
         const int64_t offset = col - row;
         const bool keep = upper ? offset >= p.diagonal : offset <= p.diagonal;
-        store<float>(out, i, keep ? load<float>(in, i) : 0.0F);
+        store<T>(out, i, keep ? load<T>(in, i) : T{});
+    }
+}
+
+void k_tri(Node& out, bool upper) {
+    switch (out.dtype) {
+        case DType::F32: tri_impl<float>(out, upper); return;
+        case DType::F16: tri_impl<Half>(out, upper); return;
+        default: unsupported_dtype(out);
     }
 }
 

@@ -20,6 +20,10 @@
 
 layout(local_size_x_id = 0) in;
 
+// Storage type of the operands and result. Conversion happens at the memory
+// boundary; everything between is float (docs/ARCHITECTURE.md 7.3).
+layout(constant_id = 1) const uint DTYPE = T_F32;
+
 layout(push_constant, scalar) uniform Params {
     uint64_t src;
     uint64_t dst;
@@ -65,8 +69,8 @@ void main() {
 
             const int row  = c * patch_size + ki * p.kernel_w + kj;
             const int from = (b * p.rows + row) * positions + oh * p.out_w + ow;
-            acc += F32Buf(p.src).v[operand_offset(uint(from), p.in_op)];
+            acc += load_f(p.src, operand_offset(uint(from), p.in_op), DTYPE);
         }
     }
-    F32Buf(p.dst).v[i] = acc;
+    store_f(p.dst, i, acc, DTYPE);
 }

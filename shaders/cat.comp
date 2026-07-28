@@ -17,6 +17,10 @@
 
 layout(local_size_x_id = 0) in;
 
+// Storage type of the operands and result. Conversion happens at the memory
+// boundary; everything between is float (docs/ARCHITECTURE.md 7.3).
+layout(constant_id = 2) const uint DTYPE = T_F32;
+
 // Only removes the operand-offset mapping. The index arithmetic below is
 // required either way, because a source position is never equal to the output
 // position except in the degenerate case of an empty second operand.
@@ -53,9 +57,9 @@ void main() {
 
     if (from_a) {
         const uint si = CONTIGUOUS ? linear : operand_offset(linear, p.a_op);
-        F32Buf(p.dst).v[di] = F32Buf(p.a).v[si];
+        store_f(p.dst, di, load_f(p.a, si, DTYPE), DTYPE);
     } else {
         const uint si = CONTIGUOUS ? linear : operand_offset(linear, p.b_op);
-        F32Buf(p.dst).v[di] = F32Buf(p.b).v[si];
+        store_f(p.dst, di, load_f(p.b, si, DTYPE), DTYPE);
     }
 }

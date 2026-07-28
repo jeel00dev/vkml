@@ -5,6 +5,7 @@
 #include "vkml/util/assert.h"
 
 #include <cstring>
+#include <vector>
 #include <format>
 
 namespace vkml::cpu {
@@ -382,7 +383,7 @@ void k_scatter_add(Node& out) {
     const Node& idx = *out.src[1];
     const int axis = out.params.get<AxisParams>().axis;
 
-    if (out.dtype != DType::F32) {
+    if (!is_floating(out.dtype)) {
         unsupported_dtype(out);
     }
     VKML_ASSERT(out.shape.is_contiguous(), "scatter_add output must be contiguous");
@@ -395,7 +396,19 @@ void k_scatter_add(Node& out) {
 
     const AxisSplit s = axis_split(src.shape, axis);
     const int64_t out_extent = out.shape.dim(axis);
-    auto* dst = static_cast<float*>(out.data());
+    // Accumulated in a float scratch rather than in the output buffer.
+    //
+    // Repeated indices are the whole point of this operator, so a destination
+    // element is summed many times -- and for f16 storage, adding into it
+    // in place would round after every contribution. That is precisely the
+    // 16-bit accumulator ARCHITECTURE.md 7.3 forbids, and it is also not what
+    // the Vulkan kernel does: that one sums into a float and narrows once.
+    // Matching it here is what keeps the two bit-comparable.
+    //
+    // The scratch costs one float per output element. The CPU backend is the
+    // correctness oracle and its performance is explicitly last (kernels_matmul
+    // says the same), so buying exactness with a temporary is the right trade.
+    std::vector<float> acc(static_cast<size_t>(out.shape.numel()), 0.0F);
 
     for (int64_t i = 0; i < n; ++i) {
         const int64_t rest = i % s.inner;
@@ -406,7 +419,12 @@ void k_scatter_add(Node& out) {
         VKML_CHECK(j >= 0 && j < out_extent, IndexError,
                    "scatter_add: index[{}] = {} is out of range for extent {}", k, j, out_extent);
 
-        dst[(outer * out_extent + j) * s.inner + rest] += load<float>(src, i);
+        const int64_t at = (outer * out_extent + j) * s.inner + rest;
+        acc[static_cast<size_t>(at)] += load_float(src, i);
+    }
+
+    for (size_t i = 0; i < acc.size(); ++i) {
+        store_float(out, static_cast<int64_t>(i), acc[i]);
     }
 }
 
@@ -431,11 +449,11 @@ struct Window {
 /// Extracts sliding blocks. One output element is read from exactly one image
 /// position, or is zero when the window falls outside the padded image -- so
 /// this is a gather and needs no accumulation.
-void k_im2col(Node& out) {
+/// `T` is the storage type; every intermediate is float, so f16 is a storage
+/// format and never an accumulator (docs/ARCHITECTURE.md 7.3).
+template <typename T>
+void k_im2col_impl(Node& out) {
     const Node& in = *out.src[0];
-    if (out.dtype != DType::F32) {
-        unsupported_dtype(out);
-    }
     const auto p = out.params.get<UnfoldParams>();
     const Window w = window_of(p, out.shape.dim(1));
 
@@ -458,7 +476,7 @@ void k_im2col(Node& out) {
                 const bool inside = h >= 0 && h < p.image_h && x >= 0 && x < p.image_w;
                 const int64_t src = ((n * w.channels + c) * p.image_h + h) * p.image_w + x;
                 const int64_t dst = (n * out.shape.dim(1) + row) * positions + pos;
-                store<float>(out, dst, inside ? load<float>(in, src) : 0.0F);
+                store<T>(out, dst, inside ? load<T>(in, src) : T{});
             }
         }
     }
@@ -477,11 +495,11 @@ void k_im2col(Node& out) {
 /// The scan is bounded by the kernel size, not by the number of windows: for a
 /// given image position only kernel_h * kernel_w window offsets can reach it,
 /// and each determines at most one window.
-void k_col2im(Node& out) {
+/// `T` is the storage type; every intermediate is float, so f16 is a storage
+/// format and never an accumulator (docs/ARCHITECTURE.md 7.3).
+template <typename T>
+void k_col2im_impl(Node& out) {
     const Node& cols = *out.src[0];
-    if (out.dtype != DType::F32) {
-        unsupported_dtype(out);
-    }
     const auto p = out.params.get<UnfoldParams>();
     const Window w = window_of(p, cols.shape.dim(1));
 
@@ -515,11 +533,11 @@ void k_col2im(Node& out) {
                     continue;
                 }
                 const int64_t row = c * patch + ki * p.kernel_w + kj;
-                acc += load<float>(cols,
-                                   (n * cols.shape.dim(1) + row) * positions + oh * w.out_w + ow);
+                acc += widen(
+                    load<T>(cols, (n * cols.shape.dim(1) + row) * positions + oh * w.out_w + ow));
             }
         }
-        store<float>(out, i, acc);
+        store<T>(out, i, static_cast<T>(acc));
     }
 }
 
@@ -561,11 +579,11 @@ template <typename Load>
     return best_offset;
 }
 
-void k_max_pool2d(Node& out) {
+/// `T` is the storage type; every intermediate is float, so f16 is a storage
+/// format and never an accumulator (docs/ARCHITECTURE.md 7.3).
+template <typename T>
+void k_max_pool2d_impl(Node& out) {
     const Node& in = *out.src[0];
-    if (out.dtype != DType::F32) {
-        unsupported_dtype(out);
-    }
     const auto p = out.params.get<UnfoldParams>();
 
     const int64_t out_h = out.shape.dim(2);
@@ -575,7 +593,7 @@ void k_max_pool2d(Node& out) {
     for (int64_t plane = 0; plane < planes; ++plane) {
         const int64_t base = plane * p.image_h * p.image_w;
         auto load_at = [&](int64_t h, int64_t x) {
-            return load<float>(in, base + h * p.image_w + x);
+            return widen(load<T>(in, base + h * p.image_w + x));
         };
 
         for (int64_t oh = 0; oh < out_h; ++oh) {
@@ -585,7 +603,7 @@ void k_max_pool2d(Node& out) {
                             ow);
                 const int64_t h = oh * p.stride_h - p.pad_h + (offset / p.kernel_w) * p.dilation_h;
                 const int64_t x = ow * p.stride_w - p.pad_w + (offset % p.kernel_w) * p.dilation_w;
-                store<float>(out, (plane * out_h + oh) * out_w + ow, load_at(h, x));
+                store<T>(out, (plane * out_h + oh) * out_w + ow, static_cast<T>(load_at(h, x)));
             }
         }
     }
@@ -605,12 +623,12 @@ void k_max_pool2d(Node& out) {
 /// needed because the argmax is recomputed rather than stored. Storing it would
 /// need a second output per node, which the graph does not have and which is
 /// not worth introducing for one operator.
-void k_max_pool2d_backward(Node& out) {
+/// `T` is the storage type; every intermediate is float, so f16 is a storage
+/// format and never an accumulator (docs/ARCHITECTURE.md 7.3).
+template <typename T>
+void k_max_pool2d_backward_impl(Node& out) {
     const Node& grad = *out.src[0];
     const Node& in = *out.src[1];
-    if (out.dtype != DType::F32) {
-        unsupported_dtype(out);
-    }
     const auto p = out.params.get<UnfoldParams>();
 
     const int64_t out_h = grad.shape.dim(2);
@@ -620,7 +638,7 @@ void k_max_pool2d_backward(Node& out) {
     for (int64_t plane = 0; plane < planes; ++plane) {
         const int64_t base = plane * p.image_h * p.image_w;
         auto load_at = [&](int64_t h, int64_t x) {
-            return load<float>(in, base + h * p.image_w + x);
+            return widen(load<T>(in, base + h * p.image_w + x));
         };
 
         for (int64_t h = 0; h < p.image_h; ++h) {
@@ -651,13 +669,45 @@ void k_max_pool2d_backward(Node& out) {
                         // This position receives the window's gradient only if
                         // it is that window's first maximum.
                         if (argmax_in_window(p, oh, ow, load_at) == ki * p.kernel_w + kj) {
-                            acc += load<float>(grad, (plane * out_h + oh) * out_w + ow);
+                            acc += widen(load<T>(grad, (plane * out_h + oh) * out_w + ow));
                         }
                     }
                 }
-                store<float>(out, base + h * p.image_w + x, acc);
+                store<T>(out, base + h * p.image_w + x, static_cast<T>(acc));
             }
         }
+    }
+}
+
+void k_im2col(Node& out) {
+    switch (out.dtype) {
+        case DType::F32: k_im2col_impl<float>(out); return;
+        case DType::F16: k_im2col_impl<Half>(out); return;
+        default: unsupported_dtype(out);
+    }
+}
+
+void k_col2im(Node& out) {
+    switch (out.dtype) {
+        case DType::F32: k_col2im_impl<float>(out); return;
+        case DType::F16: k_col2im_impl<Half>(out); return;
+        default: unsupported_dtype(out);
+    }
+}
+
+void k_max_pool2d(Node& out) {
+    switch (out.dtype) {
+        case DType::F32: k_max_pool2d_impl<float>(out); return;
+        case DType::F16: k_max_pool2d_impl<Half>(out); return;
+        default: unsupported_dtype(out);
+    }
+}
+
+void k_max_pool2d_backward(Node& out) {
+    switch (out.dtype) {
+        case DType::F32: k_max_pool2d_backward_impl<float>(out); return;
+        case DType::F16: k_max_pool2d_backward_impl<Half>(out); return;
+        default: unsupported_dtype(out);
     }
 }
 

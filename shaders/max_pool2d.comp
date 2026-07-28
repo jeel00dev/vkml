@@ -21,6 +21,11 @@ layout(local_size_x_id = 0) in;
 // true:  adjoint, one thread per INPUT element.
 layout(constant_id = 1) const bool BACKWARD = false;
 
+// Storage type of the operands and result. Conversion happens at the memory
+// boundary; everything between is float (docs/ARCHITECTURE.md 7.3). The
+// argmax the backward pass recovers is an index, so it is unaffected.
+layout(constant_id = 2) const uint DTYPE = T_F32;
+
 layout(push_constant, scalar) uniform Params {
     uint64_t src;      // forward: input.  backward: incoming gradient.
     uint64_t image;    // backward only: the original input, for the argmax.
@@ -52,7 +57,7 @@ int argmax_in_window(uint64_t plane_base, int oh, int ow) {
             const int x = ow * p.stride_w - p.pad_w + kj * p.dilation_w;
             if (x < 0 || x >= p.image_w) { continue; }
 
-            const float v = F32Buf(plane_base).v[h * p.image_w + x];
+            const float v = load_f(plane_base, h * p.image_w + x, DTYPE);
             if (v > best) {
                 best = v;
                 best_offset = ki * p.kernel_w + kj;
@@ -73,7 +78,7 @@ void forward(uint i) {
 
     const int h = oh * p.stride_h - p.pad_h + (offset / p.kernel_w) * p.dilation_h;
     const int x = ow * p.stride_w - p.pad_w + (offset % p.kernel_w) * p.dilation_w;
-    F32Buf(p.dst).v[i] = F32Buf(base).v[h * p.image_w + x];
+    store_f(p.dst, i, load_f(base, h * p.image_w + x, DTYPE), DTYPE);
 }
 
 void backward(uint i) {
@@ -103,11 +108,11 @@ void backward(uint i) {
 
             // Only the window's first maximum receives its gradient.
             if (argmax_in_window(base, oh, ow) == ki * p.kernel_w + kj) {
-                acc += F32Buf(p.src).v[(plane * p.out_h + oh) * p.out_w + ow];
+                acc += load_f(p.src, (plane * p.out_h + oh) * p.out_w + ow, DTYPE);
             }
         }
     }
-    F32Buf(p.dst).v[i] = acc;
+    store_f(p.dst, i, acc, DTYPE);
 }
 
 void main() {

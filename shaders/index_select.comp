@@ -13,6 +13,10 @@
 
 layout(local_size_x_id = 0) in;
 
+// Storage type of the operands and result. Conversion happens at the memory
+// boundary; everything between is float (docs/ARCHITECTURE.md 7.3).
+layout(constant_id = 1) const uint DTYPE = T_F32;
+
 layout(push_constant, scalar) uniform Params {
     uint64_t src;
     uint64_t index;
@@ -41,6 +45,6 @@ void main() {
 
     const uint from = (outer * p.src_extent + j) * p.inner + rest;
 
-    F32Buf(p.dst).v[operand_offset(i, p.out_op)] =
-        F32Buf(p.src).v[operand_offset(from, p.in_op)];
+    store_f(p.dst, operand_offset(i, p.out_op),
+            load_f(p.src, operand_offset(from, p.in_op), DTYPE), DTYPE);
 }

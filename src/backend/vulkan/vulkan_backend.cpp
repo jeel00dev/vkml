@@ -839,31 +839,35 @@ bool VulkanBackend::supports(const Node& node) const {
         // indexes the last two extents directly, so it is re-checked here
         // rather than trusted across a layer boundary.
         case OpKind::Triu:
-        case OpKind::Tril: return node.dtype == DType::F32 && node.shape.ndim() >= 2;
+        case OpKind::Tril: return is_floating(node.dtype) && node.shape.ndim() >= 2;
         // The CPU kernel is byte-wise and so dtype-generic; the shader reads
         // through F32Buf, so it claims only F32 and everything else falls back.
-        case OpKind::Cat: return node.dtype == DType::F32 && binary_srcs_are_float(node);
+        case OpKind::Cat:
+            return is_floating(node.dtype) && binary_srcs_are_float(node) &&
+                   node.src[0]->dtype == node.dtype;
         // Values are F32, the index is I64. Both shaders read the index through
         // I64Buf, so the dtype is checked rather than assumed.
         // Window geometry is carried in params and the output is freshly
         // allocated, so only the element type needs checking.
         case OpKind::Im2Col:
         case OpKind::Col2Im:
-            return node.dtype == DType::F32 && node.src[0] != nullptr &&
-                   node.src[0]->dtype == DType::F32;
+            return is_floating(node.dtype) && node.src[0] != nullptr &&
+                   node.src[0]->dtype == node.dtype;
         // The shaders index planes directly rather than through an Operand, so
         // both operands must be contiguous as well as F32.
         case OpKind::MaxPool2d:
-            return node.dtype == DType::F32 && node.src[0] != nullptr &&
-                   node.src[0]->dtype == DType::F32 && node.src[0]->shape.is_contiguous();
+            return is_floating(node.dtype) && node.src[0] != nullptr &&
+                   node.src[0]->dtype == node.dtype && node.src[0]->shape.is_contiguous();
         case OpKind::MaxPool2dBackward:
-            return node.dtype == DType::F32 && node.src[0] != nullptr &&
-                   node.src[0]->dtype == DType::F32 && node.src[0]->shape.is_contiguous() &&
+            return is_floating(node.dtype) && node.src[0] != nullptr &&
+                   node.src[0]->dtype == node.dtype && node.src[0]->shape.is_contiguous() &&
                    node.src[1] != nullptr && node.src[1]->shape.is_contiguous();
         case OpKind::IndexSelect:
         case OpKind::ScatterAdd:
-            return node.dtype == DType::F32 && node.src[0] != nullptr &&
-                   node.src[0]->dtype == DType::F32 && node.src[1] != nullptr &&
+            // The values are floating; the index is always I64 and is read
+            // through its own typed buffer, so it is unaffected by DTYPE.
+            return is_floating(node.dtype) && node.src[0] != nullptr &&
+                   node.src[0]->dtype == node.dtype && node.src[1] != nullptr &&
                    node.src[1]->dtype == DType::I64;
         case OpKind::Cast: return true;
         // Value reductions keep their input's dtype. The shader accumulates in
@@ -1172,7 +1176,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg, backward ? 1U : 0U};
+                cfg.spec_constants = {wg, backward ? 1U : 0U, spec_dtype(node->dtype)};
 
                 if (debug_dispatch_enabled()) {
                     trace_dispatch(*node, "max_pool2d", cfg, sizeof(PoolPush),
@@ -1226,7 +1230,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg};
+                cfg.spec_constants = {wg, spec_dtype(node->dtype)};
 
                 const char* name = extracting ? "im2col" : "col2im";
                 const uint32_t* code = extracting ? spv::im2col : spv::col2im;
@@ -1257,7 +1261,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg};
+                cfg.spec_constants = {wg, spec_dtype(node->dtype)};
 
                 GatherPush push{};
                 push.src = address_of(src);
@@ -1338,7 +1342,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg, node->op == OpKind::Triu ? 1U : 0U, contiguous ? 1U : 0U};
+                cfg.spec_constants = {wg, node->op == OpKind::Triu ? 1U : 0U, contiguous ? 1U : 0U,
+                                      spec_dtype(node->dtype)};
 
                 TriPush push{};
                 push.src = address_of(src);
