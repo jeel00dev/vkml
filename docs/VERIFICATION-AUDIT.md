@@ -231,13 +231,36 @@ operators transposed inputs and sizes above one workgroup, **on both backends**.
 
 ---
 
-## 4. `prod` breaks the correctness chain
+## 4. `prod` is CPU-only, deliberately
 
-`ARCHITECTURE.md` §7 makes correctness a chain: CPU against PyTorch for
-semantics, then Vulkan against CPU for kernel bugs. `prod` runs only the first
-half, because there is no GPU kernel for it. Known since Milestone B; now
-measured, and pinned by `test_prod_has_no_vulkan_kernel` so that implementing it
-makes the test fail — which is the prompt to re-enable the parametrised runs.
+`prod` runs only the first half of the correctness chain, because it has no GPU
+kernel. Filed as "implement it, or state it is CPU-only"; the answer is the
+second, and for a reason that only appeared on inspection.
+
+**A product's fold order is not a rounding detail — it decides when the fold
+overflows.** `reduce.comp` gives each lane a strided slice and combines the
+lanes in a tree. For a sum that reordering is a rounding difference inside the
+1e-5 gate. For a product it is a different answer:
+
+```
+alternating 1e20, 1e-20 (512 values)
+  index order, as the CPU folds it     ->  1.0
+  grouped, as lane-striding groups it  ->  inf
+```
+
+Matching the CPU would mean multiplying in index order, i.e. one lane working
+sequentially — a kernel with no parallelism, slower than the CPU at the only
+thing it would be correct for. And §7 wants the oracle to share our exact
+semantics, so a GPU `prod` that legitimately disagreed would break the chain
+rather than extend it.
+
+Nothing is blocked: `prod` has **no backward rule and no caller** inside `nn`,
+the losses or the optimisers — it is a public API operator with no internal
+consumer, which is also why building a kernel for it would have been speculative
+work. Recorded in both backends where someone would look to change it, and
+pinned by `test_prod_folds_in_index_order` so the ordering has to be confronted
+first. Revisit if a caller appears, and then as a segmented sequential kernel
+rather than a tree.
 
 ---
 
@@ -340,7 +363,7 @@ rather than converted.
 | ~~27~~ | ~~Reconcile the backends' input requirements~~ | **Done** — the divergence was mostly missing f16, now closed 17 → 6, and the parity invariant is tested (§4b) |
 | 32 | **An f16 vectorised tile load for the GEMM shaders** | §2. f16 matmul is 1.45× slower than f32 purely because `load4` is f32-only. Restores parity; measured not to be a speedup, so it waits on someone actually running f16 GEMMs |
 | 27 | Reconcile the backends' input requirements, or document the divergence | §5. Sharpens item 16 |
-| 28 | Implement `prod` on Vulkan, or state it is CPU-only | §4 |
+| ~~28~~ | ~~Implement `prod` on Vulkan, or state it is CPU-only~~ | **Done** — stated CPU-only, with the ordering argument and a test (§4) |
 | 15 | Run the Python suite under a sanitizer in CI | Unchanged; still open |
 | 16 | CPU fallback via graph splitting, or Vulkan all-or-nothing | Now has a reproduction (§5) |
 | 29 | Make the coverage report a CI gate against a baseline of accepted gaps | Once §2 is decided; a ratchet is only useful when the accepted set is stable |
@@ -365,7 +388,7 @@ verified bit-exact against each other, matmul included. Every f16 operator now
 runs the full correctness chain.
 
 All gates green: layering (56 files) · clang-format · debug `-Werror` · release ·
-ASan build and suite · ctest · **1,170 Python tests, 5 skipped** · **29 of 29
+ASan build and suite · ctest · **1,171 Python tests, 5 skipped** · **29 of 29
 mutations killed** · validation layers clean on the f16 GPU path, split-K
 included.
 

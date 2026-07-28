@@ -127,6 +127,33 @@ def test_vulkan_results_match_the_cpu_oracle(dtype, strided):
             np.testing.assert_array_equal(got, want, err_msg=name)
 
 
+def test_prod_folds_in_index_order():
+    """Why prod has no Vulkan kernel, as an executable claim.
+
+    A product's fold order is not a rounding detail: it decides when the fold
+    overflows. Alternating 1e20 and 1e-20 cancels pair by pair in index order
+    and reaches inf as soon as the large values are grouped -- which is exactly
+    what reduce.comp's lane-striding would do, since lane 0 takes every WG-th
+    element.
+
+    So a GPU prod on that structure would return inf where this returns 1.0 --
+    a different answer, not a tolerance miss. Pinned here so that anyone adding
+    one has to confront the ordering first.
+    """
+    x = np.empty(512, dtype=np.float32)
+    x[0::2], x[1::2] = 1e20, 1e-20
+
+    assert V.prod(V.tensor(x), 0).numpy().item() == 1.0
+
+    # The same values, grouped as a strided fold would group them. The overflow
+    # is the point, so it is silenced rather than allowed to look like a fault.
+    with np.errstate(over="ignore"):
+        grouped = np.float32(1.0)
+        for v in x[0::256]:
+            grouped *= v
+    assert np.isinf(grouped), "the demonstration no longer demonstrates anything"
+
+
 def test_the_declined_set_is_known():
     """Pins exactly what Vulkan still refuses, so a change to it is deliberate.
 

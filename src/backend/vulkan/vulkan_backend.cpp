@@ -870,6 +870,25 @@ bool VulkanBackend::supports(const Node& node) const {
                    node.src[0]->dtype == node.dtype && node.src[1] != nullptr &&
                    node.src[1]->dtype == DType::I64;
         case OpKind::Cast: return true;
+        // PROD IS DELIBERATELY ABSENT and falls through to `return false`.
+        //
+        // reduce.comp folds one workgroup per output: each lane walks a strided
+        // slice, then a shared-memory tree combines the lanes. For a sum that
+        // reordering is a rounding difference inside the 1e-5 gate. For a
+        // product it is a different answer -- multiplying 1e20 and 1e-20
+        // alternately gives 1.0 in the CPU's index order and inf once the large
+        // values are grouped, which lane-striding does immediately (measured).
+        //
+        // Matching the CPU would mean multiplying in index order, i.e. one lane
+        // working sequentially: a kernel with no parallelism, slower than the
+        // CPU at the only thing it would be correct for. And ARCHITECTURE.md 7
+        // wants the CPU oracle to share our exact semantics, so a GPU prod that
+        // legitimately disagreed would break the chain rather than extend it.
+        //
+        // prod has no backward rule and no caller inside nn, the losses or the
+        // optimisers, so nothing is blocked by this. Revisit if one appears --
+        // and then as a segmented sequential kernel, not as a tree.
+        //
         // Value reductions keep their input's dtype. The shader accumulates in
         // shared floats whatever it reads, so fp32 accumulation holds for f16
         // input without the kernel changing (ARCHITECTURE.md 7.3).

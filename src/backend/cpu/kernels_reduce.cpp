@@ -106,6 +106,15 @@ void k_mean(Node& out) {
     });
 }
 
+/// Sequential, in index order, and deliberately so.
+///
+/// Every other reduction here folds pairwise, which improves a SUM's error
+/// bound. A product gains nothing from that -- relative errors compose
+/// multiplicatively whatever the order -- and reordering costs something real:
+/// it changes when the fold overflows. Multiplying 1e20 and 1e-20 alternately
+/// stays at 1.0 in index order and reaches inf if the large values are grouped.
+///
+/// That is why prod has no Vulkan kernel; see VulkanBackend::supports.
 void k_prod(Node& out) {
     reduce_float(out, [](const auto& read, int64_t n) {
         float acc = 1.0F;
