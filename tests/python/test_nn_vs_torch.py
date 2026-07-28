@@ -338,3 +338,241 @@ def test_adamw_decouples_decay_from_adam():
     assert not np.allclose(finals["adam"], finals["adamw"], atol=1e-6), (
         "Adam and AdamW produced identical parameters; decay is not decoupled"
     )
+
+
+# ---------------------------------------------------------------------------
+# Convolution, pooling, normalisation and lookup layers
+#
+# Each is compared against its torch counterpart with weights copied across, so
+# a mismatch is the layer rather than the initialisation.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kernel,stride,padding,bias", [
+    (3, 1, 1, True),
+    (3, 1, 1, False),
+    (2, 2, 0, True),
+    ((3, 2), (2, 1), (1, 0), True),
+])
+def test_conv2d_layer(kernel, stride, padding, bias):
+    torch_conv = torch.nn.Conv2d(3, 5, kernel, stride=stride, padding=padding, bias=bias)
+    vkml_conv = V.nn.Conv2d(3, 5, kernel, stride=stride, padding=padding, bias=bias)
+    _copy_weights(vkml_conv, torch_conv)
+
+    x = make_input((2, 3, 8, 8), seed=3000)
+    vx = V.tensor(x, requires_grad=True)
+    tx = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    vy, ty = vkml_conv(vx), torch_conv(tx)
+    assert_shape("Conv2d forward", vy, ty)
+    assert_close("Conv2d forward", vy, ty, GRAD_TOL, inputs=[x])
+
+    V.sum(vy).backward()
+    ty.sum().backward()
+    assert_close("Conv2d grad input", vx.grad, tx.grad, GRAD_TOL, inputs=[x])
+    assert_close("Conv2d weight grad", vkml_conv.weight.grad, torch_conv.weight.grad, GRAD_TOL)
+
+
+@pytest.mark.parametrize("layer,tlayer,shape", [
+    (lambda: V.nn.MaxPool2d(2), lambda: torch.nn.MaxPool2d(2), (2, 3, 8, 8)),
+    (lambda: V.nn.MaxPool2d(3, stride=1, padding=1),
+     lambda: torch.nn.MaxPool2d(3, stride=1, padding=1), (1, 2, 6, 6)),
+    (lambda: V.nn.AvgPool2d(2), lambda: torch.nn.AvgPool2d(2), (2, 3, 8, 8)),
+    (lambda: V.nn.AvgPool2d(3, stride=1, padding=1),
+     lambda: torch.nn.AvgPool2d(3, stride=1, padding=1), (1, 2, 6, 6)),
+])
+def test_pooling_layers(layer, tlayer, shape):
+    x = make_input(shape, seed=3100)
+    vx = V.tensor(x, requires_grad=True)
+    tx = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    vy, ty = layer()(vx), tlayer()(tx)
+    assert_shape("pool forward", vy, ty)
+    assert_close("pool forward", vy, ty, GRAD_TOL, inputs=[x])
+
+    V.sum(vy).backward()
+    ty.sum().backward()
+    assert_close("pool grad", vx.grad, tx.grad, GRAD_TOL, inputs=[x])
+
+
+def test_flatten_layer():
+    x = make_input((2, 3, 4, 5), seed=3200)
+    got = V.nn.Flatten()(V.tensor(x))
+    want = torch.nn.Flatten()(torch.from_numpy(x.copy()))
+    assert_shape("Flatten", got, want)
+    assert np.array_equal(got.numpy(), want.numpy())
+
+
+def test_embedding_layer():
+    torch_emb = torch.nn.Embedding(12, 5)
+    vkml_emb = V.nn.Embedding(12, 5)
+    _copy_weights(vkml_emb, torch_emb)
+
+    tokens = np.array([[0, 3, 3], [7, 1, 0]], dtype=np.int64)
+    vy = vkml_emb(V.tensor(tokens))
+    ty = torch_emb(torch.from_numpy(tokens.copy()))
+
+    assert_shape("Embedding forward", vy, ty)
+    assert_close("Embedding forward", vy, ty)
+
+    V.sum(V.mul(vy, vy)).backward()
+    (ty * ty).sum().backward()
+    assert_close("Embedding weight grad", vkml_emb.weight.grad, torch_emb.weight.grad, GRAD_TOL)
+
+
+@pytest.mark.parametrize("affine", [True, False])
+def test_layer_norm_layer(affine):
+    torch_ln = torch.nn.LayerNorm(7, elementwise_affine=affine)
+    vkml_ln = V.nn.LayerNorm(7, elementwise_affine=affine)
+    if affine:
+        _copy_weights(vkml_ln, torch_ln)
+
+    x = make_input((3, 4, 7), seed=3300)
+    vx = V.tensor(x, requires_grad=True)
+    tx = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    vy, ty = vkml_ln(vx), torch_ln(tx)
+    assert_close("LayerNorm forward", vy, ty, TOLERANCES["transcendental"], inputs=[x])
+
+    V.sum(V.mul(vy, vy)).backward()
+    (ty * ty).sum().backward()
+    assert_close("LayerNorm grad", vx.grad, tx.grad, TOLERANCES["transcendental"], inputs=[x])
+
+
+def test_batch_norm_training_forward_and_backward():
+    torch_bn = torch.nn.BatchNorm2d(3)
+    vkml_bn = V.nn.BatchNorm2d(3)
+    _copy_weights(vkml_bn, torch_bn)
+    torch_bn.train(); vkml_bn.train()
+
+    x = make_input((4, 3, 5, 5), seed=3400)
+    vx = V.tensor(x, requires_grad=True)
+    tx = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    vy, ty = vkml_bn(vx), torch_bn(tx)
+    assert_close("BatchNorm2d train forward", vy, ty, TOLERANCES["transcendental"], inputs=[x])
+
+    V.sum(V.mul(vy, vy)).backward()
+    (ty * ty).sum().backward()
+    assert_close("BatchNorm2d grad", vx.grad, tx.grad, TOLERANCES["transcendental"], inputs=[x])
+
+
+def test_batch_norm_running_statistics_track_torch_over_many_steps():
+    """The biased/unbiased asymmetry, which one step cannot reveal.
+
+    Normalisation uses the biased variance; the running estimate accumulates
+    the unbiased one. Using either for both leaves the first step identical and
+    diverges as the exponential average converges -- so this runs twenty
+    batches and compares the buffers, not just the output.
+    """
+    torch_bn = torch.nn.BatchNorm2d(3)
+    vkml_bn = V.nn.BatchNorm2d(3)
+    _copy_weights(vkml_bn, torch_bn)
+    torch_bn.train(); vkml_bn.train()
+
+    for step in range(20):
+        x = make_input((6, 3, 4, 4), seed=3500 + step)
+        vkml_bn(V.tensor(x))
+        torch_bn(torch.from_numpy(x.copy()))
+
+    assert_close("running_mean", vkml_bn.running_mean, torch_bn.running_mean,
+                 TOLERANCES["transcendental"])
+    assert_close("running_var", vkml_bn.running_var, torch_bn.running_var,
+                 TOLERANCES["transcendental"])
+
+
+def test_batch_norm_eval_uses_running_statistics():
+    """After training, eval must use the accumulated estimate rather than the
+    batch's own -- so the same input gives a different answer in the two modes,
+    and the eval answer matches torch's."""
+    torch_bn = torch.nn.BatchNorm2d(2)
+    vkml_bn = V.nn.BatchNorm2d(2)
+    _copy_weights(vkml_bn, torch_bn)
+    torch_bn.train(); vkml_bn.train()
+
+    for step in range(10):
+        x = make_input((5, 2, 3, 3), seed=3600 + step, low=1.0, high=4.0)
+        vkml_bn(V.tensor(x))
+        torch_bn(torch.from_numpy(x.copy()))
+
+    # The probe is run through BOTH in training mode, because a training-mode
+    # forward updates the running estimate -- feeding it to one model only
+    # would leave the two buffers a batch apart and the eval comparison would
+    # fail for that reason rather than for the one being tested.
+    probe = make_input((5, 2, 3, 3), seed=3700, low=1.0, high=4.0)
+    train_out = vkml_bn(V.tensor(probe)).numpy()
+    torch_bn(torch.from_numpy(probe.copy()))
+
+    vkml_bn.eval(); torch_bn.eval()
+    v_eval = vkml_bn(V.tensor(probe))
+    t_eval = torch_bn(torch.from_numpy(probe.copy()))
+
+    assert_close("BatchNorm2d eval", v_eval, t_eval, TOLERANCES["transcendental"])
+    assert not np.allclose(train_out, v_eval.numpy(), atol=1e-4), \
+        "train and eval produced the same result; eval is not using running statistics"
+
+
+def test_batch_norm_running_stats_are_not_parameters():
+    """A running buffer carries no gradient, so an optimiser must not see it --
+    otherwise it would be 'trained' and the estimate destroyed."""
+    names = [n for n, _ in V.nn.BatchNorm2d(4).named_parameters()]
+    assert names == ["weight", "bias"], names
+
+
+def test_dropout_layer_advances_its_offset():
+    """rand is a pure function, so a module reusing one offset would drop the
+    SAME elements every step -- invisibly, while the loss curve still fell."""
+    layer = V.nn.Dropout(0.5, seed=99)
+    layer.train()
+    x = V.full([4096], 1.0)
+
+    first = layer(x).numpy()
+    second = layer(x).numpy()
+    assert not np.array_equal(first, second), "consecutive calls produced the same mask"
+
+    # ...and the run is still reproducible from the seed.
+    replay = V.nn.Dropout(0.5, seed=99)
+    replay.train()
+    assert np.array_equal(replay(x).numpy(), first)
+
+
+def test_dropout_layer_is_identity_in_eval():
+    layer = V.nn.Dropout(0.5, seed=1)
+    layer.eval()
+    x = make_input((10, 10), seed=3800)
+    assert np.array_equal(layer(V.tensor(x)).numpy(), x)
+
+
+def test_cnn_trains_and_matches_torch():
+    """The whole stack together: conv, batch norm, pooling, flatten, linear.
+
+    Compared step by step over a short run rather than at the endpoint, because
+    a wrong layer can still reach a plausible final loss.
+    """
+    torch_model = torch.nn.Sequential(
+        torch.nn.Conv2d(1, 4, 3, padding=1), torch.nn.BatchNorm2d(4), torch.nn.ReLU(),
+        torch.nn.MaxPool2d(2), torch.nn.Flatten(), torch.nn.Linear(4 * 4 * 4, 3))
+    vkml_model = V.nn.Sequential(
+        V.nn.Conv2d(1, 4, 3, padding=1), V.nn.BatchNorm2d(4), V.nn.ReLU(),
+        V.nn.MaxPool2d(2), V.nn.Flatten(), V.nn.Linear(4 * 4 * 4, 3))
+    _copy_weights(vkml_model, torch_model)
+
+    x = make_input((8, 1, 8, 8), seed=3900)
+    labels = np.random.default_rng(3901).integers(0, 3, size=8).astype(np.int64)
+
+    v_opt = V.optim.SGD(vkml_model.parameters(), lr=0.05)
+    t_opt = torch.optim.SGD(torch_model.parameters(), lr=0.05)
+
+    for step in range(10):
+        v_opt.zero_grad()
+        v_loss = V.nn.cross_entropy(vkml_model(V.tensor(x)), V.tensor(labels))
+        v_loss.backward()
+        v_opt.step()
+
+        t_opt.zero_grad()
+        t_loss = torch.nn.functional.cross_entropy(
+            torch_model(torch.from_numpy(x.copy())), torch.from_numpy(labels.copy()))
+        t_loss.backward()
+        t_opt.step()
+
+        assert_close(f"CNN loss @ step {step}", v_loss, t_loss, Tol(1e-4, 1e-4))
