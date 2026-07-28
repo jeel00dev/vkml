@@ -12,7 +12,7 @@ re-seeded, and see the same batches in the same order. RNG parity is not a goal
 meaningless -- there is no dropout here for that reason.
 
 Usage:
-    python examples/mnist/train.py                 # MLP on the GPU
+    python examples/mnist/train.py                 # MLP, GPU if one is present
     python examples/mnist/train.py --model cnn     # convolutional
     python examples/mnist/train.py --device cpu    # reference backend
     python examples/mnist/train.py --no-compare    # skip the torch run
@@ -82,6 +82,31 @@ MODELS = {
 }
 
 
+def resolve_device(name: str):
+    """Turns a --device argument into a device, initialising Vulkan if needed.
+
+    `auto` prefers the GPU and falls back to the CPU when there is none, which
+    is what makes these scripts run unchanged on a machine without a Vulkan
+    device. Naming one explicitly does NOT fall back: someone who typed
+    `vulkan:0` wants the GPU, and quietly giving them the CPU would hide the
+    thing they asked about behind a number that merely looks slow.
+
+    Shared with gui.py rather than written twice, so the two cannot drift into
+    disagreeing about what `auto` means.
+    """
+    if name == "cpu":
+        return V.cpu
+
+    if name == "auto":
+        if not (V.has_vulkan and V.vulkan_available()):
+            print("no Vulkan device found; running on the CPU")
+            return V.cpu
+        name = "vulkan:0"
+
+    V.init_vulkan(0)
+    return V.device(name)
+
+
 def evaluate(model: V.nn.Module, x: np.ndarray, y: np.ndarray, device,
              batch_size: int = 500) -> tuple[float, float]:
     """Accuracy and mean loss over a dataset, in inference mode."""
@@ -111,10 +136,7 @@ def evaluate(model: V.nn.Module, x: np.ndarray, y: np.ndarray, device,
 
 def train(args) -> dict:
     dataset = mnist_data.load()
-    device = V.cpu
-    if args.device != "cpu":
-        V.init_vulkan(0)
-        device = V.device(args.device)
+    device = resolve_device(args.device)
 
     train_x, train_y = dataset["train_x"], dataset["train_y"]
     test_x, test_y = dataset["test_x"], dataset["test_y"]
@@ -259,7 +281,8 @@ def train(args) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=sorted(MODELS), default="mlp")
-    parser.add_argument("--device", default="vulkan:0", help="vulkan:0 or cpu")
+    parser.add_argument("--device", default="auto",
+                        help="auto (GPU if present), cpu, or vulkan:N")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.1)

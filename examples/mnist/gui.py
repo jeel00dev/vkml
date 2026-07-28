@@ -5,9 +5,12 @@ probability it assigns to every class -- so a confident right answer and a
 lucky one look different, which a bare prediction hides.
 
 Usage:
-    python examples/mnist/gui.py                    # the MLP
-    python examples/mnist/gui.py --model cnn
-    python examples/mnist/gui.py --device vulkan:0  # inference on the GPU
+    python examples/mnist/gui.py                    # the MLP, GPU if present
+    python examples/mnist/gui.py --model cnn        # the convolutional model
+    python examples/mnist/gui.py --device cpu       # force the reference backend
+
+The window title names the device, and everything the model does -- including
+each digit you draw -- runs there.
 """
 
 from __future__ import annotations
@@ -344,13 +347,14 @@ def load_model(name: str, device) -> V.nn.Module:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=sorted(trainer.MODELS), default="mlp")
-    parser.add_argument("--device", default="cpu", help="cpu or vulkan:0")
+    parser.add_argument("--device", default="auto",
+                        help="auto (GPU if present), cpu, or vulkan:N")
     args = parser.parse_args()
 
-    device = V.cpu
-    if args.device != "cpu":
-        V.init_vulkan(0)
-        device = V.device(args.device)
+    # Same resolution as training, from one place: the window title shows the
+    # device, and it disagreeing with what train.py chose is exactly the
+    # confusion this shares a helper to avoid.
+    device = trainer.resolve_device(args.device)
 
     model = load_model(args.model, device)
     dataset = mnist_data.load()
