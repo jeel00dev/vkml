@@ -280,7 +280,13 @@ jobs:
         # molten-vk is the ICD -- the driver itself. vulkan-loader provides the
         # libvulkan the build links against, and glslang supplies
         # glslangValidator, since Homebrew has no glslc outside shaderc.
-        run: brew install molten-vk vulkan-loader vulkan-headers vulkan-tools glslang
+        # vulkan-validationlayers is here to answer one open question: whether
+        # vkml's timestamp-query usage is valid on this driver. Every other job
+        # has run with validation available; this one never had, so the timestamp
+        # calls have never been checked against the spec on MoltenVK.
+        run: |
+          brew install molten-vk vulkan-loader vulkan-headers vulkan-tools glslang \
+                       vulkan-validationlayers
 
       - name: Point the loader at the ICD
         # The loader searches /usr/local/share/vulkan/icd.d, and Homebrew on
@@ -302,6 +308,27 @@ jobs:
           else
             echo "no MoltenVK ICD found; leaving the loader's defaults in place"
             find "$prefix" -name '*icd*.json' 2>/dev/null | head
+          fi
+
+      - name: Point the loader at the validation layers
+        # Same discovery problem as the ICD, and the same fix: the loader
+        # searches /usr/local/share/vulkan, Homebrew installs under
+        # /opt/homebrew, and the ICD turned out to live in etc/ rather than
+        # share/ -- so both are searched and everything found is printed.
+        #
+        # Exported only when a manifest is found. An empty VK_LAYER_PATH
+        # suppresses the loader's own search instead of falling back to it,
+        # which would silently disable the very thing this step is for.
+        run: |
+          prefix=$(brew --prefix)
+          find "$prefix" -name 'VkLayer_*.json' 2>/dev/null | head
+          dir=$(find "$prefix/share/vulkan/explicit_layer.d" "$prefix/etc/vulkan/explicit_layer.d" \
+                     -name 'VkLayer_khronos_validation.json' 2>/dev/null | head -1)
+          if [ -n "$dir" ]; then
+            echo "using layer path: $(dirname "$dir")"
+            echo "VK_LAYER_PATH=$(dirname "$dir")" >> "$GITHUB_ENV"
+          else
+            echo "no validation layer manifest found; the run below proves nothing about validity"
           fi
 
       - name: Install Python dependencies
@@ -345,6 +372,46 @@ jobs:
         # passes either way, because every Vulkan test skips itself when nothing
         # is present, and 441 silent skips look exactly like success.
         run: python scripts/hardware_report.py --require-device
+
+      - name: Are our timestamp queries valid on this driver?
+        # The discriminator for the one remaining macOS failure. This device
+        # reports timestampValidBits != 0 AND timestampPeriod = 1.0 ns, so both
+        # capability checks pass, and every dispatch still profiles as 0.000 ms
+        # -- which leaves end <= start, i.e. timestamps that never advance.
+        #
+        # Two explanations remain and they need opposite responses. vkml enables
+        # validation by default, so if our use of vkCmdWriteTimestamp,
+        # vkCmdResetQueryPool or vkGetQueryPoolResults is wrong, the layer says
+        # so here and the fix is ours. If the layer is silent, the timestamps
+        # simply do not advance on this GPU -- and note it is an "Apple
+        # Paravirtual device", a virtualised GPU, where counter sampling is
+        # commonly unavailable. That is a property of this runner, which a
+        # single virtualised device cannot generalise into a claim about
+        # MoltenVK or Apple hardware at large.
+        #
+        # Never fails the job: it produces evidence, not a verdict.
+        run: |
+          python - <<'PY' || true
+          import sys
+          sys.path.insert(0, "python")
+          import numpy as np
+          import vkml as V
+
+          V.init_vulkan(0)
+          print("timestamps_supported:", V.vulkan_timestamps_supported(0))
+
+          V.vulkan_set_profiling(True, 0)
+          dev = V.device("vulkan:0")
+          rng = np.random.default_rng(0)
+          a = V.tensor(rng.random((512, 512), dtype=np.float32), device=dev)
+          b = V.tensor(rng.random((512, 512), dtype=np.float32), device=dev)
+          V.matmul(a, b).numpy()
+
+          profile = V.vulkan_last_profile(0)
+          print("profile entries:", len(profile))
+          for label, ms in profile:
+              print(f"  {label}: {ms:.6f} ms")
+          PY
 
       - name: Run the suite
         run: python -m pytest tests/python -q
