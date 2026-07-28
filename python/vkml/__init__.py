@@ -136,6 +136,7 @@ if has_vulkan:
     vulkan_device_names = _C.vulkan_device_names
     vulkan_stats = _C.vulkan_stats
     vulkan_capabilities = _C.vulkan_capabilities
+    vulkan_timestamps_supported = _C.vulkan_timestamps_supported
     vulkan_set_profiling = _C.vulkan_set_profiling
     vulkan_last_profile = _C.vulkan_last_profile
     vulkan_set_subgroup_override = _C.vulkan_set_subgroup_override

@@ -720,6 +720,15 @@ NB_MODULE(_vkml_core, m) {
         },
         "index"_a = 0);
     m.def(
+        "vulkan_timestamps_supported",
+        [](int index) {
+            return static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index))
+                .timestamps_supported();
+        },
+        "index"_a = 0,
+        "False when the device's compute queue reports no timestamp bits, in which case "
+        "every profile reads 0.000 ms regardless of the work done.");
+    m.def(
         "vulkan_set_profiling",
         [](bool on, int index) {
             static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index)).set_profiling(on);

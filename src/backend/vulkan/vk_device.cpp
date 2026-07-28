@@ -585,6 +585,13 @@ void Context::create_logical_device() {
     }
     VKML_CHECK(chosen >= 0, DeviceError, "device '{}' has no compute queue family", info_.name);
     queue_family_ = static_cast<uint32_t>(chosen);
+    info_.timestamp_valid_bits = families[queue_family_].timestampValidBits;
+    if (info_.timestamp_valid_bits == 0) {
+        VKML_LOG_WARN(
+            "device '{}' queue family {} reports timestampValidBits = 0; GPU profiling will "
+            "report 0.000 ms for every dispatch",
+            info_.name, queue_family_);
+    }
 
     const float priority = 1.0F;
     VkDeviceQueueCreateInfo qci{};

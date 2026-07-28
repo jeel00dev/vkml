@@ -2199,6 +2199,10 @@ std::vector<PipelineStats> VulkanBackend::pipeline_stats() const {
 
 void VulkanBackend::set_profiling(bool enabled) { impl_->recorder.set_profiling(enabled); }
 
+bool VulkanBackend::timestamps_supported() const {
+    return impl_->ctx.info().timestamp_valid_bits != 0;
+}
+
 std::vector<std::pair<std::string, double>> VulkanBackend::last_profile() const {
     std::vector<std::pair<std::string, double>> out;
     for (const vk::ProfileEntry& e : impl_->recorder.profile()) {

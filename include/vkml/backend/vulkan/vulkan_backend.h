@@ -135,6 +135,14 @@ public:
     /// Enables per-dispatch timestamp queries. Zero cost when off.
     void set_profiling(bool enabled);
 
+    /// Whether this device's compute queue can produce meaningful timestamps.
+    ///
+    /// False means every profile will read 0.000 ms however much work ran, so a
+    /// caller measuring something must check this rather than believe the
+    /// number. The Vulkan spec permits a queue family to report no timestamp
+    /// bits at all, and at least one driver does.
+    [[nodiscard]] bool timestamps_supported() const;
+
     /// GPU intervals from the most recent compute() call, in milliseconds.
     [[nodiscard]] std::vector<std::pair<std::string, double>> last_profile() const;
 

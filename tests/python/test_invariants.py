@@ -501,6 +501,14 @@ def test_profiler_reports_nonzero_for_a_real_dispatch():
     # The device index matters: profiling is per backend instance and these
     # default to 0, so asking device 0 for a profile of work that ran on device 1
     # returns an empty list. Found by running the suite on a second GPU.
+    # A queue family may legitimately report no timestamp bits at all, and then
+    # every dispatch reads 0.000 ms no matter how much work ran. Skipping is the
+    # honest outcome: the regression this guards against is unobservable there,
+    # not absent. Checked rather than assumed -- vkml never queried the bit
+    # until a driver that reports zero turned up in CI.
+    if not V.vulkan_timestamps_supported(VULKAN_DEVICE):
+        pytest.skip("device's compute queue reports timestampValidBits = 0")
+
     V.vulkan_set_profiling(True, VULKAN_DEVICE)
     try:
         dev = gpu_device()

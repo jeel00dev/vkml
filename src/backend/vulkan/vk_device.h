@@ -59,6 +59,18 @@ struct DeviceInfo {
     uint64_t max_storage_buffer_range = 0;
     float timestamp_period = 0.0F;
 
+    /// Meaningful bits in a timestamp written on THIS context's compute queue.
+    ///
+    /// Zero means the queue cannot produce timestamps at all, and the Vulkan
+    /// spec allows that per queue family. Profiling then records ticks that are
+    /// all the same value and every kernel reports 0.000 ms -- indistinguishable
+    /// from an instantaneous dispatch, which is how it went unnoticed until a
+    /// driver that does this showed up in CI.
+    ///
+    /// Queue-specific, so unlike the rest of DeviceInfo it is filled in during
+    /// logical-device creation, once a queue family has actually been chosen.
+    uint32_t timestamp_valid_bits = 0;
+
     /// Device-local heap size, i.e. VRAM.
     uint64_t device_local_bytes = 0;
 
