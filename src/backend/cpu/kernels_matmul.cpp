@@ -26,10 +26,13 @@ namespace {
 /// vectorisation, which is deliberate -- the CPU backend is the correctness
 /// oracle and the project standard puts performance last for it. The tiled
 /// version lives in the Vulkan backend at M3.
-void k_matmul(Node& out) {
-    if (out.dtype != DType::F32) {
-        unsupported_dtype(out);
-    }
+///
+/// `T` is the STORAGE type. The dot product accumulates in float regardless,
+/// which is the fp32-accumulation half of ARCHITECTURE.md 7.3 and matters far
+/// more here than anywhere else: an f16 accumulator over K = 784 would lose
+/// roughly three decimal digits, well outside the 1e-3 the f16 tolerance allows.
+template <typename T>
+void matmul_impl(Node& out) {
     const Node& a = *out.src[0];
     const Node& b = *out.src[1];
 
@@ -49,7 +52,7 @@ void k_matmul(Node& out) {
 
     const auto* a_bytes = static_cast<const std::byte*>(a.data());
     const auto* b_bytes = static_cast<const std::byte*>(b.data());
-    auto* out_f = static_cast<float*>(out.data());
+    auto* out_p = static_cast<T*>(out.data());
 
     for (int64_t i0 = 0; i0 < b0; ++i0) {
         for (int64_t i1 = 0; i1 < b1; ++i1) {
@@ -68,18 +71,26 @@ void k_matmul(Node& out) {
 
                     const float dot = pairwise_sum<float>(
                         [&](int64_t idx) {
-                            float av = 0.0F;
-                            float bv = 0.0F;
-                            std::memcpy(&av, a_bytes + a_row + idx * a_k_stride, sizeof(float));
-                            std::memcpy(&bv, b_bytes + b_col + idx * b_k_stride, sizeof(float));
-                            return av * bv;
+                            T av{};
+                            T bv{};
+                            std::memcpy(&av, a_bytes + a_row + idx * a_k_stride, sizeof(T));
+                            std::memcpy(&bv, b_bytes + b_col + idx * b_k_stride, sizeof(T));
+                            return widen(av) * widen(bv);
                         },
                         0, k);
 
-                    out_f[o_batch + r * n + c] = dot;
+                    out_p[o_batch + r * n + c] = static_cast<T>(dot);
                 }
             }
         }
+    }
+}
+
+void k_matmul(Node& out) {
+    switch (out.dtype) {
+        case DType::F32: matmul_impl<float>(out); return;
+        case DType::F16: matmul_impl<Half>(out); return;
+        default: unsupported_dtype(out);
     }
 }
 

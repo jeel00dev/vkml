@@ -60,6 +60,16 @@ template <typename T>
     return static_cast<const T*>(n.data());
 }
 
+/// Widens a stored element to the type arithmetic is done in.
+///
+/// Every kernel computes in float whatever it stores, so that f16 is a storage
+/// format and never an accumulator (`ARCHITECTURE.md` §7.3, and the note on
+/// `Half` in dtype.h). These two overloads are the only place that conversion
+/// lives, which is what keeps the f32 and f16 paths from drifting apart.
+[[nodiscard]] inline float widen(float v) noexcept { return v; }
+
+[[nodiscard]] inline float widen(Half v) noexcept { return v.to_float(); }
+
 /// Reads element `linear` of a possibly-strided operand.
 template <typename T>
 [[nodiscard]] inline T load(const Node& n, int64_t linear) noexcept {

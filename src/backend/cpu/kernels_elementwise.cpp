@@ -61,123 +61,171 @@ namespace {
 // Kernel bodies
 // ---------------------------------------------------------------------------
 
+// F16 IS STORAGE, NOT ARITHMETIC.
+//
+// Both helpers below widen a half to float, run the operation in float, and
+// narrow only on the store. `ARCHITECTURE.md` §7.3 fixes this -- the tolerance
+// for f16 (1e-3) is derived for "fp16 storage, fp32 accum" and would not hold
+// if intermediates were rounded to 16 bits.
+//
+// The consequence worth stating: every kernel body keeps taking and returning
+// `float`, so none of them changed to gain f16 support, and none of them *can*
+// accumulate in 16 bits by accident. `Half` deliberately has no arithmetic
+// operators (dtype.h), so an attempt to would not compile.
+
 template <typename Op>
-void unary_f32(Node& out, Op op) {
-    if (out.dtype != DType::F32) {
-        unsupported_dtype(out);
+void unary_float(Node& out, Op op) {
+    switch (out.dtype) {
+        case DType::F32: map_unary<float, float>(out, *out.src[0], op); return;
+        case DType::F16:
+            map_unary<Half, Half>(out, *out.src[0],
+                                  [&op](Half x) { return Half(op(x.to_float())); });
+            return;
+        default: unsupported_dtype(out);
     }
-    map_unary<float, float>(out, *out.src[0], op);
 }
 
 template <typename Op>
-void binary_f32(Node& out, Op op) {
-    if (out.dtype != DType::F32) {
-        unsupported_dtype(out);
+void binary_float(Node& out, Op op) {
+    switch (out.dtype) {
+        case DType::F32: map_binary<float, float>(out, *out.src[0], *out.src[1], op); return;
+        case DType::F16:
+            map_binary<Half, Half>(out, *out.src[0], *out.src[1], [&op](Half x, Half y) {
+                return Half(op(x.to_float(), y.to_float()));
+            });
+            return;
+        default: unsupported_dtype(out);
     }
-    map_binary<float, float>(out, *out.src[0], *out.src[1], op);
 }
 
 template <typename Op>
-void compare_f32(Node& out, Op op) {
+void compare_float(Node& out, Op op) {
     // Comparisons consume floats and produce Bool, so the output element type
-    // differs from the input element type.
+    // differs from the input element type -- and the dtype that has to be
+    // checked is therefore the INPUT's.
+    //
+    // This previously asserted only that the output was Bool and then read the
+    // inputs as float regardless. That is not an unsupported-dtype error, it is
+    // a wrong answer: an f16 operand had its 2-byte halves read as 4-byte
+    // floats, and an i64 operand had two elements read as one. Both returned a
+    // plausible mask and neither raised. Found by the coverage audit
+    // (docs/VERIFICATION-AUDIT.md) and fixed here.
     VKML_ASSERT(out.dtype == DType::Bool, "comparison must produce Bool, got {}",
                 dtype_name(out.dtype));
-    map_binary<uint8_t, float>(out, *out.src[0], *out.src[1],
-                               [op](float x, float y) -> uint8_t { return op(x, y) ? 1 : 0; });
+
+    const DType in = out.src[0]->dtype;
+    VKML_DEBUG_ASSERT(in == out.src[1]->dtype, "comparison operands must share a dtype");
+
+    switch (in) {
+        case DType::F32:
+            map_binary<uint8_t, float>(
+                out, *out.src[0], *out.src[1],
+                [op](float x, float y) -> uint8_t { return op(x, y) ? 1 : 0; });
+            return;
+        case DType::F16:
+            map_binary<uint8_t, Half>(
+                out, *out.src[0], *out.src[1],
+                [op](Half x, Half y) -> uint8_t { return op(x.to_float(), y.to_float()) ? 1 : 0; });
+            return;
+        default:
+            // Integer comparison would need integer kernels, which do not exist
+            // (see the dtype contract in dtype.h). Raising is the honest answer;
+            // reading them as floats is what was wrong before.
+            unsupported_dtype(out, in);
+    }
 }
 
 void k_neg(Node& o) {
-    unary_f32(o, [](float x) { return -x; });
+    unary_float(o, [](float x) { return -x; });
 }
 
 void k_abs(Node& o) {
-    unary_f32(o, [](float x) { return std::fabs(x); });
+    unary_float(o, [](float x) { return std::fabs(x); });
 }
 
 void k_sign(Node& o) {
-    unary_f32(o, [](float x) { return sign(x); });
+    unary_float(o, [](float x) { return sign(x); });
 }
 
 void k_square(Node& o) {
-    unary_f32(o, [](float x) { return x * x; });
+    unary_float(o, [](float x) { return x * x; });
 }
 
 void k_sqrt(Node& o) {
-    unary_f32(o, [](float x) { return std::sqrt(x); });
+    unary_float(o, [](float x) { return std::sqrt(x); });
 }
 
 void k_rsqrt(Node& o) {
-    unary_f32(o, [](float x) { return 1.0F / std::sqrt(x); });
+    unary_float(o, [](float x) { return 1.0F / std::sqrt(x); });
 }
 
 void k_reciprocal(Node& o) {
-    unary_f32(o, [](float x) { return 1.0F / x; });
+    unary_float(o, [](float x) { return 1.0F / x; });
 }
 
 void k_exp(Node& o) {
-    unary_f32(o, [](float x) { return std::exp(x); });
+    unary_float(o, [](float x) { return std::exp(x); });
 }
 
 void k_log(Node& o) {
-    unary_f32(o, [](float x) { return std::log(x); });
+    unary_float(o, [](float x) { return std::log(x); });
 }
 
 void k_erf(Node& o) {
-    unary_f32(o, [](float x) { return std::erf(x); });
+    unary_float(o, [](float x) { return std::erf(x); });
 }
 
 void k_sin(Node& o) {
-    unary_f32(o, [](float x) { return std::sin(x); });
+    unary_float(o, [](float x) { return std::sin(x); });
 }
 
 void k_cos(Node& o) {
-    unary_f32(o, [](float x) { return std::cos(x); });
+    unary_float(o, [](float x) { return std::cos(x); });
 }
 
 void k_tanh(Node& o) {
-    unary_f32(o, [](float x) { return std::tanh(x); });
+    unary_float(o, [](float x) { return std::tanh(x); });
 }
 
 void k_sigmoid(Node& o) {
-    unary_f32(o, [](float x) { return sigmoid(x); });
+    unary_float(o, [](float x) { return sigmoid(x); });
 }
 
 void k_relu(Node& o) {
-    unary_f32(o, [](float x) { return x > 0.0F ? x : 0.0F; });
+    unary_float(o, [](float x) { return x > 0.0F ? x : 0.0F; });
 }
 
 void k_gelu(Node& o) {
-    unary_f32(o, [](float x) { return gelu(x); });
+    unary_float(o, [](float x) { return gelu(x); });
 }
 
 void k_silu(Node& o) {
-    unary_f32(o, [](float x) { return silu(x); });
+    unary_float(o, [](float x) { return silu(x); });
 }
 
 void k_add(Node& o) {
-    binary_f32(o, [](float x, float y) { return x + y; });
+    binary_float(o, [](float x, float y) { return x + y; });
 }
 
 void k_sub(Node& o) {
-    binary_f32(o, [](float x, float y) { return x - y; });
+    binary_float(o, [](float x, float y) { return x - y; });
 }
 
 void k_mul(Node& o) {
-    binary_f32(o, [](float x, float y) { return x * y; });
+    binary_float(o, [](float x, float y) { return x * y; });
 }
 
 void k_div(Node& o) {
-    binary_f32(o, [](float x, float y) { return x / y; });
+    binary_float(o, [](float x, float y) { return x / y; });
 }
 
 void k_pow(Node& o) {
-    binary_f32(o, [](float x, float y) { return std::pow(x, y); });
+    binary_float(o, [](float x, float y) { return std::pow(x, y); });
 }
 
 void k_maximum(Node& o) {
     // std::fmax propagates the non-NaN operand; torch.maximum propagates NaN.
-    binary_f32(o, [](float x, float y) {
+    binary_float(o, [](float x, float y) {
         if (std::isnan(x) || std::isnan(y)) {
             return std::numeric_limits<float>::quiet_NaN();
         }
@@ -186,7 +234,7 @@ void k_maximum(Node& o) {
 }
 
 void k_minimum(Node& o) {
-    binary_f32(o, [](float x, float y) {
+    binary_float(o, [](float x, float y) {
         if (std::isnan(x) || std::isnan(y)) {
             return std::numeric_limits<float>::quiet_NaN();
         }
@@ -195,35 +243,32 @@ void k_minimum(Node& o) {
 }
 
 void k_equal(Node& o) {
-    compare_f32(o, [](float x, float y) { return x == y; });
+    compare_float(o, [](float x, float y) { return x == y; });
 }
 
 void k_less(Node& o) {
-    compare_f32(o, [](float x, float y) { return x < y; });
+    compare_float(o, [](float x, float y) { return x < y; });
 }
 
 void k_greater(Node& o) {
-    compare_f32(o, [](float x, float y) { return x > y; });
+    compare_float(o, [](float x, float y) { return x > y; });
 }
 
 void k_less_equal(Node& o) {
-    compare_f32(o, [](float x, float y) { return x <= y; });
+    compare_float(o, [](float x, float y) { return x <= y; });
 }
 
 void k_greater_equal(Node& o) {
-    compare_f32(o, [](float x, float y) { return x >= y; });
+    compare_float(o, [](float x, float y) { return x >= y; });
 }
 
 void k_not_equal(Node& o) {
-    compare_f32(o, [](float x, float y) { return x != y; });
+    compare_float(o, [](float x, float y) { return x != y; });
 }
 
 void k_clamp(Node& out) {
-    if (out.dtype != DType::F32) {
-        unsupported_dtype(out);
-    }
     const auto p = out.params.get<ClampParams>();
-    map_unary<float, float>(out, *out.src[0], [p](float v) {
+    unary_float(out, [p](float v) {
         // NaN passes through unchanged, matching torch.clamp.
         if (p.has_lo && v < p.lo) {
             return p.lo;
@@ -269,25 +314,39 @@ void k_tril(Node& o) { k_tri(o, false); }
 void k_where(Node& out) {
     // src0 = condition (Bool), src1 = value if true, src2 = value if false.
     // All three are already broadcast to the output shape.
-    if (out.dtype != DType::F32) {
-        unsupported_dtype(out);
-    }
     const Node& cond = *out.src[0];
     const Node& a = *out.src[1];
     const Node& b = *out.src[2];
-
     const int64_t n = out.shape.numel();
-    for (int64_t i = 0; i < n; ++i) {
-        const uint8_t c = load<uint8_t>(cond, i);
-        store<float>(out, i, c != 0 ? load<float>(a, i) : load<float>(b, i));
+
+    // Selection moves whole elements rather than computing on them, so unlike
+    // the arithmetic kernels this one does not widen: it copies the stored
+    // representation straight across. Doing otherwise would round every
+    // selected f16 value through float and back for no reason.
+    switch (out.dtype) {
+        case DType::F32:
+            for (int64_t i = 0; i < n; ++i) {
+                store<float>(out, i,
+                             load<uint8_t>(cond, i) != 0 ? load<float>(a, i) : load<float>(b, i));
+            }
+            return;
+        case DType::F16:
+            for (int64_t i = 0; i < n; ++i) {
+                store<Half>(out, i,
+                            load<uint8_t>(cond, i) != 0 ? load<Half>(a, i) : load<Half>(b, i));
+            }
+            return;
+        default: unsupported_dtype(out);
     }
 }
 
 }  // namespace
 
-void unsupported_dtype(const Node& node) {
+void unsupported_dtype(const Node& node) { unsupported_dtype(node, node.dtype); }
+
+void unsupported_dtype(const Node& node, DType dt) {
     throw DTypeError(std::format("cpu backend: op '{}' does not support dtype {}", op_name(node.op),
-                                 dtype_name(node.dtype)));
+                                 dtype_name(dt)));
 }
 
 void register_elementwise_kernels(KernelTable& t) {

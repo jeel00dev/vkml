@@ -68,8 +68,21 @@ inline constexpr int kNumDTypes = 5;
 // Reference for the branch-free approach: Fabian Giesen's float_to_half_fast3,
 // the same lineage ggml's implementation comes from.
 //
-// F16 is storage-only through M0; F16 arithmetic arrives with mixed precision
-// in M9. These live here so the dtype surface is complete and does not churn.
+// WHAT COMPUTES, as of the f16 milestone (docs/VERIFICATION-AUDIT.md):
+//
+//   F32   everything.
+//   F16   elementwise, comparisons, reductions, softmax and matmul, on the CPU
+//         backend. Vulkan still refuses it and says so; the CPU backend is the
+//         correctness oracle and takes an operator first (ARCHITECTURE.md §7).
+//   I32   storage and cast only. I64 additionally indexes -- index_select,
+//   I64   scatter_add and the argmax/argmin results. Neither is an arithmetic
+//         type: there are no integer kernels, and every operator that would
+//         need one raises rather than reinterpreting the bytes.
+//   Bool  masks: comparison results, and where()'s condition.
+//
+// This note replaced one saying f16 arithmetic would arrive in M9. It was a
+// correct plan that the Phase 2 manifesto superseded by requiring mixed
+// precision in P2, and it had drifted into being read as "f16 does not work".
 // ---------------------------------------------------------------------------
 
 [[nodiscard]] float fp16_to_fp32(uint16_t h) noexcept;

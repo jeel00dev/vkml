@@ -134,6 +134,18 @@ void k_full(Node& out) {
             }
             return;
         }
+        case DType::F16: {
+            // Rounds once, here, rather than per element. Also what makes the
+            // backward seed reachable for an f16 graph: backward() starts from
+            // ones_like(root), so without this every f16 gradient would fail
+            // before any kernel ran.
+            const Half v{static_cast<float>(p.value)};
+            auto* d = static_cast<Half*>(out.data());
+            for (int64_t i = 0; i < n; ++i) {
+                d[i] = v;
+            }
+            return;
+        }
         case DType::I64: {
             const auto v = static_cast<int64_t>(p.value);
             auto* d = static_cast<int64_t*>(out.data());

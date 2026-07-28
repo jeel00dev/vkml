@@ -26,4 +26,11 @@ void register_matmul_kernels(KernelTable& table);
 /// Throws DTypeError naming the op, for kernels restricted to a dtype subset.
 [[noreturn]] void unsupported_dtype(const Node& node);
 
+/// As above, naming a dtype other than the node's own.
+///
+/// Needed by the comparisons, whose output is always Bool while the dtype that
+/// was rejected is an input's -- reporting `node.dtype` there would name `bool`
+/// and send the reader looking in the wrong place.
+[[noreturn]] void unsupported_dtype(const Node& node, DType dt);
+
 }  // namespace vkml::cpu
