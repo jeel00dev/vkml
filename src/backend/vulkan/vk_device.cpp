@@ -69,6 +69,26 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
     return devices;
 }
 
+/// Opts an instance in to seeing portability drivers, when the loader offers it.
+///
+/// Since loader 1.3.216 a non-conformant PORTABILITY driver is hidden from any
+/// instance that does not ask for it, and MoltenVK -- the whole of Vulkan on
+/// Apple hardware -- is one. Without this, vkCreateInstance returns
+/// VK_ERROR_INCOMPATIBLE_DRIVER on macOS even with a working device present.
+/// That is not a hypothesis: CI showed vulkaninfo listing an Apple Paravirtual
+/// device through MoltenVK while vkml failed to create an instance at all.
+///
+/// The extension and the flag are a pair -- enabling one without the other does
+/// nothing -- so they are set together, in one place, rather than at each of the
+/// two instance-creation sites.
+void enable_portability_drivers(VkInstanceCreateInfo& ci, std::vector<const char*>& extensions) {
+    if (!has_instance_extension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
+        return;
+    }
+    extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    ci.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+}
+
 /// Creates a bare instance for enumeration only, reporting why if it cannot.
 ///
 /// The result is kept rather than collapsed to a null handle because the two
@@ -85,6 +105,11 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
     VkInstanceCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ci.pApplicationInfo = &app;
+
+    std::vector<const char*> extensions;
+    enable_portability_drivers(ci, extensions);
+    ci.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+    ci.ppEnabledExtensionNames = extensions.data();
 
     return vkCreateInstance(&ci, nullptr, out);
 }
@@ -248,6 +273,10 @@ void Context::create_instance(bool enable_validation) {
     ci.pApplicationInfo = &app;
     ci.enabledLayerCount = static_cast<uint32_t>(layers.size());
     ci.ppEnabledLayerNames = layers.data();
+
+    // Appends to `extensions` AND sets ci.flags, so it has to run before the
+    // count below is taken from the vector.
+    enable_portability_drivers(ci, extensions);
     ci.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     ci.ppEnabledExtensionNames = extensions.data();
 
@@ -501,10 +530,8 @@ std::string unavailable_reason() {
     const bool none = physical_devices(probe).empty();
     vkDestroyInstance(probe, nullptr);
     if (none) {
-        return "a Vulkan instance was created, but the loader reported no physical device; the "
-               "driver is present and exposed no GPU. On a portability driver such as MoltenVK, "
-               "an instance that does not opt in to VK_KHR_portability_enumeration looks exactly "
-               "like this";
+        return "a Vulkan instance was created, but the loader reported no physical device; a "
+               "driver is installed and exposed no GPU";
     }
     return {};
 }
