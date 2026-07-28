@@ -1,0 +1,132 @@
+"""The device report: what a user on unknown hardware sends back.
+
+This surface exists to be run on machines the project has never seen, so its
+contract is unusually strict: it must produce an answer on a device the backend
+cannot use, on a machine with no GPU, and on a build with no Vulkan at all.
+Every one of those is a case where the ordinary capability query throws.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python"))
+
+import vkml as V  # noqa: E402
+
+# Keys every report carries. Pinned as a set rather than checked one by one so
+# that a field disappearing from the binding fails here rather than silently
+# producing a thinner report from someone else's machine, which is unrepeatable.
+REQUIRED_KEYS = {
+    "name",
+    "driver_name",
+    "device_type",
+    "api_version",
+    "driver_version",
+    "vendor_id",
+    "device_id",
+    "supported",
+    "missing_requirement",
+    "buffer_device_address",
+    "scalar_block_layout",
+    "timeline_semaphore",
+    "synchronization2",
+    "subgroup_size_control",
+    "shader_float16",
+    "shader_int8",
+    "shader_int16",
+    "storage_buffer_16bit",
+    "global_float_atomic_add",
+    "shared_float_atomic_add",
+    "cooperative_matrix",
+    "subgroup_size",
+    "min_subgroup_size",
+    "max_subgroup_size",
+    "max_workgroup_invocations",
+    "shader_core_count",
+    "max_shared_memory",
+    "max_push_constants",
+    "max_allocation_size",
+    "device_local_bytes",
+    "host_visible_device_local_bytes",
+}
+
+
+def test_reports_exist_on_any_build():
+    """Never raises: a CPU-only build reports [], it does not fail."""
+    reports = V.vulkan_device_reports()
+    assert isinstance(reports, list)
+    if not V.has_vulkan:
+        assert reports == []
+
+
+def test_report_carries_every_field():
+    for report in V.vulkan_device_reports():
+        assert set(report) == REQUIRED_KEYS
+
+
+def test_one_report_per_device():
+    assert len(V.vulkan_device_reports()) == V.vulkan_device_count()
+
+
+def test_supported_agrees_with_missing_requirement():
+    """The two can never disagree -- `supported` is derived from the reason."""
+    for report in V.vulkan_device_reports():
+        assert report["supported"] == (report["missing_requirement"] == "")
+        if report["supported"]:
+            assert report["buffer_device_address"]
+            assert report["scalar_block_layout"]
+            assert report["timeline_semaphore"]
+        else:
+            assert report["missing_requirement"] in {
+                "bufferDeviceAddress",
+                "scalarBlockLayout",
+                "timelineSemaphore",
+            }
+
+
+def test_identity_fields_are_populated():
+    for report in V.vulkan_device_reports():
+        assert report["name"]
+        assert report["api_version"].count(".") == 2
+        assert report["device_type"] in {
+            "discrete",
+            "integrated",
+            "virtual",
+            "cpu",
+            "other",
+        }
+        assert report["max_workgroup_invocations"] > 0
+
+
+def test_reporting_creates_no_backend():
+    """The load-bearing property, checked in a clean process.
+
+    `available_devices()` lists backends that have actually been created. If
+    reporting created one, a report on unusable hardware would throw during the
+    very call meant to explain why the hardware is unusable.
+
+    A subprocess because any earlier test in this session may already have
+    initialised Vulkan, which would make the assertion vacuous.
+    """
+    source = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import vkml as V
+before = [str(d) for d in V.available_devices()]
+count = len(V.vulkan_device_reports())
+after = [str(d) for d in V.available_devices()]
+assert before == after, f"reporting registered a backend: {before} -> {after}"
+print(count)
+"""
+    python_dir = os.path.join(os.path.dirname(__file__), "..", "..", "python")
+    result = subprocess.run(
+        [sys.executable, "-c", source, python_dir],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert int(result.stdout.strip()) == V.vulkan_device_count()

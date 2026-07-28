@@ -643,6 +643,53 @@ NB_MODULE(_vkml_core, m) {
     m.def("vulkan_device_count", &vkml::vulkan_device_count);
     m.def("vulkan_device_names", &vkml::vulkan_device_names);
     m.def(
+        "vulkan_device_reports",
+        [] {
+            nb::list out;
+            for (const vkml::DeviceReport& r : vkml::vulkan_device_reports()) {
+                nb::dict d;
+                d["name"] = r.name;
+                d["driver_name"] = r.driver_name;
+                d["device_type"] = r.device_type;
+                d["api_version"] = r.api_version;
+                d["driver_version"] = r.driver_version;
+                d["vendor_id"] = r.vendor_id;
+                d["device_id"] = r.device_id;
+
+                // Derived here rather than stored, so the flag and the reason
+                // cannot disagree.
+                d["supported"] = r.missing_requirement.empty();
+                d["missing_requirement"] = r.missing_requirement;
+
+                d["buffer_device_address"] = r.buffer_device_address;
+                d["scalar_block_layout"] = r.scalar_block_layout;
+                d["timeline_semaphore"] = r.timeline_semaphore;
+                d["synchronization2"] = r.synchronization2;
+                d["subgroup_size_control"] = r.subgroup_size_control;
+                d["shader_float16"] = r.shader_float16;
+                d["shader_int8"] = r.shader_int8;
+                d["shader_int16"] = r.shader_int16;
+                d["storage_buffer_16bit"] = r.storage_buffer_16bit;
+                d["global_float_atomic_add"] = r.global_float_atomic_add;
+                d["shared_float_atomic_add"] = r.shared_float_atomic_add;
+                d["cooperative_matrix"] = r.cooperative_matrix;
+
+                d["subgroup_size"] = r.subgroup_size;
+                d["min_subgroup_size"] = r.min_subgroup_size;
+                d["max_subgroup_size"] = r.max_subgroup_size;
+                d["max_workgroup_invocations"] = r.max_workgroup_invocations;
+                d["shader_core_count"] = r.shader_core_count;
+                d["max_shared_memory"] = r.max_shared_memory;
+                d["max_push_constants"] = r.max_push_constants;
+                d["max_allocation_size"] = r.max_allocation_size;
+                d["device_local_bytes"] = r.device_local_bytes;
+                d["host_visible_device_local_bytes"] = r.host_visible_device_local_bytes;
+                out.append(d);
+            }
+            return out;
+        },
+        "Describe every visible Vulkan device without creating a logical device.");
+    m.def(
         "init_vulkan",
         [](int index) {
             // Creating the backend also registers it, so device('vulkan:N')
@@ -737,6 +784,9 @@ NB_MODULE(_vkml_core, m) {
     m.attr("has_vulkan") = false;
     m.def("vulkan_available", [] { return false; });
     m.def("vulkan_device_count", [] { return 0; });
+    // Present even here: a hardware report from a CPU-only build should say
+    // "built without Vulkan" rather than fail with AttributeError.
+    m.def("vulkan_device_reports", [] { return nb::list(); });
 #endif
 
     // -- autograd -----------------------------------------------------------

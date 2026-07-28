@@ -126,6 +126,10 @@ cpu = _C.cpu_device()
 has_vulkan = _C.has_vulkan
 vulkan_available = _C.vulkan_available
 vulkan_device_count = _C.vulkan_device_count
+# Also defined on a CPU-only build, where it returns []. A hardware report has
+# to work on the machines that cannot run the backend -- those are the ones
+# worth hearing about.
+vulkan_device_reports = _C.vulkan_device_reports
 if has_vulkan:
     init_vulkan = _C.init_vulkan
     vulkan_device_names = _C.vulkan_device_names

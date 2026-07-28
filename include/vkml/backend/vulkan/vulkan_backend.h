@@ -2,6 +2,7 @@
 
 #include "vkml/backend/api/backend.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -50,6 +51,57 @@ struct VulkanStats {
     size_t pipelines = 0;
 
     [[nodiscard]] std::string describe() const;
+};
+
+/// One enumerated Vulkan device, described without creating a logical device.
+///
+/// Deliberately free of Vulkan types. `vulkan.h` is an implementation detail of
+/// backend/vulkan and must not reach a public header -- the same rule that
+/// keeps DeviceCapabilities Vulkan-free -- so the device type and API version
+/// are decoded to strings inside the backend, where those enums live.
+///
+/// Exists so a portability report can be produced on hardware the backend
+/// cannot use. Every other route to capability data goes through backend
+/// creation, which throws on precisely the device a report is wanted for.
+struct DeviceReport {
+    std::string name;
+    std::string driver_name;
+    std::string device_type;  ///< "discrete", "integrated", "virtual", "cpu", "other"
+    std::string api_version;  ///< decoded, e.g. "1.3.275"
+
+    /// Vendor-defined packing. Compare it between machines; do not decode it.
+    uint32_t driver_version = 0;
+    uint32_t vendor_id = 0;
+    uint32_t device_id = 0;
+
+    /// Empty when the backend can use this device; otherwise the first
+    /// requirement it fails, e.g. "bufferDeviceAddress".
+    std::string missing_requirement;
+
+    bool buffer_device_address = false;
+    bool scalar_block_layout = false;
+    bool timeline_semaphore = false;
+    bool synchronization2 = false;
+    bool subgroup_size_control = false;
+    bool shader_float16 = false;
+    bool shader_int8 = false;
+    bool shader_int16 = false;
+    bool storage_buffer_16bit = false;
+    bool global_float_atomic_add = false;
+    bool shared_float_atomic_add = false;
+    bool cooperative_matrix = false;
+
+    uint32_t subgroup_size = 0;
+    uint32_t min_subgroup_size = 0;
+    uint32_t max_subgroup_size = 0;
+    uint32_t max_workgroup_invocations = 0;
+    /// 0 means the driver did not report it, never "no compute units".
+    uint32_t shader_core_count = 0;
+    uint64_t max_shared_memory = 0;
+    uint64_t max_push_constants = 0;
+    uint64_t max_allocation_size = 0;
+    uint64_t device_local_bytes = 0;
+    uint64_t host_visible_device_local_bytes = 0;
 };
 
 /// GPU backend. Created on demand; never at static initialisation.
@@ -109,6 +161,12 @@ private:
 [[nodiscard]] int vulkan_device_count();
 
 [[nodiscard]] std::vector<std::string> vulkan_device_names();
+
+/// Describes every visible device WITHOUT creating a logical device.
+///
+/// Empty when no Vulkan loader or no device is present, rather than throwing:
+/// "this machine has no Vulkan" is an answer a report needs to be able to give.
+[[nodiscard]] std::vector<DeviceReport> vulkan_device_reports();
 
 /// Returns the process-wide backend for `index`, creating it on first call and
 /// registering it so `backend_for(Device::vulkan(index))` resolves.

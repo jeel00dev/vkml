@@ -200,6 +200,24 @@ with PyTorch to well inside tolerance; 65 operators across both backends;
   is f32-only.
 - No distributed training, no quantisation, no ONNX.
 
+### If you have hardware I do not
+
+That list is short because I own two GPUs. If you have anything else — NVIDIA,
+Intel, Qualcomm, ARM, Apple, or Windows — one command tells us both whether
+vkML runs on it:
+
+```sh
+python scripts/hardware_report.py --run-tests
+```
+
+It describes every Vulkan device it can see and runs the validation suite
+against the usable ones. It deliberately works on a device vkML **cannot** use,
+which is the report I most want: the backend requires exactly three things —
+`bufferDeviceAddress`, `scalarBlockLayout` and `timelineSemaphore` — and
+everything else it detects and adapts to. If your device is rejected, the report
+names which of the three is missing instead of crashing. Paste the output into
+an issue.
+
 ---
 
 ## Building from source

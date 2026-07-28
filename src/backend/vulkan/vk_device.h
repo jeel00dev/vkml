@@ -124,6 +124,23 @@ private:
 /// Names of the visible devices, for diagnostics and device selection.
 [[nodiscard]] std::vector<std::string> enumerate_device_names();
 
+/// Everything in DeviceInfo, from a physical device alone.
+///
+/// Creates no logical device, so it answers for a device the backend would go
+/// on to REJECT -- which is exactly the device a bug report is about.
+[[nodiscard]] DeviceInfo query_device_info(VkPhysicalDevice physical);
+
+/// Empty when the device meets every hard requirement; otherwise the name of
+/// the first one it fails, e.g. "bufferDeviceAddress".
+///
+/// The single source of truth for what the backend requires. Device creation
+/// and the device report both read it, so a fourth requirement cannot be added
+/// to one and silently forgotten in the other.
+[[nodiscard]] std::string missing_requirement(const DeviceInfo& info);
+
+/// DeviceInfo for every visible device, without creating a logical device.
+[[nodiscard]] std::vector<DeviceInfo> enumerate_device_info();
+
 /// Turns a VkResult into a readable string.
 [[nodiscard]] const char* result_string(VkResult r) noexcept;
 

@@ -277,8 +277,19 @@ void Context::select_physical_device(int device_index) {
     physical_ = devices[static_cast<size_t>(device_index)];
 }
 
-void Context::query_info() {
-    const std::vector<VkExtensionProperties> exts = device_extensions(physical_);
+DeviceInfo query_device_info(VkPhysicalDevice physical) {
+    DeviceInfo info;
+    const std::vector<VkExtensionProperties> exts = device_extensions(physical);
+
+    // Chain only the structures this device's core version actually defines.
+    // Handing a VkPhysicalDeviceVulkan12Properties to a Vulkan 1.1 device is a
+    // spec violation, and this runs on EVERY enumerated device -- including the
+    // old one sitting beside a modern GPU, which is precisely the machine a
+    // portability report comes from.
+    VkPhysicalDeviceProperties base{};
+    vkGetPhysicalDeviceProperties(physical, &base);
+    const bool core_1_2 = base.apiVersion >= VK_API_VERSION_1_2;
+    const bool core_1_3 = base.apiVersion >= VK_API_VERSION_1_3;
 
     // -- properties --------------------------------------------------------
     VkPhysicalDeviceSubgroupSizeControlProperties subgroup_size_props{};
@@ -286,7 +297,7 @@ void Context::query_info() {
 
     VkPhysicalDeviceVulkan11Properties props11{};
     props11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
-    props11.pNext = &subgroup_size_props;
+    props11.pNext = core_1_3 ? static_cast<void*>(&subgroup_size_props) : nullptr;
 
     VkPhysicalDeviceVulkan12Properties props12{};
     props12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
@@ -294,7 +305,7 @@ void Context::query_info() {
 
     VkPhysicalDeviceMaintenance3Properties maint3{};
     maint3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES;
-    maint3.pNext = &props12;
+    maint3.pNext = core_1_2 ? static_cast<void*>(&props12) : nullptr;
 
     // Compute-unit count. Not a core Vulkan property -- there is no portable
     // way to ask "how many independent schedulers does this GPU have" -- so it
@@ -329,87 +340,101 @@ void Context::query_info() {
     VkPhysicalDeviceProperties2 props2{};
     props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     props2.pNext = props_chain;
-    vkGetPhysicalDeviceProperties2(physical_, &props2);
+    vkGetPhysicalDeviceProperties2(physical, &props2);
 
     if (has_core_props2 && core2.activeComputeUnitCount != 0) {
-        info_.shader_core_count = core2.activeComputeUnitCount;
+        info.shader_core_count = core2.activeComputeUnitCount;
     } else if (has_core_props) {
         // The older extension reports the topology rather than the active
         // count, so a harvested part reports its physical, not usable, CUs.
-        info_.shader_core_count = core1.shaderEngineCount * core1.shaderArraysPerEngineCount *
-                                  core1.computeUnitsPerShaderArray;
+        info.shader_core_count = core1.shaderEngineCount * core1.shaderArraysPerEngineCount *
+                                 core1.computeUnitsPerShaderArray;
     }
 
     const VkPhysicalDeviceLimits& limits = props2.properties.limits;
 
-    info_.name = props2.properties.deviceName;
-    info_.api_version = props2.properties.apiVersion;
-    info_.driver_version = props2.properties.driverVersion;
-    info_.vendor_id = props2.properties.vendorID;
-    info_.device_id = props2.properties.deviceID;
-    info_.type = props2.properties.deviceType;
-    info_.driver_name = props12.driverName;
+    info.name = props2.properties.deviceName;
+    info.api_version = props2.properties.apiVersion;
+    info.driver_version = props2.properties.driverVersion;
+    info.vendor_id = props2.properties.vendorID;
+    info.device_id = props2.properties.deviceID;
+    info.type = props2.properties.deviceType;
+    info.driver_name = props12.driverName;
 
-    info_.subgroup_size = props11.subgroupSize;
-    info_.min_subgroup_size = subgroup_size_props.minSubgroupSize;
-    info_.max_subgroup_size = subgroup_size_props.maxSubgroupSize;
-    info_.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
+    info.subgroup_size = props11.subgroupSize;
+    info.min_subgroup_size = subgroup_size_props.minSubgroupSize;
+    info.max_subgroup_size = subgroup_size_props.maxSubgroupSize;
+    info.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
     for (int i = 0; i < 3; ++i) {
-        info_.max_workgroup_count[i] = limits.maxComputeWorkGroupCount[i];
-        info_.max_workgroup_size[i] = limits.maxComputeWorkGroupSize[i];
+        info.max_workgroup_count[i] = limits.maxComputeWorkGroupCount[i];
+        info.max_workgroup_size[i] = limits.maxComputeWorkGroupSize[i];
     }
-    info_.max_shared_memory = limits.maxComputeSharedMemorySize;
-    info_.max_push_constants = limits.maxPushConstantsSize;
-    info_.min_storage_buffer_offset_alignment = limits.minStorageBufferOffsetAlignment;
-    info_.max_storage_buffer_range = limits.maxStorageBufferRange;
-    info_.max_allocation_size = maint3.maxMemoryAllocationSize;
-    info_.timestamp_period = limits.timestampPeriod;
+    info.max_shared_memory = limits.maxComputeSharedMemorySize;
+    info.max_push_constants = limits.maxPushConstantsSize;
+    info.min_storage_buffer_offset_alignment = limits.minStorageBufferOffsetAlignment;
+    info.max_storage_buffer_range = limits.maxStorageBufferRange;
+    info.max_allocation_size = maint3.maxMemoryAllocationSize;
+    info.timestamp_period = limits.timestampPeriod;
 
     // -- features ----------------------------------------------------------
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomic_float{};
     atomic_float.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
 
+    // Same conditional-chaining idiom as the properties above, for the same
+    // reason: a core-version structure must not be chained on a device whose
+    // core version does not define it.
+    void* feature_chain = has_device_extension(exts, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)
+                              ? static_cast<void*>(&atomic_float)
+                              : nullptr;
+
     VkPhysicalDeviceVulkan13Features feats13{};
     feats13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    feats13.pNext = has_device_extension(exts, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)
-                        ? static_cast<void*>(&atomic_float)
-                        : nullptr;
+    feats13.pNext = feature_chain;
+    if (core_1_3) {
+        feature_chain = &feats13;
+    }
 
     VkPhysicalDeviceVulkan12Features feats12{};
     feats12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    feats12.pNext = &feats13;
+    feats12.pNext = feature_chain;
 
     VkPhysicalDeviceVulkan11Features feats11{};
     feats11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     feats11.pNext = &feats12;
+    // Both the 1.1 and the 1.2 feature struct were introduced BY Vulkan 1.2, so
+    // they enter the chain together or not at all -- which is why feats12 is
+    // linked unconditionally here and only this pair is gated.
+    if (core_1_2) {
+        feature_chain = &feats11;
+    }
 
     VkPhysicalDeviceFeatures2 feats2{};
     feats2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    feats2.pNext = &feats11;
-    vkGetPhysicalDeviceFeatures2(physical_, &feats2);
+    feats2.pNext = feature_chain;
+    vkGetPhysicalDeviceFeatures2(physical, &feats2);
 
-    info_.buffer_device_address = feats12.bufferDeviceAddress != VK_FALSE;
-    info_.scalar_block_layout = feats12.scalarBlockLayout != VK_FALSE;
-    info_.timeline_semaphore = feats12.timelineSemaphore != VK_FALSE;
-    info_.shader_float16 = feats12.shaderFloat16 != VK_FALSE;
-    info_.shader_int8 = feats12.shaderInt8 != VK_FALSE;
-    info_.shader_int16 = feats2.features.shaderInt16 != VK_FALSE;
-    info_.storage_buffer_16bit = feats11.storageBuffer16BitAccess != VK_FALSE;
-    info_.synchronization2 = feats13.synchronization2 != VK_FALSE;
-    info_.subgroup_size_control = feats13.subgroupSizeControl != VK_FALSE;
+    info.buffer_device_address = feats12.bufferDeviceAddress != VK_FALSE;
+    info.scalar_block_layout = feats12.scalarBlockLayout != VK_FALSE;
+    info.timeline_semaphore = feats12.timelineSemaphore != VK_FALSE;
+    info.shader_float16 = feats12.shaderFloat16 != VK_FALSE;
+    info.shader_int8 = feats12.shaderInt8 != VK_FALSE;
+    info.shader_int16 = feats2.features.shaderInt16 != VK_FALSE;
+    info.storage_buffer_16bit = feats11.storageBuffer16BitAccess != VK_FALSE;
+    info.synchronization2 = feats13.synchronization2 != VK_FALSE;
+    info.subgroup_size_control = feats13.subgroupSizeControl != VK_FALSE;
 
-    info_.global_float_atomic_add = atomic_float.shaderBufferFloat32AtomicAdd != VK_FALSE;
-    info_.shared_float_atomic_add = atomic_float.shaderSharedFloat32AtomicAdd != VK_FALSE;
+    info.global_float_atomic_add = atomic_float.shaderBufferFloat32AtomicAdd != VK_FALSE;
+    info.shared_float_atomic_add = atomic_float.shaderSharedFloat32AtomicAdd != VK_FALSE;
 
     // Cooperative matrix is detected by extension rather than by feature bit,
     // because its feature struct only exists when the extension does.
-    info_.cooperative_matrix = has_device_extension(exts, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
-    info_.pipeline_executable_properties =
+    info.cooperative_matrix = has_device_extension(exts, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+    info.pipeline_executable_properties =
         has_device_extension(exts, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
 
     // -- memory heaps ------------------------------------------------------
     VkPhysicalDeviceMemoryProperties mem{};
-    vkGetPhysicalDeviceMemoryProperties(physical_, &mem);
+    vkGetPhysicalDeviceMemoryProperties(physical, &mem);
 
     for (uint32_t i = 0; i < mem.memoryTypeCount; ++i) {
         const VkMemoryType& type = mem.memoryTypes[i];
@@ -419,35 +444,61 @@ void Context::query_info() {
         const bool host_visible = (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
 
         if (device_local && !host_visible) {
-            info_.device_local_bytes = std::max(info_.device_local_bytes, heap.size);
+            info.device_local_bytes = std::max(info.device_local_bytes, heap.size);
         }
         if (device_local && host_visible) {
             // The BAR window. Small on a discrete GPU without resizable BAR,
             // which is what forces staged uploads.
-            info_.host_visible_device_local_bytes =
-                std::max(info_.host_visible_device_local_bytes, heap.size);
+            info.host_visible_device_local_bytes =
+                std::max(info.host_visible_device_local_bytes, heap.size);
         }
     }
-    if (info_.device_local_bytes == 0) {
+    if (info.device_local_bytes == 0) {
         // Integrated GPU: everything is one shared heap.
         for (uint32_t i = 0; i < mem.memoryHeapCount; ++i) {
             if ((mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
-                info_.device_local_bytes =
-                    std::max(info_.device_local_bytes, mem.memoryHeaps[i].size);
+                info.device_local_bytes =
+                    std::max(info.device_local_bytes, mem.memoryHeaps[i].size);
             }
         }
     }
+    return info;
 }
 
+std::string missing_requirement(const DeviceInfo& info) {
+    if (!info.buffer_device_address) {
+        return "bufferDeviceAddress";
+    }
+    if (!info.scalar_block_layout) {
+        return "scalarBlockLayout";
+    }
+    if (!info.timeline_semaphore) {
+        return "timelineSemaphore";
+    }
+    return {};
+}
+
+std::vector<DeviceInfo> enumerate_device_info() {
+    std::vector<DeviceInfo> infos;
+    VkInstance probe = make_probe_instance();
+    if (probe == VK_NULL_HANDLE) {
+        return infos;
+    }
+    for (VkPhysicalDevice dev : physical_devices(probe)) {
+        infos.push_back(query_device_info(dev));
+    }
+    vkDestroyInstance(probe, nullptr);
+    return infos;
+}
+
+void Context::query_info() { info_ = query_device_info(physical_); }
+
 void Context::create_logical_device() {
-    VKML_CHECK(info_.buffer_device_address, DeviceError,
-               "device '{}' does not support bufferDeviceAddress, which the vkml Vulkan "
-               "backend requires (docs/ARCHITECTURE.md 5.3)",
-               info_.name);
-    VKML_CHECK(info_.scalar_block_layout, DeviceError,
-               "device '{}' does not support scalarBlockLayout", info_.name);
-    VKML_CHECK(info_.timeline_semaphore, DeviceError,
-               "device '{}' does not support timelineSemaphore", info_.name);
+    const std::string missing = missing_requirement(info_);
+    VKML_CHECK(missing.empty(), DeviceError,
+               "device '{}' does not support {}, which the vkml Vulkan backend requires "
+               "(docs/ARCHITECTURE.md 5.3)",
+               info_.name, missing);
 
     // A compute-capable queue family. Prefer one WITHOUT graphics: on AMD that
     // is an async compute engine, which does not contend with any desktop

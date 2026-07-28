@@ -80,6 +80,46 @@ TEST_CASE("vulkan context creation and capability reporting") {
     }
 }
 
+TEST_CASE("hard requirements are named one at a time") {
+    // Needs no device, which is the point: this is the code path that runs on
+    // hardware the backend REFUSES, and no machine the project can test on
+    // reaches it. Synthesising the DeviceInfo is the only way to cover it.
+    vkml::vk::DeviceInfo info;
+
+    CHECK(vkml::vk::missing_requirement(info) == "bufferDeviceAddress");
+    info.buffer_device_address = true;
+    CHECK(vkml::vk::missing_requirement(info) == "scalarBlockLayout");
+    info.scalar_block_layout = true;
+    CHECK(vkml::vk::missing_requirement(info) == "timelineSemaphore");
+    info.timeline_semaphore = true;
+    CHECK(vkml::vk::missing_requirement(info).empty());
+
+    // A device may lack everything optional and still be usable. If this ever
+    // fails, an optional capability has silently become mandatory.
+    CHECK(!info.shader_float16);
+    CHECK(!info.cooperative_matrix);
+    CHECK(!info.subgroup_size_control);
+    CHECK(vkml::vk::missing_requirement(info).empty());
+}
+
+TEST_CASE("devices can be described without creating one") {
+    if (!have_device()) {
+        MESSAGE("no Vulkan device present; skipping");
+        return;
+    }
+    const std::vector<vkml::vk::DeviceInfo> infos = vkml::vk::enumerate_device_info();
+    const std::vector<std::string> names = vkml::vk::enumerate_device_names();
+
+    REQUIRE(infos.size() == names.size());
+    for (size_t i = 0; i < infos.size(); ++i) {
+        CHECK(infos[i].name == names[i]);
+        CHECK(infos[i].api_version != 0);
+        // Reported for every device, usable or not -- that is what makes this
+        // safe to run on unknown hardware.
+        CHECK(infos[i].max_workgroup_invocations > 0);
+    }
+}
+
 TEST_CASE("vulkan device index is validated") {
     if (!have_device()) {
         MESSAGE("no Vulkan device present; skipping");

@@ -2238,6 +2238,66 @@ std::vector<std::string> vulkan_device_names() { return vk::enumerate_device_nam
 
 namespace {
 
+/// The only place a VkPhysicalDeviceType is turned into text.
+const char* device_type_name(VkPhysicalDeviceType type) {
+    switch (type) {
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return "integrated";
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return "discrete";
+        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: return "virtual";
+        case VK_PHYSICAL_DEVICE_TYPE_CPU: return "cpu";
+        default: return "other";
+    }
+}
+
+}  // namespace
+
+std::vector<DeviceReport> vulkan_device_reports() {
+    std::vector<DeviceReport> reports;
+    for (const vk::DeviceInfo& info : vk::enumerate_device_info()) {
+        DeviceReport r;
+        r.name = info.name;
+        r.driver_name = info.driver_name;
+        r.device_type = device_type_name(info.type);
+        r.api_version = std::format("{}.{}.{}", VK_API_VERSION_MAJOR(info.api_version),
+                                    VK_API_VERSION_MINOR(info.api_version),
+                                    VK_API_VERSION_PATCH(info.api_version));
+        r.driver_version = info.driver_version;
+        r.vendor_id = info.vendor_id;
+        r.device_id = info.device_id;
+
+        r.missing_requirement = vk::missing_requirement(info);
+
+        r.buffer_device_address = info.buffer_device_address;
+        r.scalar_block_layout = info.scalar_block_layout;
+        r.timeline_semaphore = info.timeline_semaphore;
+        r.synchronization2 = info.synchronization2;
+        r.subgroup_size_control = info.subgroup_size_control;
+        r.shader_float16 = info.shader_float16;
+        r.shader_int8 = info.shader_int8;
+        r.shader_int16 = info.shader_int16;
+        r.storage_buffer_16bit = info.storage_buffer_16bit;
+        r.global_float_atomic_add = info.global_float_atomic_add;
+        r.shared_float_atomic_add = info.shared_float_atomic_add;
+        r.cooperative_matrix = info.cooperative_matrix;
+
+        r.subgroup_size = info.subgroup_size;
+        r.min_subgroup_size = info.min_subgroup_size;
+        r.max_subgroup_size = info.max_subgroup_size;
+        r.max_workgroup_invocations = info.max_workgroup_invocations;
+        r.shader_core_count = info.shader_core_count;
+        r.max_shared_memory = info.max_shared_memory;
+        r.max_push_constants = info.max_push_constants;
+        r.max_allocation_size = info.max_allocation_size;
+        r.device_local_bytes = info.device_local_bytes;
+        r.host_visible_device_local_bytes = info.host_visible_device_local_bytes;
+
+        reports.push_back(std::move(r));
+    }
+    return reports;
+}
+
+namespace {
+
 std::mutex& backend_mutex() {
     static std::mutex m;
     return m;
