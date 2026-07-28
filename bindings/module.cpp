@@ -28,6 +28,8 @@
 #    include "vkml/backend/vulkan/vulkan_backend.h"
 #endif
 #include "vkml/dispatch/executor.h"
+#include "vkml/graph/op.h"
+#include "vkml/util/coverage.h"
 #include "vkml/util/error.h"
 #include "vkml/util/log.h"
 
@@ -291,6 +293,41 @@ NB_MODULE(_vkml_core, m) {
     m.def("set_eager", &vkml::set_eager, "enabled"_a,
           "Realize after every operation. Same results, easier debugging.");
     m.def("is_eager", &vkml::eager);
+
+    // -- coverage recording -------------------------------------------------
+    // Flushed explicitly rather than at process exit: static destruction order
+    // across a Python extension is not something to rely on for a file write.
+    m.def("_coverage_enabled", &vkml::coverage::enabled,
+          "True when VKML_COVERAGE is set and execution is being recorded.");
+    m.def("_coverage_dump", &vkml::coverage::dump, "path"_a,
+          "Write every distinct observation to a file. Returns the line count.");
+    m.def("_coverage_clear", &vkml::coverage::clear);
+
+    // The operator inventory and its categories, read out of the enum itself.
+    // The coverage report needs a denominator and needs to know which operators
+    // the executor can even observe; parsing the header for either would drift
+    // silently the first time an operator is added.
+    m.def("_op_names", [] {
+        std::vector<std::string> names;
+        names.reserve(static_cast<size_t>(vkml::kNumOps));
+        for (int i = 0; i < vkml::kNumOps; ++i) {
+            names.emplace_back(vkml::op_name(static_cast<vkml::OpKind>(i)));
+        }
+        return names;
+    });
+
+    m.def("_op_categories", [] {
+        std::vector<std::pair<std::string, std::string>> out;
+        out.reserve(static_cast<size_t>(vkml::kNumOps));
+        for (int i = 0; i < vkml::kNumOps; ++i) {
+            const auto op = static_cast<vkml::OpKind>(i);
+            const char* category = vkml::is_leaf_op(op)   ? "leaf"
+                                   : vkml::is_view_op(op) ? "view"
+                                                          : "compute";
+            out.emplace_back(vkml::op_name(op), category);
+        }
+        return out;
+    });
 
     // -- Tensor -------------------------------------------------------------
     nb::class_<Tensor> tensor(m, "Tensor");

@@ -3,6 +3,7 @@
 #include "vkml/api/ops.h"
 #include "vkml/graph/node.h"
 #include "vkml/util/assert.h"
+#include "vkml/util/coverage.h"
 
 #include <atomic>
 #include <format>
@@ -109,6 +110,15 @@ Tensor reduce_to_shape(const Tensor& g, const std::vector<int64_t>& target_dims)
 /// Appends the adjoint computation for one node.
 void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
     Node& node = *np;
+
+    // Recorded here rather than at the executor, because a backward rule is
+    // built from ordinary forward operations -- so running one shows up
+    // downstream as more Mul and Sum nodes, indistinguishable from a forward
+    // test. This is the only place that knows a *rule* fired.
+    if (coverage::enabled()) {
+        coverage::record_backward_rule(op_name(node.op));
+    }
+
     const NodePtr& a = node.src[0];
     const NodePtr& b = node.src[1];
 

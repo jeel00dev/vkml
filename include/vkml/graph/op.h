@@ -133,6 +133,16 @@ inline constexpr int kMaxSrc = 4;
 
 [[nodiscard]] std::string_view op_name(OpKind op) noexcept;
 
+/// True for ops whose value is supplied rather than computed. A leaf arrives
+/// already realised, so the executor never schedules one.
+///
+/// Lives here beside is_view_op so that the three categories a node can fall
+/// into -- leaf, view, computed -- are answerable from one place. `Node::is_leaf`
+/// delegates to this.
+[[nodiscard]] constexpr bool is_leaf_op(OpKind op) noexcept {
+    return op == OpKind::Input || op == OpKind::Const;
+}
+
 /// True for ops that only reinterpret their input's layout. A view node shares
 /// its source's storage and must never be written to.
 [[nodiscard]] constexpr bool is_view_op(OpKind op) noexcept {

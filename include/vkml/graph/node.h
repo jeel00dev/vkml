@@ -117,9 +117,7 @@ struct Node {
 
     [[nodiscard]] bool is_realized() const noexcept { return storage != nullptr; }
 
-    [[nodiscard]] bool is_leaf() const noexcept {
-        return op == OpKind::Input || op == OpKind::Const;
-    }
+    [[nodiscard]] bool is_leaf() const noexcept { return is_leaf_op(op); }
 
     [[nodiscard]] bool is_view() const noexcept { return view_src != nullptr; }
 

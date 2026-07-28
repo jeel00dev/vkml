@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -226,6 +227,26 @@ def _eager_and_quiet():
     V.set_log_level(V.LogLevel.WARN)
     with V.eager_mode(True):
         yield
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Flush the coverage recording, when one was requested.
+
+    Written here rather than from a C++ atexit handler: static destruction order
+    across a Python extension is not a thing to stake a file write on. Set
+    VKML_COVERAGE to a path to record; `1` writes beside the tests.
+
+    Recording only measures what the suite *executed* -- see
+    include/vkml/util/coverage.h for what that does and does not prove.
+    """
+    target = os.environ.get("VKML_COVERAGE")
+    if not target:
+        return
+    if target in ("1", "true", "yes"):
+        target = str(Path(__file__).resolve().parent / "coverage.tsv")
+
+    written = V._vkml_core._coverage_dump(target)
+    print(f"\ncoverage: {written} distinct observations -> {target}")
 
 
 def pytest_configure(config):

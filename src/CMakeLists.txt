@@ -9,6 +9,7 @@
 set(VKML_SOURCES
     util/log.cpp
     util/error.cpp
+    util/coverage.cpp
 
     core/dtype.cpp
     core/device.cpp
