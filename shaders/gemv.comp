@@ -72,6 +72,14 @@ layout(constant_id = 3) const uint WG = 64;
 // "cost of the cross-lane reduction", which otherwise predict identically.
 // Zero in production; nothing reads a meaningful value out of it.
 layout(constant_id = 4) const uint PAD_FLOATS = 0;
+
+// Storage types. DTYPE is the OPERANDS'; OUT_DTYPE is the destination's. They
+// differ only under split-K, where the kernel writes f32 partial sums into a
+// workspace rather than the output -- rounding a partial to 16 bits before the
+// final fold would break fp32 accumulation across the split
+// (docs/ARCHITECTURE.md 7.3). Shared tiles and accumulators stay float always.
+layout(constant_id = 5) const uint DTYPE = T_F32;
+layout(constant_id = 6) const uint OUT_DTYPE = T_F32;
 const uint PAD_ALLOC = PAD_FLOATS > 0u ? PAD_FLOATS : 1u;
 
 layout(local_size_x_id = 0) in;
@@ -137,9 +145,9 @@ void main() {
         for (uint idx = t; idx < per_pass; idx += WG) {
             const uint kk = base + idx;
             const bool live = kk < p.k;
-            As[idx] = live ? F32Buf(p.a).v[a_batch + row * p.op_a.nb[2] + kk * p.op_a.nb[3]]
+            As[idx] = live ? load_f(p.a, a_batch + row * p.op_a.nb[2] + kk * p.op_a.nb[3], DTYPE)
                            : 0.0;
-            Bs[idx] = live ? F32Buf(p.b).v[b_batch + kk * p.op_b.nb[2] + col * p.op_b.nb[3]]
+            Bs[idx] = live ? load_f(p.b, b_batch + kk * p.op_b.nb[2] + col * p.op_b.nb[3], DTYPE)
                            : 0.0;
         }
         barrier();
@@ -190,6 +198,6 @@ void main() {
                 total += stack[level];
             }
         }
-        F32Buf(p.d).v[out_id] = total;
+        store_f(p.d, out_id, total, OUT_DTYPE);
     }
 }

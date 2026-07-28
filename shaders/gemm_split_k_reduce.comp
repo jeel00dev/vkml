@@ -33,6 +33,10 @@
 // cannot use. Five covers the 16-way maximum the dispatch rules allow.
 layout(constant_id = 1) const uint SPLIT_LEVELS = 5;
 
+// The partials are ALWAYS f32 -- see the note in gemm_reg.comp -- so only the
+// destination needs a storage type here.
+layout(constant_id = 2) const uint OUT_DTYPE = T_F32;
+
 layout(local_size_x_id = 0) in;
 
 layout(push_constant, scalar) uniform Params {
@@ -78,5 +82,5 @@ void main() {
         }
     }
 
-    F32Buf(p.dst).v[idx] = total;
+    store_f(p.dst, idx, total, OUT_DTYPE);
 }

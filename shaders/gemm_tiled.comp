@@ -31,6 +31,15 @@
 // below are sized from it (legal for spec constants in Vulkan GLSL).
 layout(constant_id = 1) const uint TILE = 16;
 
+// Storage types. DTYPE is the OPERANDS'; OUT_DTYPE is the destination's, and
+// they differ in exactly one case: under split-K this kernel writes f32 partial
+// sums into a workspace rather than the output, because rounding a partial sum
+// to 16 bits before the final fold would break fp32 accumulation across the
+// split (docs/ARCHITECTURE.md 7.3) just as surely as a 16-bit accumulator does.
+// Shared tiles and the register accumulators stay float in every case.
+layout(constant_id = 2) const uint DTYPE = T_F32;
+layout(constant_id = 3) const uint OUT_DTYPE = T_F32;
+
 layout(local_size_x_id = 0) in;
 
 layout(push_constant, scalar) uniform Params {
@@ -94,7 +103,7 @@ void main() {
             const uint a_col = k_base + tx;
             As[ty * TILE + tx] =
                 (a_row < p.m && a_col < p.k)
-                    ? F32Buf(p.a).v[a_batch + a_row * p.op_a.nb[2] + a_col * p.op_a.nb[3]]
+                    ? load_f(p.a, a_batch + a_row * p.op_a.nb[2] + a_col * p.op_a.nb[3], DTYPE)
                     : 0.0;
         }
 
@@ -104,7 +113,7 @@ void main() {
             const uint b_col = col;
             Bs[ty * TILE + tx] =
                 (b_row < p.k && b_col < p.n)
-                    ? F32Buf(p.b).v[b_batch + b_row * p.op_b.nb[2] + b_col * p.op_b.nb[3]]
+                    ? load_f(p.b, b_batch + b_row * p.op_b.nb[2] + b_col * p.op_b.nb[3], DTYPE)
                     : 0.0;
         }
 
@@ -136,6 +145,6 @@ void main() {
     // -- phase 6: write, guarding the partial tiles on the M and N edges ----
     if (row < p.m && col < p.n) {
         const uint out_idx = ((i0 * p.b1 + i1) * p.m + row) * p.n + col;
-        F32Buf(p.d).v[out_idx] = acc;
+        store_f(p.d, out_idx, acc, OUT_DTYPE);
     }
 }

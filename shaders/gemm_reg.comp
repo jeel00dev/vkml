@@ -53,6 +53,14 @@ layout(constant_id = 6) const uint STACK_LEVELS = 12;
 // A transposed or broadcast operand fails that test and takes the scalar path.
 layout(constant_id = 7) const uint VEC4 = 0;
 
+// Storage types. DTYPE is the OPERANDS'; OUT_DTYPE is the destination's. They
+// differ only under split-K, where the kernel writes f32 partial sums into a
+// workspace rather than the output -- rounding a partial to 16 bits before the
+// final fold would break fp32 accumulation across the split
+// (docs/ARCHITECTURE.md 7.3). Shared tiles and accumulators stay float always.
+layout(constant_id = 9) const uint DTYPE = T_F32;
+layout(constant_id = 10) const uint OUT_DTYPE = T_F32;
+
 // Widen the compute phase's shared-memory reads of B from scalar to vec2.
 //
 // Only B can be widened without changing the tile layout. Per kk:
@@ -88,6 +96,12 @@ shared float As[BM * BK];
 shared vec2 Bs2[(BK * BN) / 2];
 
 /// Loads 4 consecutive floats starting at `elem` elements past `base`.
+///
+/// F32 ONLY, and reached only when VEC4 == 1. The host sets VEC4 = 0 for f16,
+/// which folds the vectorised branch away and leaves the scalar fallback --
+/// already present and already correct -- to do the loading. A 16-bit vec4
+/// would need its own buffer reference and its own alignment argument, and
+/// there is no measurement yet saying the scalar path costs anything.
 vec4 load4(uint64_t base, uint elem) {
     return F32Vec4Buf(base + uint64_t(elem) * 4ul).v[0];
 }
@@ -159,8 +173,8 @@ void main() {
                     const uint cc = c + t;
                     As[idx4 + t] =
                         (gr < p.m && k_base + cc < p.k)
-                            ? F32Buf(p.a).v[a_batch + gr * p.op_a.nb[2] +
-                                            (k_base + cc) * p.op_a.nb[3]]
+                            ? load_f(p.a, a_batch + gr * p.op_a.nb[2] +
+                                                 (k_base + cc) * p.op_a.nb[3], DTYPE)
                             : 0.0;
                 }
             }
@@ -183,8 +197,8 @@ void main() {
                 for (uint t = 0u; t < 4u; ++t) {
                     const uint cc = tile_c * BN + c + t;
                     const float value = (gr < p.k && cc < p.n)
-                                            ? F32Buf(p.b).v[b_batch + gr * p.op_b.nb[2] +
-                                                            cc * p.op_b.nb[3]]
+                                            ? load_f(p.b, b_batch + gr * p.op_b.nb[2] +
+                                                                 cc * p.op_b.nb[3], DTYPE)
                                             : 0.0;
                     Bs2[(idx4 + t) / 2u][(idx4 + t) % 2u] = value;
                 }
@@ -255,7 +269,7 @@ void main() {
             const uint row = row0 + i;
             const uint col = col0 + j;
             if (row < p.m && col < p.n) {
-                F32Buf(p.d).v[((i0 * p.b1 + i1) * p.m + row) * p.n + col] = total;
+                store_f(p.d, ((i0 * p.b1 + i1) * p.m + row) * p.n + col, total, OUT_DTYPE);
             }
         }
     }

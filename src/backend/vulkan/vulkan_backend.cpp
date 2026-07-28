@@ -889,13 +889,12 @@ bool VulkanBackend::supports(const Node& node) const {
             // Operands arrive normalised to rank 4 by the graph builder, and
             // the output is always freshly allocated and contiguous.
             //
-            // F32 ONLY, deliberately. The GEMM family is six tuned shaders with
-            // shared-memory tiling, double buffering and vec4 loads, and giving
-            // them an f16 storage path is a change to the most delicate code in
-            // the project rather than a load/store swap. Held back so it can be
-            // done and measured on its own; f16 matmul runs on the CPU and
-            // raises here, which is loud rather than silent.
-            return node.dtype == DType::F32 && node.shape.ndim() == 4 && node.shape.is_contiguous();
+            // Shared tiles, register accumulators and split-K partials all stay
+            // f32 whatever the operands are; only the global loads and the
+            // final store narrow (ARCHITECTURE.md 7.3).
+            return is_floating(node.dtype) && binary_srcs_are_float(node) &&
+                   node.src[0]->dtype == node.dtype && node.shape.ndim() == 4 &&
+                   node.shape.is_contiguous();
         default: return false;
     }
 }
@@ -1596,7 +1595,13 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                         return v == nullptr ? 0U : static_cast<uint32_t>(std::atoi(v)) * 256U;
                     }();
                     gcfg.shared_memory_bytes += pad_floats * sizeof(float);
-                    gcfg.spec_constants = {kGemvWg, levels, 1, kGemvWg, pad_floats};
+                    gcfg.spec_constants = {kGemvWg,
+                                           levels,
+                                           1,
+                                           kGemvWg,
+                                           pad_floats,
+                                           spec_dtype(node->dtype),
+                                           spec_dtype(node->dtype)};
 
                     const size_t gesz = dtype_size(node->dtype);
                     GemmPush gp{};
@@ -1837,12 +1842,15 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = gemm_wg;
+                // Operands and destination carry the same storage type here;
+                // the split-K path below overrides the destination to f32.
+                const uint32_t dt = spec_dtype(node->dtype);
                 if (use_naive) {
                     cfg.shared_memory_bytes = 0;
-                    cfg.spec_constants = {gemm_wg};
+                    cfg.spec_constants = {gemm_wg, dt, dt};
                 } else if (use_tiled) {
                     cfg.shared_memory_bytes = 2 * kTile * kTile * sizeof(float);
-                    cfg.spec_constants = {gemm_wg, kTile};
+                    cfg.spec_constants = {gemm_wg, kTile, dt, dt};
                 } else {
                     // Stack depth from the actual K, bucketed so the pipeline
                     // cache does not gain an entry per distinct K.
@@ -1895,12 +1903,24 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     }();
                     const bool lds_vec = !no_ldsvec && kRN == 2;
 
+                    // vec4 loading is f32-only: load4 reads through
+                    // F32Vec4Buf, and a 16-bit vector would need its own
+                    // buffer reference and alignment argument. Disabling it
+                    // leaves the scalar fallback, which is already correct.
+                    const bool vec4 = can_vec4 && node->dtype == DType::F32;
+
                     cfg.spec_constants = {
-                        gemm_wg,          kBM, kBN, kBK, kRM, kRN, levels, can_vec4 ? 1U : 0U,
-                        lds_vec ? 1U : 0U};
+                        gemm_wg,           kBM, kBN, kBK, kRM, kRN, levels, vec4 ? 1U : 0U,
+                        lds_vec ? 1U : 0U, dt,  dt};
                 }
 
+                // The operands' element size, which for a matmul equals the
+                // output's -- vkml does not promote. Named for what it is
+                // because the split-K workspace below deliberately does NOT use
+                // it: partials are f32 whatever the operands are.
                 const size_t esz = dtype_size(node->dtype);
+                constexpr size_t kPartialEsz = sizeof(float);
+
                 GemmPush push{};
                 push.a = address_of(a);
                 push.b = address_of(b);
@@ -1991,11 +2011,25 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     // exists, which is why its numerical behaviour cannot have
                     // drifted.
                     const uint64_t slice_elems = static_cast<uint64_t>(total);  // b0*b1*m*n
-                    const uint64_t ws_bytes = slice_elems * splits * static_cast<uint64_t>(esz);
+                    const uint64_t ws_bytes =
+                        slice_elems * splits * static_cast<uint64_t>(kPartialEsz);
                     const uint64_t ws = impl_->splitk_workspace(ws_bytes);
 
+                    // The partitions write f32 partial sums into the
+                    // workspace, not the output, so their destination type
+                    // differs from every other dispatch of this kernel.
+                    vk::KernelConfig partial_cfg = cfg;
+                    // OUT_DTYPE is the last constant this path builds. Asserted
+                    // rather than assumed: appending another one would make
+                    // back() overwrite the wrong slot, and the result would be
+                    // a misread workspace rather than a failure.
+                    VKML_ASSERT(
+                        partial_cfg.spec_constants.size() == 11,
+                        "gemm_reg spec constants changed shape; OUT_DTYPE is no longer last");
+                    partial_cfg.spec_constants.back() = spec_dtype(DType::F32);
+
                     const auto& part_pipe = pipes.get("gemm_reg", spv::gemm_reg, spv::gemm_reg_size,
-                                                      sizeof(GemmPush), cfg);
+                                                      sizeof(GemmPush), partial_cfg);
                     for (uint32_t s = 0; s < splits; ++s) {
                         const uint32_t k_begin = s * split_chunk * kBK;
                         const uint32_t k_len = std::min(split_chunk * kBK, k - k_begin);
@@ -2004,7 +2038,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                         // Strides are in ELEMENTS; addresses are in bytes.
                         sp.a = push.a + static_cast<uint64_t>(k_begin) * push.op_a.nb[3] * esz;
                         sp.b = push.b + static_cast<uint64_t>(k_begin) * push.op_b.nb[2] * esz;
-                        sp.d = ws + static_cast<uint64_t>(s) * slice_elems * esz;
+                        sp.d = ws + static_cast<uint64_t>(s) * slice_elems * kPartialEsz;
                         sp.k = k_len;
                         // No barrier between partitions: they write disjoint
                         // workspace slices, so the driver is free to overlap
@@ -2023,7 +2057,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
 
                     vk::KernelConfig rcfg;
                     rcfg.workgroup_size = wg;
-                    rcfg.spec_constants = {wg, split_levels};
+                    rcfg.spec_constants = {wg, split_levels, spec_dtype(node->dtype)};
 
                     SplitKReducePush rp{};
                     rp.src = ws;

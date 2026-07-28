@@ -30,6 +30,15 @@
 
 layout(local_size_x_id = 0) in;
 
+// Storage types. DTYPE is the OPERANDS'; OUT_DTYPE is the destination's, and
+// they differ in exactly one case: under split-K this kernel writes f32 partial
+// sums into a workspace rather than the output, because rounding a partial sum
+// to 16 bits before the final fold would break fp32 accumulation across the
+// split (docs/ARCHITECTURE.md 7.3) just as surely as a 16-bit accumulator does.
+// Shared tiles and the register accumulators stay float in every case.
+layout(constant_id = 1) const uint DTYPE = T_F32;
+layout(constant_id = 2) const uint OUT_DTYPE = T_F32;
+
 layout(push_constant, scalar) uniform Params {
     uint64_t a;
     uint64_t b;
@@ -75,8 +84,8 @@ void main() {
         // src/backend/cpu/reduce.h so the two backends fold in the same order.
         float block = 0.0;
         for (uint t = 0; t < 32u && kk < p.k; ++t, ++kk) {
-            block += F32Buf(p.a).v[a_base + kk * a_step] *
-                     F32Buf(p.b).v[b_base + kk * b_step];
+            block += load_f(p.a, a_base + kk * a_step, DTYPE) *
+                     load_f(p.b, b_base + kk * b_step, DTYPE);
         }
         uint c = count++;
         uint level = 0;
@@ -89,5 +98,5 @@ void main() {
         if (((count >> level) & 1u) == 1u) { acc += stack[level]; }
     }
 
-    F32Buf(p.d).v[gid] = acc;
+    store_f(p.d, gid, acc, OUT_DTYPE);
 }
