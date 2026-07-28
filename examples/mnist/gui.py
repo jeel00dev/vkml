@@ -312,15 +312,30 @@ class Viewer:
 
 
 def load_model(name: str, device) -> V.nn.Module:
-    weights = HERE / f"{name}_weights.npz"
+    weights = HERE / f"{name}.vkml"
     if not weights.exists():
         raise SystemExit(
             f"no weights at {weights}\n"
             f"train first:  python examples/mnist/train.py --model {name}"
         )
+    # load, then check, then install -- in that order. load_module would do all
+    # three at once, and the key-set mismatch would fire before the metadata
+    # could be consulted, which is the confusing error this check exists to
+    # replace.
+    checkpoint = V.load(weights)
+
+    saved_name = checkpoint.metadata.get("model")
+    if saved_name is not None and saved_name != name:
+        raise SystemExit(f"{weights} holds a '{saved_name}' model, not '{name}'")
+
     model = trainer.MODELS[name][0]()
-    with np.load(weights) as saved:
-        model.load_state_dict({k: saved[k] for k in saved.files})
+    model.load_state_dict(checkpoint.tensors)
+
+    accuracy = checkpoint.metadata.get("test_accuracy")
+    if accuracy is not None:
+        print(f"loaded {weights.name}: {saved_name}, "
+              f"{accuracy * 100:.2f}% test accuracy when saved")
+
     model.to(device)
     model.eval()
     return model

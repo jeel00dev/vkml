@@ -35,6 +35,7 @@ import sys
 sys.path.insert(0, str(HERE.parent.parent / "python"))
 
 import vkml as V  # noqa: E402
+from vkml.data import ArrayDataset, DataLoader  # noqa: E402
 
 import data as mnist_data  # noqa: E402
 
@@ -81,14 +82,6 @@ MODELS = {
 }
 
 
-def batches(n: int, batch_size: int, rng: np.random.Generator):
-    """Shuffled index batches. The trailing partial batch is dropped so both
-    frameworks always see the same shapes."""
-    order = rng.permutation(n)
-    for start in range(0, n - batch_size + 1, batch_size):
-        yield order[start:start + batch_size]
-
-
 def evaluate(model: V.nn.Module, x: np.ndarray, y: np.ndarray, device,
              batch_size: int = 500) -> tuple[float, float]:
     """Accuracy and mean loss over a dataset, in inference mode."""
@@ -97,11 +90,14 @@ def evaluate(model: V.nn.Module, x: np.ndarray, y: np.ndarray, device,
     loss_sum = 0.0
     seen = 0
 
+    # Neither shuffled nor drop_last, unlike training: every example must be
+    # scored exactly once, and a dropped tail would quietly change the
+    # denominator.
+    loader = DataLoader(ArrayDataset(x, y), batch_size=batch_size)
+
     with V.no_grad():
-        for start in range(0, len(x), batch_size):
-            xb = V.tensor(x[start:start + batch_size], device=device)
-            yb_np = y[start:start + batch_size]
-            logits = model(xb)
+        for xb_np, yb_np in loader:
+            logits = model(V.tensor(xb_np, device=device))
             loss = V.nn.cross_entropy(logits, V.tensor(yb_np, device=device))
 
             predicted = np.argmax(logits.numpy(), axis=-1)
@@ -150,13 +146,22 @@ def train(args) -> dict:
     step = 0
     started = time.perf_counter()
 
+    # One loader for the whole run, not one per epoch: it advances its own epoch
+    # counter, so the order differs each pass and the whole sequence still
+    # replays from the seed alone.
+    #
+    # It yields NUMPY, and both frameworks are built from the same array. That is
+    # a stronger guarantee than feeding them matching indices -- there is only
+    # one set of bytes, so the two runs cannot silently see different rows.
+    loader = DataLoader(ArrayDataset(train_x, train_y), batch_size=args.batch_size,
+                        shuffle=True, drop_last=True, seed=args.seed)
+
     for epoch in range(args.epochs):
-        rng = np.random.default_rng(args.seed + epoch)
         epoch_started = time.perf_counter()
 
-        for index in batches(len(train_x), args.batch_size, rng):
-            xb = V.tensor(train_x[index], device=device)
-            yb = V.tensor(train_y[index], device=device)
+        for xb_np, yb_np in loader:
+            xb = V.tensor(xb_np, device=device)
+            yb = V.tensor(yb_np, device=device)
 
             optimiser.zero_grad()
             loss = V.nn.cross_entropy(model(xb), yb)
@@ -169,8 +174,7 @@ def train(args) -> dict:
                 import torch
                 torch_opt.zero_grad()
                 t_loss = torch.nn.functional.cross_entropy(
-                    torch_model(torch.from_numpy(train_x[index].copy())),
-                    torch.from_numpy(train_y[index].copy()))
+                    torch_model(torch.from_numpy(xb_np)), torch.from_numpy(yb_np))
                 t_loss.backward()
                 torch_opt.step()
                 torch_loss = float(t_loss.item())
@@ -212,17 +216,22 @@ def train(args) -> dict:
         torch_model.eval()
         correct = 0
         with torch.no_grad():
-            for start in range(0, len(test_x), 500):
-                logits = torch_model(torch.from_numpy(test_x[start:start + 500].copy()))
-                predicted = logits.argmax(dim=-1).numpy()
-                correct += int((predicted == test_y[start:start + 500]).sum())
+            for xb_np, yb_np in DataLoader(ArrayDataset(test_x, test_y), batch_size=500):
+                predicted = torch_model(torch.from_numpy(xb_np)).argmax(dim=-1).numpy()
+                correct += int((predicted == yb_np).sum())
         torch_accuracy = correct / len(test_x)
 
-    # numpy persistence, not a checkpoint format: state_dict already returns
-    # arrays, and designing a real format is separate work. Enough for the GUI
-    # to load what was trained here.
-    weights_path = HERE / f"{args.model}_weights.npz"
-    np.savez(weights_path, **model.state_dict())
+    # The metadata is what makes this a checkpoint rather than a bag of arrays:
+    # the file now says which architecture it belongs to, so loading it into the
+    # wrong one is caught by name instead of by a confusing key-set mismatch.
+    weights_path = HERE / f"{args.model}.vkml"
+    V.save_module(weights_path, model, metadata={
+        "model": args.model,
+        "device": str(device),
+        "epochs": args.epochs,
+        "steps": step,
+        "test_accuracy": accuracy,
+    })
 
     summary = {
         "model": args.model,

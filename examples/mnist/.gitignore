@@ -1,5 +1,5 @@
 # Downloaded dataset and trained artifacts: reproducible from train.py, and
 # the IDX archives are ~11 MB.
 cache/
-*_weights.npz
+*.vkml
 *_summary.json
