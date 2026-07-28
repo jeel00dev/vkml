@@ -32,7 +32,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python"))
 
 import vkml as V  # noqa: E402
-from vkvalidate import VULKAN_DEVICE, gpu_device, requires_vulkan  # noqa: E402
+from vkvalidate import (VULKAN_DEVICE, gpu_device, requires_radv,  # noqa: E402
+                        requires_vulkan)
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -514,6 +515,13 @@ def test_profiler_reports_nonzero_for_a_real_dispatch():
         V.vulkan_set_profiling(False, VULKAN_DEVICE)
 
 
+# Needs hardware that actually overlaps independent dispatches. lavapipe does
+# not -- it is a software rasteriser reporting zero compute units, and it runs
+# the eight split-K partitions one after another, so the submit window equals
+# the summed dispatch time instead of beating it. Marked for the GPU the
+# behaviour was measured on; another discrete GPU would very likely satisfy it
+# too, but that is untested and I will not claim it.
+@requires_radv
 @requires_vulkan
 def test_submit_window_bounds_concurrent_dispatches():
     """The submit window must be a TRUE upper bound on concurrent execution.
@@ -598,6 +606,7 @@ def _gemm_stats(env: dict[str, str], m: int, k: int, n: int) -> dict:
     return _json.loads(res.stdout.strip().splitlines()[-1])
 
 
+@requires_radv
 @requires_vulkan
 @pytest.mark.slow
 @pytest.mark.parametrize("block,k,levels", [("2x2", 256, 4), ("2x2", 512, 6), ("2x2", 2048, 8)])
@@ -623,6 +632,7 @@ def test_register_model_predicts_vgpr_exactly(block, k, levels):
     )
 
 
+@requires_radv
 @requires_vulkan
 @pytest.mark.slow
 def test_high_occupancy_can_mean_spilling_not_efficiency():
@@ -645,6 +655,7 @@ def test_high_occupancy_can_mean_spilling_not_efficiency():
     )
 
 
+@requires_radv
 @requires_vulkan
 @pytest.mark.slow
 def test_split_k_removes_the_4x4_spill():
@@ -677,6 +688,7 @@ def test_split_k_removes_the_4x4_spill():
 _C = {(2, 2): 18, (4, 2): 26, (2, 4): 23, (4, 4): 35, (2, 8): 35, (8, 2): 42}
 
 
+@requires_radv
 @requires_vulkan
 @pytest.mark.slow
 @pytest.mark.parametrize("block,k,levels", [
@@ -694,6 +706,7 @@ def test_law1_vgpr_equals_stack_plus_constant(block, k, levels):
     assert st["vgprs"] == rm * rn * levels + _C[(rm, rn)]
 
 
+@requires_radv
 @requires_vulkan
 @pytest.mark.slow
 def test_law4_spill_threshold_is_array_size_not_register_pressure():
@@ -718,6 +731,7 @@ def test_law4_spill_threshold_is_array_size_not_register_pressure():
     assert spilled["scratch_bytes"] == 4 * 2 * 10 * 256
 
 
+@requires_radv
 @requires_vulkan
 @pytest.mark.slow
 def test_register_cost_is_asymmetric_in_rm_and_rn():
@@ -788,6 +802,7 @@ def _split_decisions(shapes: list[tuple[int, int, int]]) -> dict[tuple, int]:
     return chosen
 
 
+@requires_radv
 @requires_vulkan
 @pytest.mark.slow
 def test_split_k_heuristic_accepts_only_measured_wins():

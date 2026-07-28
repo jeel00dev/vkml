@@ -154,7 +154,19 @@ POLICY: dict[str, Tolerance] = {
     "sqrt": Tolerance(Kind.ULP, ulp=3, note="Vulkan: 2.5 ULP"),
     "rsqrt": Tolerance(Kind.ULP, ulp=3, note="Vulkan: 2 ULP for InverseSqrt"),
     "exp": Tolerance(Kind.ULP, ulp=8, note="Vulkan: 3 + 2*|x| ULP; inputs bounded to |x|<=3"),
-    "log": Tolerance(Kind.ULP, ulp=4, note="Vulkan: 3 ULP outside [0.5, 2]"),
+    # The note here always said "outside [0.5, 2]", and the entry did not
+    # implement the other half. Vulkan guarantees log to 3 ULP OUTSIDE that
+    # range and to an ABSOLUTE 2^-21 inside it, because log(x) passes through
+    # zero at x = 1 and a relative bound there is unmeetable -- an error of
+    # 2.6e-08 on a result of 5.7e-05 is 7118 ULP and entirely reasonable.
+    #
+    # A flat ULP bound is therefore stricter than the specification, and this
+    # was not caught until the suite ran on a second driver: RADV's log happens
+    # to be accurate enough to pass it, lavapipe's is not and does not have to
+    # be. Adding the absolute allowance implements the rule the note describes;
+    # it is not a tolerance widened to make a failure go away.
+    "log": Tolerance(Kind.ULP, ulp=4, atol=2.0**-21,
+                     note="Vulkan: 3 ULP outside [0.5, 2], absolute 2^-21 inside"),
     "sin": Tolerance(Kind.ULP, ulp=0, atol=2.0**-11,
                      note="Vulkan gives an ABSOLUTE bound 2^-11 inside [-pi, pi], not ULP"),
     "cos": Tolerance(Kind.ULP, ulp=0, atol=2.0**-11, note="as sin"),

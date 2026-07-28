@@ -79,6 +79,30 @@ def gpu_device():
     return V.device(f"vulkan:{VULKAN_DEVICE}")
 
 
+def device_name() -> str:
+    """Name of the device the suite is running against, or "" if there is none."""
+    if not vulkan_ready():
+        return ""
+    names = V.vulkan_device_names()
+    return names[VULKAN_DEVICE] if VULKAN_DEVICE < len(names) else ""
+
+
+# Some tests are models of ONE shader compiler rather than checks on vkML.
+#
+# The register-pressure and spill laws pin exact VGPR counts, and the split-K
+# heuristic was fitted to measured wins on RADV/Navi10 -- they encode what that
+# compiler does, which is their whole value, and they are meaningless anywhere
+# else. Running the suite on lavapipe made that visible: every one of them
+# failed, and none of the failures was a defect in vkML.
+#
+# Skipping is the honest treatment. Making them pass on every driver would mean
+# deleting the numbers, which is the part worth having.
+requires_radv = pytest.mark.skipif(
+    "RADV" not in device_name(),
+    reason=f"models the RADV shader compiler; this device is {device_name() or 'absent'}",
+)
+
+
 # ---------------------------------------------------------------------------
 # Randomized layout generation
 # ---------------------------------------------------------------------------

@@ -152,6 +152,44 @@ jobs:
           assert vkml.has_vulkan, 'the wheel should carry the Vulkan backend'
           "
 
+  second-driver:
+    name: Vulkan suite on a second driver (lavapipe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install toolchain and a software Vulkan driver
+        # mesa-vulkan-drivers ships lavapipe, which needs no GPU. That is the
+        # point: the runner has none, and everything else here therefore skips
+        # every Vulkan test.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build libvulkan-dev glslang-tools \
+                                  mesa-vulkan-drivers vulkan-tools
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pytest nanobind
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build with the Vulkan backend
+        run: |
+          cmake --preset release -DVKML_VULKAN=ON -DVKML_BUILD_PYTHON=ON
+          cmake --build build/release -j$(nproc)
+
+      - name: Confirm a Vulkan device is visible
+        run: vulkaninfo --summary | grep -i -E "deviceName|driverName"
+
+      - name: Run the suite
+        # A different DRIVER, which is where portability actually breaks --
+        # subgroup 8 against RADV's 64, half the shared memory, and its own
+        # SPIR-V compiler. Tests that model RADV's compiler skip themselves.
+        run: python -m pytest tests/python -q
+
   python-asan:
     name: Python suite under AddressSanitizer
     runs-on: ubuntu-latest

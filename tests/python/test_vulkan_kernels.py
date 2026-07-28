@@ -11,12 +11,14 @@ import pytest
 
 import vkml as V
 from vkvalidate import (
+    VULKAN_DEVICE,
     Context,
     Layout,
     compare,
     gpu_device,
     make_data,
     random_layouts,
+    requires_radv,
     requires_vulkan,
     run_binary,
     run_binary_broadcast,
@@ -573,18 +575,40 @@ def test_large_transfer_is_chunked_correctly():
     assert np.array_equal(data, back), "chunked transfer corrupted data"
 
 
-def test_capabilities_match_measured_hardware():
-    """Guards against a driver or query regression silently changing the facts
-    the kernels are designed around."""
-    caps = V.vulkan_capabilities(0)
-    # These three drive real design decisions and must not change unnoticed.
-    assert caps["global_float_atomics"] is False, (
-        "global float atomicAdd appeared; the deterministic two-pass reduction "
-        "design assumes it is absent"
-    )
-    assert caps["cooperative_matrix"] is False
+def test_device_meets_what_the_kernels_require():
+    """What vkML actually needs of any device, as opposed to what this one has.
+
+    Split out from a test that asserted `global_float_atomics is False`. That
+    was a fact about the development GPU, not a requirement: the reductions do
+    not use atomics -- because their ordering is not reproducible, and only
+    incidentally because RADV lacks them -- so a device that offers them is no
+    threat to a design that never calls them. lavapipe offers them, and vkML
+    runs there unchanged.
+    """
+    caps = V.vulkan_capabilities(VULKAN_DEVICE)
+
+    # The GEMM tiles are sized against this; below it they would not fit.
     assert caps["max_shared_memory_bytes"] >= 32 * 1024
     assert caps["min_subgroup_size"] <= caps["subgroup_size"] <= caps["max_subgroup_size"]
+    assert caps["max_workgroup_invocations"] >= 256, "the default workgroup size"
+
+
+@requires_radv
+def test_reference_gpu_assumptions_still_hold():
+    """The facts the TUNING assumes, on the GPU it was tuned for.
+
+    These are not portability requirements -- they are the properties that made
+    particular design choices right on RADV/Navi10, and a driver update changing
+    one silently is what this catches. Skipped elsewhere, because elsewhere they
+    are simply different.
+    """
+    caps = V.vulkan_capabilities(VULKAN_DEVICE)
+    assert caps["global_float_atomics"] is False, (
+        "global float atomicAdd appeared on RADV; the deterministic two-pass "
+        "reduction was chosen partly because it was absent"
+    )
+    assert caps["cooperative_matrix"] is False
+    assert caps["subgroup_size"] == 64
 
 
 # ---------------------------------------------------------------------------
