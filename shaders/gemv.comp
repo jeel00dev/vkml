@@ -155,7 +155,7 @@ void main() {
         // -- fold in the order the numerics require, now from LDS ------------
         // Lane t owns tile pass*WG + t: a sequential sum of 32 products, exactly
         // as gemm_reg.comp does it.
-        float block = 0.0;
+        precise float block = 0.0;
         for (uint j = 0; j < 32u; ++j) {
             block += As[t * 32u + j] * Bs[t * 32u + j];
         }

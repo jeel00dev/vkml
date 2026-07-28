@@ -213,7 +213,7 @@ void main() {
         // RM*RN multiply-adds. That ratio is the whole point of register
         // blocking: shared-memory traffic per FLOP falls by a factor of
         // 2*RM*RN/(RM+RN), i.e. 2x at 2x2.
-        float acc[RM * RN];
+        precise float acc[RM * RN];
         for (uint i = 0; i < RM * RN; ++i) { acc[i] = 0.0; }
 
         for (uint kk = 0; kk < BK; ++kk) {

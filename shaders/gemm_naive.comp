@@ -82,7 +82,7 @@ void main() {
     while (kk < p.k) {
         // Blocks of 32 accumulated sequentially, matching kPairwiseBlock in
         // src/backend/cpu/reduce.h so the two backends fold in the same order.
-        float block = 0.0;
+        precise float block = 0.0;
         for (uint t = 0; t < 32u && kk < p.k; ++t, ++kk) {
             block += load_f(p.a, a_base + kk * a_step, DTYPE) *
                      load_f(p.b, b_base + kk * b_step, DTYPE);
