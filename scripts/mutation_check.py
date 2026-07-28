@@ -99,6 +99,40 @@ MUTATIONS = [
      "const int64_t extent = from_a ? a_extent : b_extent;",
      "const int64_t extent = out_extent;", "test_cat"),
 
+    # --- the f16 precision contract ----------------------------------------
+    # ARCHITECTURE.md 7.3 says f16 is storage and fp32 is the accumulator. That
+    # is a claim about precision, which a tolerance comparison cannot check --
+    # only a value chosen so the two answers differ by 100 % can.
+    ("reduction: accumulate in f16 instead of fp32", "src/backend/cpu/kernels_reduce.cpp",
+     "    reduce_float(out, [](const auto& read, int64_t n) "
+     "{ return pairwise_sum<float>(read, 0, n); });",
+     "    reduce_float(out, [](const auto& read, int64_t n) {\n"
+     "        Half acc{0.0F};\n"
+     "        for (int64_t i = 0; i < n; ++i) { acc = Half(acc.to_float() + read(i)); }\n"
+     "        return acc.to_float();\n"
+     "    });",
+     "test_accumulation_happens_in_fp32"),
+
+    ("matmul: accumulate the dot product in f16", "src/backend/cpu/kernels_matmul.cpp",
+     "                    const float dot = pairwise_sum<float>(",
+     "                    Half dot_acc{0.0F};\n"
+     "                    for (int64_t q = 0; q < k; ++q) {\n"
+     "                        T qa{};\n"
+     "                        T qb{};\n"
+     "                        std::memcpy(&qa, a_bytes + a_row + q * a.shape.stride(3), sizeof(T));\n"
+     "                        std::memcpy(&qb, b_bytes + b_col + q * b.shape.stride(2), sizeof(T));\n"
+     "                        dot_acc = Half(dot_acc.to_float() + widen(qa) * widen(qb));\n"
+     "                    }\n"
+     "                    const float dot = dot_acc.to_float();\n"
+     "                    [[maybe_unused]] const float unused_dot = pairwise_sum<float>(",
+     "test_matmul_accumulates_in_fp32"),
+
+    ("compare: read every input as f32, whatever it stores",
+     "src/backend/cpu/kernels_elementwise.cpp",
+     "    const DType in = out.src[0]->dtype;",
+     "    const DType in = DType::F32;",
+     "test_f16_comparison_is_correct"),
+
     # --- python: data pipeline ---------------------------------------------
     # No kernel here and no numerics -- what these guard is bookkeeping, which
     # fails silently. A shuffle that drops samples or unpairs inputs from labels

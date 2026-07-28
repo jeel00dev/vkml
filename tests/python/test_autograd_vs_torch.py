@@ -559,20 +559,5 @@ def test_col2im_gradient():
 
     assert_close("col2im grad", v.grad, t.grad, GRAD_TOL, inputs=[x])
 
-
-def test_cast_backward_is_unreachable_because_only_f32_computes():
-    """Records why one declared backward rule cannot be exercised.
-
-    Cast's adjoint is `grad.to(source dtype)`, and reaching it needs a graph that
-    casts and then computes. It cannot be built: casting to f32 from f32 is a
-    no-op that creates no Cast node, and casting to any other dtype produces a
-    tensor no arithmetic operator accepts -- f16, i32 and i64 support comparison
-    and cast only.
-
-    So this is a capability gap wearing a coverage gap's clothes, and no test
-    closes it. The assertion below is what will start failing once f16
-    arithmetic exists, which is the signal to write the real gradient test.
-    """
-    x = V.tensor(np.ones((4,), dtype=np.float16))
-    with pytest.raises(V.DTypeError, match="does not support dtype f16"):
-        (x + x).numpy()
+# Cast's backward rule is now reachable and is tested in test_f16.py, where the
+# f16 arithmetic that unblocked it lives.
