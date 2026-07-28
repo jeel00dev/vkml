@@ -68,12 +68,13 @@ inline constexpr int kNumDTypes = 5;
 // Reference for the branch-free approach: Fabian Giesen's float_to_half_fast3,
 // the same lineage ggml's implementation comes from.
 //
-// WHAT COMPUTES, as of the f16 milestone (docs/VERIFICATION-AUDIT.md):
+// WHAT COMPUTES:
 //
 //   F32   everything.
-//   F16   elementwise, comparisons, reductions, softmax and matmul, on the CPU
-//         backend. Vulkan still refuses it and says so; the CPU backend is the
-//         correctness oracle and takes an operator first (ARCHITECTURE.md §7).
+//   F16   the same operators as F32 on both backends, with one exception: prod
+//         is CPU-only for everyone (see VulkanBackend::supports). Storage only,
+//         never an accumulator -- values widen to float at the memory boundary
+//         and narrow once on the store.
 //   I32   storage and cast only. I64 additionally indexes -- index_select,
 //   I64   scatter_add and the argmax/argmin results. Neither is an arithmetic
 //         type: there are no integer kernels, and every operator that would

@@ -606,7 +606,7 @@ def test_register_model_predicts_vgpr_exactly(block, k, levels):
     Each carry-stack float costs precisely one VGPR: the compiler keeps the
     whole private array live in registers with no packing or reuse.
 
-    This is the mechanism behind GAP_ANALYSIS.md 1.1 -- the carry stack's
+    This is the mechanism behind the pairwise bound -- the carry stack's
     register cost is not approximately RM*RN*L, it is exactly that.
     """
     rm, rn = (int(block[0]), int(block[2]))

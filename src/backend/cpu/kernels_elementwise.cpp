@@ -108,8 +108,8 @@ void compare_float(Node& out, Op op) {
     // inputs as float regardless. That is not an unsupported-dtype error, it is
     // a wrong answer: an f16 operand had its 2-byte halves read as 4-byte
     // floats, and an i64 operand had two elements read as one. Both returned a
-    // plausible mask and neither raised. Found by the coverage audit
-    // (docs/VERIFICATION-AUDIT.md) and fixed here.
+    // plausible mask and neither raised. Found by recording which dtypes the
+    // suite actually executes, and fixed here.
     VKML_ASSERT(out.dtype == DType::Bool, "comparison must produce Bool, got {}",
                 dtype_name(out.dtype));
 

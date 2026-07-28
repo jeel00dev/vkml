@@ -29,3 +29,18 @@ coverage.tsv
 
 # third-party reference clones (read-only study material, not vendored)
 third_party/reference/
+
+# Assistant configuration. Local tooling, not part of the library.
+.claude/
+
+# Process documents: milestone reviews, audits and roadmaps. They record how the
+# work was run rather than how the library works, and nothing in the tree cites
+# them. The engineering documentation the code DOES cite -- ARCHITECTURE.md,
+# THEORY.md, MEASUREMENT-AUDIT.md, PERFORMANCE-MODEL.md, BASELINE-CPU.md, the
+# ADRs -- stays tracked, as does coverage-baseline.json, which CI reads.
+docs/SKILLS-ARCHITECTURE.md
+docs/MILESTONE-*-REVIEW.md
+docs/VERIFICATION-AUDIT.md
+docs/COVERAGE.md
+docs/GAP_ANALYSIS.md
+docs/M3_ROADMAP.md

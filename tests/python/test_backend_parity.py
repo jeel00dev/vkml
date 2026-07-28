@@ -157,10 +157,12 @@ def test_prod_folds_in_index_order():
 def test_the_declined_set_is_known():
     """Pins exactly what Vulkan still refuses, so a change to it is deliberate.
 
-    `prod` has no Vulkan kernel at all. `max_pool2d` requires a contiguous
-    input, which its shader indexes planes directly to justify. Both are
-    recorded in docs/VERIFICATION-AUDIT.md; implementing either makes this fail,
-    which is the prompt to update the record.
+    `prod` has no Vulkan kernel at all -- a product's fold order decides when it
+    overflows, so a lane-strided GPU fold would give a different answer, not a
+    rounding difference (test_prod_folds_in_index_order). `max_pool2d` requires
+    a contiguous input, which its shader indexes planes directly to justify.
+    Implementing either makes this fail, which is the prompt to widen the set
+    above deliberately.
     """
     declined = {}
     for dtype, strided in ((np.float32, False), (np.float32, True),

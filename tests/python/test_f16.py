@@ -254,8 +254,7 @@ def test_cast_backward_rule():
 
     Cast's adjoint is `grad.to(source dtype)`. Building a graph that casts and
     then computes was impossible while nothing consumed f16, so the rule was
-    declared and never ran -- the last blocking gap in
-    docs/VERIFICATION-AUDIT.md. This replaces the test that pinned it as
+    declared and never ran. This replaces the test that pinned it as
     unreachable.
     """
     x = make_input((4, 3), seed=3070)

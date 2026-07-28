@@ -33,8 +33,8 @@
 /// ASSERTED. A test that dispatches an operator and checks nothing still counts
 /// here. That gap is covered by two other gates, and only the three together
 /// mean anything -- `scripts/mutation_check.py` shows the suite can fail, and
-/// the assertion audit (docs/MILESTONE-B-REVIEW.md 3.1) shows no test asserts
-/// nothing. This one shows what the suite reaches.
+/// a static audit shows no test asserts nothing. This one shows what the suite
+/// reaches.
 ///
 /// Off unless `VKML_COVERAGE` is set, so it costs one relaxed atomic load per
 /// evaluated node when unused.

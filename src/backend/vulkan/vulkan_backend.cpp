@@ -1781,7 +1781,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 // tall-thin matrix gives up the large-M tile because N is small.
                 // The 128 floor keeps at least 2x2 tiles in flight; a proper
                 // compute-unit-aware rule needs shader_core_count, which arrives
-                // with split-K (docs/M3_ROADMAP.md M3.4).
+                // with split-K.
                 //
                 // MEASURED AND REJECTED (docs/M3-01-TILE-GEOMETRY.md).
                 //
@@ -1806,7 +1806,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 // (ggml-vulkan.cpp:4030-4032); CLBlast's tuned gfx1010 entry
                 // uses 256 threads for 64x64; rocBLAS navi21 uses 128 for
                 // 128x64. That route is closed for vkML until the carry stack
-                // shortens -- see docs/M3_ROADMAP.md.
+                // shortens.
                 //
                 // Kept selectable so the experiment reproduces, exactly as
                 // VKML_GEMM_BLOCK preserves Stage 8. Default is the frozen

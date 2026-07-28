@@ -166,8 +166,8 @@ def test_strided_max_pool2d_is_refused_on_vulkan():
 
     Found by running this file on both backends after a coverage report showed
     the Vulkan strided path was untested. Pinned rather than worked around: it
-    is a concrete instance of the open question in docs/MILESTONE-B-REVIEW.md
-    §5 item 16 -- fall back by splitting the graph, or state that Vulkan is
+    is a concrete instance of a question carried since the operator set was
+    completed -- fall back by splitting the graph, or state that Vulkan is
     all-or-nothing -- and a silent divergence between backends is the worst of
     the available answers.
     """
