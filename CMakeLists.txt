@@ -8,9 +8,11 @@ project(vkml
 # ---------------------------------------------------------------------------
 # Options
 #
-# VKML_VULKAN is OFF and stays OFF through M0. The architecture document is
-# explicit that no Vulkan work begins until the CPU oracle and the validation
-# harness are complete (docs/ARCHITECTURE.md §8, M0/M1).
+# VKML_VULKAN defaults OFF so that a plain `cmake ..` builds and tests the CPU
+# backend without needing the Vulkan SDK -- that backend is the correctness
+# oracle and is useful on its own. It is not a statement about the project's
+# focus: the presets and the Python wheel both turn it ON, and turning it on is
+# what gets you the library's reason for existing.
 # ---------------------------------------------------------------------------
 option(VKML_BUILD_TESTS  "Build C++ unit tests"           ON)
 option(VKML_BUILD_PYTHON "Build the Python extension"     ON)

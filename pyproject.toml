@@ -1,0 +1,71 @@
+# Packaging, so that `pip install .` produces a usable vkML.
+#
+# Until this existed the only way to use the library was to clone it, run CMake
+# by hand and put python/ on sys.path -- which is what examples/mnist does, with
+# a comment saying it would be dropped once there was a real install step.
+#
+# scikit-build-core drives the existing CMake build rather than reimplementing
+# it, so there is one build system and not two. It is also what nanobind's own
+# documentation recommends for exactly this shape of project.
+#
+# The SPIR-V is compiled into the extension by cmake/EmbedSpirv.cmake, so the
+# wheel has no data files to locate at run time: one .so and the Python package
+# beside it.
+
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "vkml"
+description = "Vulkan-native deep learning framework"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Jeel" }]
+keywords = ["vulkan", "gpu", "machine-learning", "deep-learning", "tensor"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# numpy is not optional: every tensor crosses the boundary as an ndarray, and
+# `import vkml` fails without it.
+dependencies = ["numpy>=1.24"]
+
+# Read from CMakeLists.txt rather than written twice. Two copies of a version
+# number disagree the first time someone bumps one of them.
+dynamic = ["version"]
+
+[project.urls]
+Source = "https://github.com/jeel00dev/vkml"
+
+[tool.scikit-build]
+minimum-version = "0.10"
+build-dir = "build/wheel"
+wheel.packages = ["python/vkml"]
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = '''(?sm)^project\(.*?VERSION\s+(?P<value>[0-9]+\.[0-9]+\.[0-9]+)'''
+
+[tool.scikit-build.cmake.define]
+# The whole point of the library. A CPU-only wheel would install without
+# complaint and then be the wrong thing, so this is ON and the build fails
+# loudly when the Vulkan SDK is absent -- `find_package(Vulkan REQUIRED)`.
+# Build without it deliberately if you must:
+#
+#     pip install . -C cmake.define.VKML_VULKAN=OFF
+#
+VKML_VULKAN = "ON"
+
+# Nothing a wheel ships needs these, and they are most of the build time.
+VKML_BUILD_TESTS = "OFF"
+VKML_BUILD_BENCH = "OFF"
+VKML_BUILD_PYTHON = "ON"

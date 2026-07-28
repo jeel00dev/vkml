@@ -29,10 +29,12 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 
-# vkml is built in-tree rather than installed, so the package directory has to
-# be on the path. Dropped once there is a real install step.
+# Prefer an installed vkml; fall back to the in-tree package when there is not
+# one, so this runs both from a clone and after `pip install .`.
 import sys
-sys.path.insert(0, str(HERE.parent.parent / "python"))
+import importlib.util
+if importlib.util.find_spec("vkml") is None:
+    sys.path.insert(0, str(HERE.parent.parent / "python"))
 
 import vkml as V  # noqa: E402
 from vkml.data import ArrayDataset, DataLoader  # noqa: E402

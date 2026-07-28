@@ -118,6 +118,40 @@ jobs:
           echo "collected $COUNT tests"
           test "$COUNT" -ge 250
 
+  wheel:
+    name: Wheel builds and installs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build libvulkan-dev glslang-tools
+
+      - name: Build and install the wheel
+        # Exercises a build path nothing else covers: scikit-build-core driving
+        # CMake, the install() rule that puts the extension in the wheel, and
+        # the version being read out of CMakeLists.txt rather than duplicated.
+        run: pip install --verbose .
+
+      - name: Import it from outside the source tree
+        # From /tmp, so a passing import cannot be the source directory being
+        # picked up instead of the installed package -- which is exactly how a
+        # broken wheel looks like a working one.
+        run: |
+          cd /tmp
+          python -c "
+          import vkml, os
+          assert 'site-packages' in vkml.__file__, vkml.__file__
+          print('vkml', vkml.__version__, 'from', os.path.dirname(vkml.__file__))
+          print('vulkan built in:', vkml.has_vulkan)
+          assert vkml.has_vulkan, 'the wheel should carry the Vulkan backend'
+          "
+
   python-asan:
     name: Python suite under AddressSanitizer
     runs-on: ubuntu-latest

@@ -24,8 +24,12 @@ from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 
+# Prefer an installed vkml; fall back to the in-tree package when there is not
+# one, so this runs both from a clone and after `pip install .`.
 import sys
-sys.path.insert(0, str(HERE.parent.parent / "python"))
+import importlib.util
+if importlib.util.find_spec("vkml") is None:
+    sys.path.insert(0, str(HERE.parent.parent / "python"))
 
 import vkml as V  # noqa: E402
 
