@@ -152,6 +152,27 @@ def run_all(device) -> list[Sample]:
         out.append(measure(f"exp {n}x{n}", "elementwise",
                            lambda x=x: V.exp(x).numpy(), bytes_moved=nbytes))
 
+    # -- f16 against f32, at a size that saturates memory bandwidth ----------
+    #
+    # The point of f16 is traffic, so it is measured where traffic is the
+    # constraint: below saturation the two dtypes sit at different places on the
+    # bandwidth curve and the ratio says more about occupancy than about dtype.
+    # Both operands stay resident and nothing is downloaded, so the kernel time
+    # is the whole measurement.
+    #
+    # bytes_moved is deliberately left unset: this table's GB/s column is
+    # TRANSFER bandwidth, derived from wall minus GPU time, and these rows
+    # transfer nothing. Passing the traffic the kernel moves would print a
+    # number computed from bytes that never crossed the bus.
+    for label, npdt in (("f32", np.float32), ("f16", np.float16)):
+        n = 1 << 24
+        a = V.tensor(rng.standard_normal(n).astype(npdt), device=device)
+        b = V.tensor(rng.standard_normal(n).astype(npdt), device=device)
+        a.realize()
+        b.realize()
+        out.append(measure(f"mul {label} 2^24", "elementwise",
+                           lambda a=a, b=b: (a * b).realize()))
+
     # -- reductions ---------------------------------------------------------
     for rows, cols in ((64, 4096), (1024, 1024), (4096, 256), (1, 1048576)):
         x = V.tensor(rng.random((rows, cols), dtype=np.float32), device=device)

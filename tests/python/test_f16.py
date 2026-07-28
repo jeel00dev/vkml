@@ -12,10 +12,11 @@ distinguish "computed in float" from "computed in half", it asserts against an
 exactly-representable value instead, because a tolerance comparison cannot tell
 those apart -- that is the whole difficulty with verifying a precision contract.
 
-VULKAN REFUSES f16 for arithmetic. That is the current state, not an oversight:
-the CPU backend is the correctness oracle and gets an operator first
-(ARCHITECTURE.md §7). Pinned by test_vulkan_refuses_f16_arithmetic so the
-divergence is a stated contract rather than a surprise at a call site.
+EVERY TEST RUNS ON BOTH BACKENDS, which is what makes this f16 rather than
+f16-on-one-machine: the CPU is checked against PyTorch for semantics and Vulkan
+against the CPU for kernel bugs (ARCHITECTURE.md §7). Matmul is the exception --
+the GEMM family is still f32-only and says so, pinned by
+test_vulkan_refuses_f16_matmul.
 """
 
 from __future__ import annotations
@@ -30,11 +31,19 @@ from vkvalidate import gpu_device, vulkan_ready
 
 F16_TOL = TOLERANCES["fp16"]
 
+DEVICES = [pytest.param("cpu", id="cpu")]
+if vulkan_ready():
+    DEVICES.append(pytest.param("gpu", id="vulkan"))
 
-def half_pair(shape, seed, low=-2.0, high=2.0):
+
+def on(device):
+    return gpu_device() if device == "gpu" else V.cpu
+
+
+def half_pair(shape, seed, device="cpu", low=-2.0, high=2.0):
     """The same values as an f16 vkml tensor and an f16 torch tensor."""
     x = make_input(shape, seed=seed, low=low, high=high).astype(np.float16)
-    return V.tensor(x), torch.from_numpy(x.copy()), x
+    return V.tensor(x, device=on(device)), torch.from_numpy(x.copy()), x
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +51,8 @@ def half_pair(shape, seed, low=-2.0, high=2.0):
 # ---------------------------------------------------------------------------
 
 
-def test_accumulation_happens_in_fp32():
+@pytest.mark.parametrize("device", DEVICES)
+def test_accumulation_happens_in_fp32(device):
     """The one test that would fail if the accumulator were 16-bit.
 
     f16 has an 11-bit significand, so above 2048 the representable values are 2
@@ -56,7 +66,7 @@ def test_accumulation_happens_in_fp32():
     precision contract silently stops holding.
     """
     n = 4096
-    x = V.tensor(np.ones(n, dtype=np.float16))
+    x = V.tensor(np.ones(n, dtype=np.float16), device=on(device))
 
     total = float(V.sum(x).numpy())
 
@@ -76,11 +86,12 @@ def test_matmul_accumulates_in_fp32():
     assert V.matmul(a, b).numpy().item() == 4096.0
 
 
-def test_the_result_is_narrowed_to_f16():
+@pytest.mark.parametrize("device", DEVICES)
+def test_the_result_is_narrowed_to_f16(device):
     """Storage really is 16-bit: a value that f32 holds exactly and f16 cannot
     must come back rounded, or the dtype is a label rather than a format."""
-    x = V.tensor(np.array([1.0], dtype=np.float16))
-    one_plus = V.add(x, V.tensor(np.array([0.0001], dtype=np.float16)))
+    x = V.tensor(np.array([1.0], dtype=np.float16), device=on(device))
+    one_plus = V.add(x, V.tensor(np.array([0.0001], dtype=np.float16), device=on(device)))
 
     # f16's spacing at 1.0 is 2^-10 ~= 9.77e-4, so 1.0001 is not representable.
     assert one_plus.numpy().item() == 1.0
@@ -104,9 +115,10 @@ UNARY = [
 ]
 
 
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("name,vf,tf,low,high", UNARY, ids=[u[0] for u in UNARY])
-def test_unary_matches_torch(name, vf, tf, low, high):
-    v, t, x = half_pair((4, 5), seed=3000, low=low, high=high)
+def test_unary_matches_torch(name, vf, tf, low, high, device):
+    v, t, x = half_pair((4, 5), seed=3000, device=device, low=low, high=high)
     out = vf(v)
 
     assert out.dtype == V.float16, f"{name} changed dtype to {out.dtype}"
@@ -122,19 +134,21 @@ BINARY = [
 ]
 
 
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("name,vf,tf", BINARY, ids=[b[0] for b in BINARY])
-def test_binary_matches_torch(name, vf, tf):
-    va, ta, a = half_pair((4, 5), seed=3010)
-    vb, tb, b = half_pair((4, 5), seed=3011)
+def test_binary_matches_torch(name, vf, tf, device):
+    va, ta, a = half_pair((4, 5), seed=3010, device=device)
+    vb, tb, b = half_pair((4, 5), seed=3011, device=device)
 
     out = vf(va, vb)
     assert out.dtype == V.float16
     assert_close(f"{name}(f16)", out, tf(ta, tb), F16_TOL, inputs=[a, b])
 
 
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("axis", [0, 1, None])
-def test_reductions_match_torch(axis):
-    v, t, x = half_pair((6, 7), seed=3020)
+def test_reductions_match_torch(axis, device):
+    v, t, x = half_pair((6, 7), seed=3020, device=device)
 
     for name, vf, tf in (("sum", V.sum, torch.sum), ("mean", V.mean, torch.mean)):
         got = vf(v) if axis is None else vf(v, axis)
@@ -152,9 +166,10 @@ def test_matmul_matches_torch():
     assert_close("matmul(f16)", out, torch.matmul(ta, tb), F16_TOL, inputs=[a, b])
 
 
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("axis", [0, 1])
-def test_softmax_matches_torch(axis):
-    v, t, x = half_pair((4, 6), seed=3040)
+def test_softmax_matches_torch(axis, device):
+    v, t, x = half_pair((4, 6), seed=3040, device=device)
 
     assert_close(f"softmax(f16, axis={axis})", V.softmax(v, axis),
                  torch.softmax(t, dim=axis), F16_TOL, inputs=[x])
@@ -162,16 +177,18 @@ def test_softmax_matches_torch(axis):
                  torch.log_softmax(t, dim=axis), F16_TOL, inputs=[x])
 
 
-def test_broadcasting_works_in_f16():
-    va, ta, a = half_pair((3, 4), seed=3050)
-    vb, tb, b = half_pair((4,), seed=3051)
+@pytest.mark.parametrize("device", DEVICES)
+def test_broadcasting_works_in_f16(device):
+    va, ta, a = half_pair((3, 4), seed=3050, device=device)
+    vb, tb, b = half_pair((4,), seed=3051, device=device)
 
     assert_close("broadcast mul(f16)", va * vb, ta * tb, F16_TOL, inputs=[a, b])
 
 
-def test_strided_input_works_in_f16():
+@pytest.mark.parametrize("device", DEVICES)
+def test_strided_input_works_in_f16(device):
     base = make_input((5, 4), seed=3060).astype(np.float16)
-    v = V.tensor(base).transpose(0, 1)
+    v = V.tensor(base, device=on(device)).transpose(0, 1)
     t = torch.from_numpy(base.copy()).transpose(0, 1)
     assert not v.is_contiguous
 
@@ -183,7 +200,8 @@ def test_strided_input_works_in_f16():
 # ---------------------------------------------------------------------------
 
 
-def test_f16_comparison_is_correct():
+@pytest.mark.parametrize("device", DEVICES)
+def test_f16_comparison_is_correct(device):
     """Regression. The comparison kernels checked only that their OUTPUT was
     Bool and then read both inputs as f32 regardless, so an f16 operand had its
     2-byte halves read as 4-byte floats. That returned a plausible mask, raised
@@ -193,7 +211,7 @@ def test_f16_comparison_is_correct():
 
     for name, vf, ref in (("gt", V.greater, a > b), ("lt", V.less, a < b),
                           ("ge", V.greater_equal, a >= b), ("eq", V.equal, a == b)):
-        got = vf(V.tensor(a), V.tensor(b)).numpy()
+        got = vf(V.tensor(a, device=on(device)), V.tensor(b, device=on(device))).numpy()
         np.testing.assert_array_equal(got, ref, err_msg=f"{name} on f16")
 
 
@@ -218,9 +236,10 @@ def test_integer_comparison_raises_rather_than_lying(dtype):
 # ---------------------------------------------------------------------------
 
 
-def test_gradient_flows_through_f16():
+@pytest.mark.parametrize("device", DEVICES)
+def test_gradient_flows_through_f16(device):
     x = np.array([1.0, 2.0, 3.0], dtype=np.float16)
-    v = V.tensor(x, requires_grad=True)
+    v = V.tensor(x, device=on(device), requires_grad=True)
     t = torch.from_numpy(x.copy()).requires_grad_(True)
 
     V.sum(v * v).backward()
@@ -268,21 +287,57 @@ def test_mixed_dtypes_are_refused_not_promoted():
 
 @pytest.mark.skipif(not vulkan_ready(), reason="no Vulkan device available")
 @pytest.mark.parametrize("name,build", [
-    ("add", lambda x: x + x),
-    ("sum", lambda x: V.sum(x)),
-    ("gt", lambda x: x > x),
+    ("add", lambda a, b: a + b),
+    ("mul", lambda a, b: a * b),
+    ("exp", lambda a, b: V.exp(a)),
+    ("gelu", lambda a, b: V.gelu(a)),
+    ("sum", lambda a, b: V.sum(a, 0)),
+    ("mean", lambda a, b: V.mean(a)),
+    ("amax", lambda a, b: V.amax(a, 1)),
+    ("argmax", lambda a, b: V.argmax(a, 1)),
+    ("softmax", lambda a, b: V.softmax(a, 1)),
+    ("log_softmax", lambda a, b: V.log_softmax(a, 1)),
+    ("greater", lambda a, b: a > b),
+    ("where", lambda a, b: V.where(a > b, a, b)),
 ])
-def test_vulkan_refuses_f16_arithmetic(name, build):
-    """f16 computes on the CPU and raises on Vulkan.
+def test_vulkan_agrees_with_the_cpu_oracle_bit_for_bit(name, build):
+    """The second link of the correctness chain, for f16.
 
-    The CPU backend is the correctness oracle and takes an operator first
-    (ARCHITECTURE.md §7), so this is the expected intermediate state rather than
-    a defect -- but an unsupported op raises rather than falling back, so it is
-    visible to callers and belongs in a test rather than a comment. Implementing
-    the Vulkan half makes this fail, which is the prompt to run every test above
-    on both backends.
+    ARCHITECTURE.md §7: the CPU is checked against PyTorch for semantics, then
+    Vulkan against the CPU for kernel bugs -- an oracle that shares our exact
+    semantics, so a mismatch is unambiguously a kernel bug.
+
+    EQUALITY, not a tolerance. Both backends widen to float, compute, and narrow
+    once on the store, so they should agree bit for bit; a tolerance here would
+    accept a shader that rounded somewhere extra and hide the very drift the two
+    implementations exist to catch.
     """
-    x = V.tensor(np.ones((4,), dtype=np.float16), device=gpu_device())
+    rng = np.random.default_rng(3100)
+    x = rng.standard_normal((6, 7)).astype(np.float16)
+    y = rng.standard_normal((6, 7)).astype(np.float16)
 
-    with pytest.raises(V.NotImplementedError_, match="cannot evaluate op"):
-        build(x).numpy()
+    gpu = build(V.tensor(x, device=gpu_device()), V.tensor(y, device=gpu_device())).numpy()
+    cpu = build(V.tensor(x), V.tensor(y)).numpy()
+
+    np.testing.assert_array_equal(gpu, cpu, err_msg=f"{name}: vulkan and cpu disagree on f16")
+
+
+@pytest.mark.skipif(not vulkan_ready(), reason="no Vulkan device available")
+def test_vulkan_refuses_f16_matmul():
+    """The one operator still f32-only on the GPU.
+
+    The GEMM family is six tuned shaders with shared-memory tiling, double
+    buffering and vec4 loads; an f16 storage path there is a change to the most
+    delicate code in the project rather than the load/store swap the elementwise
+    and reduction shaders needed. Held back deliberately so it can be done and
+    measured on its own.
+
+    f16 matmul runs on the CPU and raises here, which is loud rather than
+    silent. Implementing it makes this fail -- the prompt to add matmul to the
+    oracle-chain test above.
+    """
+    a = V.tensor(np.ones((4, 6), dtype=np.float16), device=gpu_device())
+    b = V.tensor(np.ones((6, 5), dtype=np.float16), device=gpu_device())
+
+    with pytest.raises(V.NotImplementedError_, match="cannot evaluate op 'matmul'"):
+        V.matmul(a, b).numpy()

@@ -82,6 +82,20 @@ MUTATIONS = [
      "        off += idx * op.nb[VKML_MAX_DIMS - 1];",
      "test_layout_and_scale"),
 
+    # The shader half of the f16 contract. DTYPE is a specialisation constant,
+    # so an f16 kernel that ignored it would read halves through F32Buf -- the
+    # same defect the CPU comparisons carried, on the other backend.
+    ("shader load_f: ignore DTYPE and read every operand as f32", "shaders/common.glsl",
+     "    if (dtype == T_F16) {\n        return float(F16Buf(buf).v[idx]);\n    }\n"
+     "    return F32Buf(buf).v[idx];",
+     "    return F32Buf(buf).v[idx];",
+     "test_vulkan_agrees_with_the_cpu_oracle_bit_for_bit"),
+
+    ("shader store_f: narrow to f16 twice", "shaders/common.glsl",
+     "        F16Buf(buf).v[idx] = float16_t(value);",
+     "        F16Buf(buf).v[idx] = float16_t(float(float16_t(value * 1.0009765625)));",
+     "test_vulkan_agrees_with_the_cpu_oracle_bit_for_bit"),
+
     # --- CPU oracle --------------------------------------------------------
     ("philox(cpu): nine rounds instead of ten", "src/backend/cpu/philox.h",
      "inline constexpr int kPhiloxRounds = 10;",
