@@ -168,6 +168,32 @@ def unusable_reason(devices: list, no_device_detail: str = "") -> str | None:
     return None
 
 
+def backend_start_error(index: int) -> str | None:
+    """Whether vkml can actually START on this device, not merely see it.
+
+    Everything above runs on a bare probe instance: no layers, no extensions
+    beyond portability. The real backend asks for more -- validation layers by
+    default among them -- and the two can disagree. A broken layer install is
+    enough: the probe reports a perfectly usable device, and then every kernel
+    fails because vkCreateInstance rejects the layer.
+
+    That combination is worse than a plain failure, because the suite skips its
+    Vulkan tests when no backend exists, so the job passes having exercised
+    nothing. It happened here on the first macOS run with validation layers
+    installed -- 441 tests skipped, green tick -- which is exactly what
+    --require-device exists to prevent, one layer deeper than it was looking.
+
+    Creates a real backend as a side effect. Only --require-device calls it;
+    plain reporting must stay creation-free, since a device the backend refuses
+    is the report worth having.
+    """
+    try:
+        V.init_vulkan(index)
+    except Exception as exc:  # noqa: BLE001 - any failure to start is the answer
+        return f"device {index} is usable but the backend will not start: {exc}"
+    return None
+
+
 def run_suite(index: int) -> dict:
     """Runs the validation suite against one device, in a child process.
 
@@ -255,6 +281,10 @@ def main() -> int:
 
     if args.require_device:
         reason = unusable_reason(devices, V.vulkan_unavailable_reason())
+        if reason is None:
+            # Seeing a device is not the same as being able to use it.
+            usable = next(i for i, d in enumerate(devices) if d["supported"])
+            reason = backend_start_error(usable)
         if reason:
             print(f"\nrequired a usable device: {reason}", file=sys.stderr)
             return 2

@@ -160,6 +160,28 @@ def test_unusable_reason_distinguishes_the_three_outcomes():
     assert unusable_reason([rejected, usable]) is None
 
 
+def test_require_device_catches_a_backend_that_will_not_start():
+    """Seeing a device is not the same as being able to use it.
+
+    The report runs on a bare probe instance; the real backend asks for more,
+    validation layers among them. When those disagree -- a broken layer install
+    is enough -- the gate passed, every Vulkan test then skipped for want of a
+    backend, and the job went green having exercised nothing. That happened on
+    macOS, so the gate now starts the backend too.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
+    from hardware_report import backend_start_error  # noqa: PLC0415
+
+    if V.vulkan_device_count() > 0:
+        assert backend_start_error(0) is None
+
+    # An index no device occupies stands in for a backend that refuses to
+    # start: the real cause needs a broken driver install, which cannot be
+    # staged here, but the path from exception to message is the same one.
+    refused = backend_start_error(V.vulkan_device_count() + 50)
+    assert refused and "will not start" in refused
+
+
 def test_reporting_creates_no_backend():
     """The load-bearing property, checked in a clean process.
 
