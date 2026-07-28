@@ -74,6 +74,14 @@ MUTATIONS = [
     ("rand: nine Philox rounds instead of ten", "shaders/rand.comp",
      "const int  kRounds = 10;", "const int  kRounds = 9;", "test_rand or test_dropout"),
 
+    # Strided indexing. Only reachable at all since the coverage audit gave
+    # these operators non-contiguous inputs; before that, every source was
+    # contiguous and this arithmetic was dead in every test.
+    ("operand_offset: ignore strides, walk flat", "shaders/common.glsl",
+     "        off += idx * op.nb[i];",
+     "        off += idx * op.nb[VKML_MAX_DIMS - 1];",
+     "test_layout_and_scale"),
+
     # --- CPU oracle --------------------------------------------------------
     ("philox(cpu): nine rounds instead of ten", "src/backend/cpu/philox.h",
      "inline constexpr int kPhiloxRounds = 10;",

@@ -451,3 +451,128 @@ def test_slice_of_slice_gradient():
     V.sum(v[1:7][::2]).backward()
     t[1:7][::2].sum().backward()
     assert_close("nested slice grad", v.grad, t.grad, GRAD_TOL, inputs=[x])
+
+
+# ---------------------------------------------------------------------------
+# Backward rules the coverage audit found had never fired.
+#
+# `apply_backward` declares a rule per differentiable operator, and a green
+# suite says nothing about which of them ran. Recording execution
+# (scripts/coverage_matrix.py) showed five that never had. Four are below; the
+# fifth, Cast, is unreachable from Python for a reason that is not a test gap --
+# see test_cast_backward_is_unreachable.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("exponent", [2.0, 3.0, 0.5, -1.0])
+def test_pow_gradient_wrt_base(exponent):
+    """d/dx x^n = n*x^(n-1). Parametrised over exponents that exercise different
+    branches of the identity: even, odd, fractional (needs x > 0) and negative."""
+    x = make_input((5, 4), seed=1900, low=0.4, high=2.5)
+    v, t = pair_grad(x)
+
+    e_np = np.full(x.shape, exponent, dtype=np.float32)
+    V.sum(V.pow(v, V.tensor(e_np))).backward()
+    torch.pow(t, torch.from_numpy(e_np.copy())).sum().backward()
+
+    assert_close(f"pow(x,{exponent}) grad", v.grad, t.grad, GRAD_TOL, inputs=[x])
+
+
+def test_pow_gradient_wrt_exponent_is_refused_not_wrong():
+    """The other half of pow's rule is deliberately absent.
+
+    d/dn x^n = x^n * ln(x), and ln(x) is undefined for x <= 0, so the rule
+    declines rather than returning a number that is wrong on half its domain
+    (autograd.cpp, OpKind::Pow). torch differentiates it and produces NaN there;
+    vkml raises instead.
+
+    Pinned as a test because a refusal is a contract: if someone implements the
+    exponent gradient later, this failing is how they learn to write the
+    comparison against torch rather than silently changing behaviour.
+    """
+    base = make_input((4, 3), seed=1901, low=0.5, high=2.0)
+    expo = make_input((4, 3), seed=1902, low=0.5, high=2.0)
+
+    vb = V.tensor(base, requires_grad=True)
+    ve = V.tensor(expo, requires_grad=True)
+
+    with pytest.raises(V.NotImplementedError_, match="exponent of pow"):
+        V.sum(V.pow(vb, ve)).backward()
+
+
+def test_clamp_gradient_is_zero_outside_the_bounds():
+    """The whole content of clamp's rule is the mask.
+
+    The input deliberately straddles both bounds: a test drawn entirely from
+    inside the range would pass against an implementation that ignored the
+    clamping completely.
+    """
+    x = np.linspace(-3.0, 3.0, 25, dtype=np.float32).reshape(5, 5)
+    lo, hi = -1.0, 1.5
+    v, t = pair_grad(x)
+
+    V.sum(V.clamp(v, lo, hi)).backward()
+    torch.clamp(t, lo, hi).sum().backward()
+
+    assert_close("clamp grad", v.grad, t.grad, GRAD_TOL, inputs=[x])
+
+    # Asserted directly as well, so the test still means something if torch ever
+    # changes its boundary convention.
+    g = v.grad.numpy()
+    assert (g[x < lo] == 0.0).all(), "gradient leaked below the lower bound"
+    assert (g[x > hi] == 0.0).all(), "gradient leaked above the upper bound"
+    assert (g[(x > lo) & (x < hi)] == 1.0).all(), "gradient lost inside the bounds"
+
+
+@pytest.mark.parametrize("index", [[0, 2, 2, 1, 0], [1, 1, 1, 1, 1]])
+def test_scatter_add_gradient(index):
+    """scatter_add's adjoint is index_select, so a source slice used twice must
+    collect gradient twice. Repeated indices are the case that distinguishes a
+    correct rule from a plausible one."""
+    i = np.array(index, dtype=np.int64)
+    x = make_input((len(i), 4), seed=1903)
+    v, t = pair_grad(x)
+
+    # Weighted, so a mis-mapped row shows up rather than cancelling into a
+    # uniform gradient of 1.
+    w = make_input((3, 4), seed=1904)
+
+    V.sum(V.scatter_add(v, 0, V.tensor(i), 3) * V.tensor(w)).backward()
+    (torch.zeros(3, 4).index_add_(0, torch.from_numpy(i.copy()), t)
+     * torch.from_numpy(w.copy())).sum().backward()
+
+    assert_close("scatter_add grad", v.grad, t.grad, GRAD_TOL, inputs=[x])
+
+
+def test_col2im_gradient():
+    """col2im's adjoint is im2col. Overlapping windows are the point: a column
+    that lands on several image positions must gather gradient from all of them."""
+    image, kernel, stride = (4, 4), (3, 3), (1, 1)
+    x = make_input((1, 9, 4), seed=1905)          # (N, C*kh*kw, L)
+    v, t = pair_grad(x)
+
+    w = make_input((1, 1, 4, 4), seed=1906)
+
+    V.sum(V.col2im(v, image, kernel, stride) * V.tensor(w)).backward()
+    (torch.nn.functional.fold(t, image, kernel, stride=stride)
+     * torch.from_numpy(w.copy())).sum().backward()
+
+    assert_close("col2im grad", v.grad, t.grad, GRAD_TOL, inputs=[x])
+
+
+def test_cast_backward_is_unreachable_because_only_f32_computes():
+    """Records why one declared backward rule cannot be exercised.
+
+    Cast's adjoint is `grad.to(source dtype)`, and reaching it needs a graph that
+    casts and then computes. It cannot be built: casting to f32 from f32 is a
+    no-op that creates no Cast node, and casting to any other dtype produces a
+    tensor no arithmetic operator accepts -- f16, i32 and i64 support comparison
+    and cast only.
+
+    So this is a capability gap wearing a coverage gap's clothes, and no test
+    closes it. The assertion below is what will start failing once f16
+    arithmetic exists, which is the signal to write the real gradient test.
+    """
+    x = V.tensor(np.ones((4,), dtype=np.float16))
+    with pytest.raises(V.DTypeError, match="does not support dtype f16"):
+        (x + x).numpy()
