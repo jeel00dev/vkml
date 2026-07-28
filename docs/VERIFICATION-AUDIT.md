@@ -241,6 +241,49 @@ makes the test fail — which is the prompt to re-enable the parametrised runs.
 
 ---
 
+## 4b. Backend parity, and the invariant nobody was testing
+
+`ARCHITECTURE.md` §7 makes the chain CPU-against-PyTorch, then Vulkan-against-CPU.
+The second link has a precondition that had never been written down: **CPU
+support must be a superset of Vulkan support.** A GPU capability with no CPU
+counterpart has no oracle.
+
+Measured rather than argued. Sweeping every operator across
+{f32, f16} × {contiguous, strided} — 80 combinations — found **17 that Vulkan
+declined**, and the shape of them was the finding: almost all were f16 in the
+movement and indexing family, left behind when f16 landed for the arithmetic
+ops. Not an architectural fallback problem at all.
+
+Closing them took the same load/store swap as before, plus one that could not
+be: `scatter_add` accumulated with `dst[...] +=` *into the output buffer*, which
+for f16 rounds after every contribution — the 16-bit accumulator §7.3 forbids,
+and not what the shader does. It now sums into a float scratch and narrows once,
+which is what makes the two bit-comparable. The CPU backend's performance is
+explicitly last, so buying exactness with a temporary is the right trade.
+
+**17 → 6.** What remains is `prod` (no Vulkan kernel) and `max_pool2d` with a
+strided input (its shader indexes planes directly). f16 now has exactly the same
+GPU coverage as f32.
+
+### The mistake this found, and the test that now prevents it
+
+Widening the Vulkan gates first made the GPU accept `triu`, `tril`,
+`scatter_add`, `im2col`, `col2im` and `max_pool2d` in f16 **while the CPU still
+raised** — six operators whose GPU results nothing could verify. The full suite
+stayed green throughout, because every test drives the two backends separately
+and none compared what they will *accept*.
+
+`tests/python/test_backend_parity.py` now sweeps the surface and asserts the
+invariant directly, and separately pins the exact set Vulkan declines so that
+changing it is deliberate. Verified non-vacuous by reintroducing the defect: it
+fails naming the operators and both remedies.
+
+The general lesson is the one §1 asks for — what let the bug exist, survive
+review, and escape the tests. Here all three had the same answer: capability
+parity was an unstated assumption, so nothing could check it.
+
+---
+
 ## 5. Findings
 
 Each cost real time, and none was predictable from reading code.
@@ -294,6 +337,7 @@ rather than converted.
 | ~~26~~ | ~~Decide f16 and integer arithmetic~~ | **Done** — f16 computes on the CPU; integers are storage and indices (§2) |
 | ~~30~~ | ~~Implement f16 on the Vulkan backend~~ | **Done** — elementwise, comparisons, reductions and softmax; bit-exact against the CPU oracle (§2) |
 | ~~31~~ | ~~f16 in the GEMM family~~ | **Done** — bit-exact on every path including split-K, whose partials stay f32 (§2) |
+| ~~27~~ | ~~Reconcile the backends' input requirements~~ | **Done** — the divergence was mostly missing f16, now closed 17 → 6, and the parity invariant is tested (§4b) |
 | 32 | **An f16 vectorised tile load for the GEMM shaders** | §2. f16 matmul is 1.45× slower than f32 purely because `load4` is f32-only. Restores parity; measured not to be a speedup, so it waits on someone actually running f16 GEMMs |
 | 27 | Reconcile the backends' input requirements, or document the divergence | §5. Sharpens item 16 |
 | 28 | Implement `prod` on Vulkan, or state it is CPU-only | §4 |
@@ -321,7 +365,7 @@ verified bit-exact against each other, matmul included. Every f16 operator now
 runs the full correctness chain.
 
 All gates green: layering (56 files) · clang-format · debug `-Werror` · release ·
-ASan build and suite · ctest · **1,161 Python tests, 5 skipped** · **29 of 29
+ASan build and suite · ctest · **1,170 Python tests, 5 skipped** · **29 of 29
 mutations killed** · validation layers clean on the f16 GPU path, split-K
 included.
 

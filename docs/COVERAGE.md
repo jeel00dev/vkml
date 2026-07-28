@@ -17,7 +17,7 @@ Recorded over the full Python suite on an RX 5600M (RADV), 2026-07-28.
 - operators executed: **63 of 63**
 - backends observed: cpu, vulkan
 - backward rules declared: **47**, fired: **47**
-- total node evaluations: 123,284
+- total node evaluations: 123,842
 
 ## BLOCKING — never executed
 
@@ -58,25 +58,25 @@ Ranks `0 1 2 3 4`, sizes `empty scalar one_group many_groups` — a digit or let
 | `full` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | . | . | . | 16,836 |
 | `arange` | compute | cpu,vulkan | f32 | . 1 . . . | . . o m | . | . | . | 225 |
 | `rand` | compute | cpu,vulkan | f32 | . 1 2 3 . | . s o m | . | . | . | 155 |
-| `reshape` | view | view | f16,f32,i64 | 0 1 2 3 4 | . s o m | . | . | . | 12,020 |
-| `permute` | view | view | f16,f32 | . . 2 3 4 | . . o m | yes | yes | yes | 7,262 |
+| `reshape` | view | view | f16,f32,i64 | 0 1 2 3 4 | . s o m | . | . | . | 12,028 |
+| `permute` | view | view | f16,f32 | . . 2 3 4 | . . o m | yes | yes | yes | 7,306 |
 | `slice` | view | view | f32 | . 1 2 3 4 | . . o m | . | yes | yes | 2,205 |
-| `broadcast` | view | view | bool,f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | yes | 28,970 |
+| `broadcast` | view | view | bool,f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | yes | 29,010 |
 | `squeeze` | view | view | f32 | . 1 2 . . | . . o . | . | yes | yes | 11 |
 | `unsqueeze` | view | view | f32 | . . 2 3 4 | . s o . | . | . | . | 226 |
-| `contiguous` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | . . o m | yes | yes | . | 1,800 |
+| `contiguous` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | . . o m | yes | yes | . | 1,810 |
 | `cast` | compute | cpu,vulkan | bool,f16,f32,i32,i64 | . 1 2 . . | . s o m | . | . | . | 472 |
-| `cat` | compute | cpu,vulkan | f32 | . 1 2 3 . | . . o m | . | yes | . | 37 |
-| `add` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | e s o m | yes | yes | . | 7,576 |
+| `cat` | compute | cpu,vulkan | f16,f32 | . 1 2 3 . | . . o m | . | yes | . | 57 |
+| `add` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | e s o m | yes | yes | . | 7,596 |
 | `sub` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | e s o m | yes | yes | . | 3,650 |
-| `mul` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 15,140 |
+| `mul` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 15,160 |
 | `div` | compute | cpu,vulkan | f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 5,223 |
 | `pow` | compute | cpu,vulkan | f32 | . 1 2 3 4 | e s o m | yes | yes | . | 115 |
 | `maximum` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | e s o m | yes | yes | . | 112 |
 | `minimum` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | e s o m | yes | yes | . | 112 |
 | `eq` | compute | cpu,vulkan | bool | . 1 2 3 4 | e s o m | yes | yes | . | 327 |
 | `lt` | compute | cpu,vulkan | bool | . 1 2 3 4 | e s o m | yes | yes | . | 105 |
-| `gt` | compute | cpu,vulkan | bool | . 1 2 3 4 | e s o m | yes | yes | . | 432 |
+| `gt` | compute | cpu,vulkan | bool | . 1 2 3 4 | e s o m | yes | yes | . | 472 |
 | `le` | compute | cpu,vulkan | bool | . 1 2 3 4 | e s o m | yes | yes | . | 103 |
 | `ge` | compute | cpu,vulkan | bool | . 1 2 3 4 | e s o m | yes | yes | . | 238 |
 | `ne` | compute | cpu,vulkan | bool | . 1 2 3 4 | e s o m | yes | yes | . | 101 |
@@ -87,37 +87,37 @@ Ranks `0 1 2 3 4`, sizes `empty scalar one_group many_groups` — a digit or let
 | `sqrt` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 1,670 |
 | `rsqrt` | compute | cpu,vulkan | f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 332 |
 | `reciprocal` | compute | cpu,vulkan | f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 88 |
-| `exp` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 351 |
+| `exp` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 371 |
 | `log` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 116 |
 | `erf` | compute | cpu,vulkan | f32 | . 1 2 3 4 | e s o m | yes | yes | . | 85 |
 | `sin` | compute | cpu,vulkan | f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 115 |
 | `cos` | compute | cpu,vulkan | f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 91 |
 | `tanh` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 301 |
 | `sigmoid` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 118 |
-| `relu` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 527 |
-| `gelu` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 121 |
+| `relu` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 547 |
+| `gelu` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 141 |
 | `silu` | compute | cpu,vulkan | f32 | 0 1 2 3 4 | e s o m | yes | yes | . | 113 |
-| `clamp` | compute | cpu,vulkan | f32 | . 1 2 3 4 | e s o m | yes | yes | . | 243 |
-| `sum` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | . s o m | . | yes | . | 4,926 |
-| `mean` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | . s o m | . | yes | . | 1,025 |
-| `max` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | . s o m | . | yes | . | 112 |
+| `clamp` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | e s o m | yes | yes | . | 263 |
+| `sum` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | . s o m | . | yes | . | 4,946 |
+| `mean` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | . s o m | . | yes | . | 1,045 |
+| `max` | compute | cpu,vulkan | f16,f32 | 0 1 2 3 4 | . s o m | . | yes | . | 132 |
 | `min` | compute | cpu,vulkan | f32 | 0 1 2 3 4 | . s o m | . | yes | . | 110 |
-| `prod` | compute | cpu | f32 | 0 1 . . . | . s o m | . | yes | . | 4 |
-| `argmax` | compute | cpu,vulkan | i64 | 0 1 2 . . | . s o m | . | yes | . | 28 |
+| `prod` | compute | cpu | f16,f32 | 0 1 . . . | . s o m | . | yes | . | 8 |
+| `argmax` | compute | cpu,vulkan | i64 | 0 1 2 . . | . s o m | . | yes | . | 48 |
 | `argmin` | compute | cpu,vulkan | i64 | 0 1 2 . . | . s o m | . | yes | . | 26 |
-| `matmul` | compute | cpu,vulkan | f16,f32 | . . . . 4 | . s o m | yes | yes | . | 4,749 |
-| `softmax` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | . s o m | . | yes | . | 166 |
-| `log_softmax` | compute | cpu,vulkan | f16,f32 | . 1 2 3 . | . s o m | . | yes | . | 305 |
-| `im2col` | compute | cpu,vulkan | f32 | . . . 3 . | . . o m | . | yes | . | 112 |
+| `matmul` | compute | cpu,vulkan | f16,f32 | . . . . 4 | . s o m | yes | yes | . | 4,769 |
+| `softmax` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | . s o m | . | yes | . | 186 |
+| `log_softmax` | compute | cpu,vulkan | f16,f32 | . 1 2 3 . | . s o m | . | yes | . | 325 |
+| `im2col` | compute | cpu,vulkan | f16,f32 | . . . 3 . | . . o m | . | yes | . | 132 |
 | `col2im` | compute | cpu,vulkan | f32 | . . . . 4 | . . o m | . | yes | . | 38 |
-| `max_pool2d` | compute | cpu,vulkan | f32 | . . . . 4 | . s o m | . | yes | . | 70 |
+| `max_pool2d` | compute | cpu,vulkan | f16,f32 | . . . . 4 | . s o m | . | yes | . | 82 |
 | `max_pool2d_backward` | compute | cpu,vulkan | f32 | . . . . 4 | . . o m | . | . | . | 49 |
-| `index_select` | compute | cpu,vulkan | f32 | . 1 2 3 . | e . o m | . | yes | . | 74 |
-| `scatter_add` | compute | cpu,vulkan | f32 | . . 2 . . | . s o m | . | yes | . | 72 |
+| `index_select` | compute | cpu,vulkan | f16,f32 | . 1 2 3 . | e . o m | . | yes | . | 94 |
+| `scatter_add` | compute | cpu,vulkan | f16,f32 | . . 2 . . | . s o m | . | yes | . | 92 |
 | `slice_backward` | compute | cpu,vulkan | f32 | . 1 2 3 . | . . o m | . | . | . | 471 |
-| `where` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | e s o m | yes | yes | . | 718 |
-| `triu` | compute | cpu,vulkan | f32 | . . 2 3 4 | e s o m | yes | yes | . | 338 |
-| `tril` | compute | cpu,vulkan | f32 | . . 2 3 4 | e s o m | yes | yes | . | 333 |
+| `where` | compute | cpu,vulkan | f16,f32 | . 1 2 3 4 | e s o m | yes | yes | . | 738 |
+| `triu` | compute | cpu,vulkan | f16,f32 | . . 2 3 4 | e s o m | yes | yes | . | 358 |
+| `tril` | compute | cpu,vulkan | f16,f32 | . . 2 3 4 | e s o m | yes | yes | . | 353 |
 
 ## Backward rules
 
