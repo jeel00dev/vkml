@@ -101,6 +101,31 @@ def test_identity_fields_are_populated():
         assert report["max_workgroup_invocations"] > 0
 
 
+def test_unusable_reason_distinguishes_the_three_outcomes():
+    """The CI gate's logic, on inputs no machine here can produce.
+
+    A rejected device cannot be created locally, and "no device at all" is the
+    state that already went green once while proving nothing -- so both are
+    tested against synthesised reports rather than hardware.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
+    from hardware_report import unusable_reason  # noqa: PLC0415
+
+    usable = {"name": "gpu", "supported": True, "missing_requirement": ""}
+    rejected = {
+        "name": "old gpu",
+        "supported": False,
+        "missing_requirement": "bufferDeviceAddress",
+    }
+
+    assert unusable_reason([]) == "no Vulkan device is visible"
+    assert unusable_reason([usable]) is None
+    assert "bufferDeviceAddress" in unusable_reason([rejected])
+    # One usable device is enough, even beside a rejected one: that is a
+    # working machine, not a failure.
+    assert unusable_reason([rejected, usable]) is None
+
+
 def test_reporting_creates_no_backend():
     """The load-bearing property, checked in a clean process.
 

@@ -285,13 +285,24 @@ jobs:
       - name: Point the loader at the ICD
         # The loader searches /usr/local/share/vulkan/icd.d, and Homebrew on
         # Apple Silicon installs under /opt/homebrew, so it would otherwise find
-        # nothing. Discovered rather than hardcoded: the file name is MoltenVK's
-        # to choose, and a wrong guess would look identical to "no GPU".
+        # nothing. The first run of this job proved the point: it looked only in
+        # share/, Homebrew puts MoltenVK's manifest in etc/, and the job then
+        # reported success having found no device at all.
+        #
+        # Both are searched now, and the variable is exported ONLY when a file is
+        # found -- an empty VK_ICD_FILENAMES suppresses the loader's own defaults
+        # rather than falling back to them.
         run: |
-          icd=$(find "$(brew --prefix)/share/vulkan/icd.d" -name '*.json' 2>/dev/null | head -1)
-          echo "found ICD: ${icd:-NONE}"
-          find "$(brew --prefix)" -name '*icd*.json' 2>/dev/null | head
-          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          prefix=$(brew --prefix)
+          icd=$(find "$prefix/etc/vulkan/icd.d" "$prefix/share/vulkan/icd.d" \
+                     -name 'MoltenVK_icd.json' 2>/dev/null | head -1)
+          if [ -n "$icd" ]; then
+            echo "using ICD: $icd"
+            echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          else
+            echo "no MoltenVK ICD found; leaving the loader's defaults in place"
+            find "$prefix" -name '*icd*.json' 2>/dev/null | head
+          fi
 
       - name: Install Python dependencies
         run: |
@@ -308,10 +319,13 @@ jobs:
       - name: What does MoltenVK actually offer?
         # The question this job exists to answer, and the reason the report
         # queries physical devices only: it prints a verdict even for a device
-        # the backend would refuse, which is the outcome worth knowing. It also
-        # prints "no Vulkan devices found" without failing, which is the third
-        # possibility here -- a runner VM with no Metal device at all.
-        run: python scripts/hardware_report.py
+        # the backend would refuse, which is the outcome worth knowing.
+        #
+        # --require-device is what makes the answer legible. Without it the first
+        # run of this job went green having seen no device at all: the suite
+        # passes either way, because every Vulkan test skips itself when nothing
+        # is present, and 441 silent skips look exactly like success.
+        run: python scripts/hardware_report.py --require-device
 
       - name: Run the suite
         run: python -m pytest tests/python -q

@@ -2,6 +2,7 @@
 
 #include "vkml/api/tensor.h"
 
+#include <array>
 #include <span>
 
 namespace vkml {

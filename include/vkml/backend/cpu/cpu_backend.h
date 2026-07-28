@@ -2,6 +2,8 @@
 
 #include "vkml/backend/api/backend.h"
 
+#include <span>
+
 namespace vkml {
 
 /// The reference backend.

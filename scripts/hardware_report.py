@@ -141,6 +141,24 @@ def print_device(index: int, d: dict) -> None:
     print(f"    compute units ..... {cores if cores else 'not reported'}")
 
 
+def unusable_reason(devices: list) -> str | None:
+    """Why this machine cannot run vkML, or None if it can.
+
+    Exists for CI. A job that finds no device and then reports success is
+    indistinguishable from one that proved the backend works, and the second is
+    the reading people take -- the suite passes either way, because the Vulkan
+    tests skip themselves when no device is present.
+    """
+    if not devices:
+        return "no Vulkan device is visible"
+    rejected = [
+        f"{d['name']} (missing {d['missing_requirement']})" for d in devices if not d["supported"]
+    ]
+    if len(rejected) == len(devices):
+        return "no visible device meets the requirements: " + "; ".join(rejected)
+    return None
+
+
 def run_suite(index: int) -> dict:
     """Runs the validation suite against one device, in a child process.
 
@@ -186,6 +204,11 @@ def main() -> int:
         help="also run the validation suite against every usable device",
     )
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    parser.add_argument(
+        "--require-device",
+        action="store_true",
+        help="exit non-zero unless at least one visible device can run vkML",
+    )
     args = parser.parse_args()
 
     env = environment()
@@ -221,6 +244,12 @@ def main() -> int:
         print("Please paste everything above into an issue:")
         print("  https://github.com/jeel00dev/vkml/issues")
         print("=" * 72)
+
+    if args.require_device:
+        reason = unusable_reason(devices)
+        if reason:
+            print(f"\nrequired a usable device: {reason}", file=sys.stderr)
+            return 2
 
     # A failing suite is a failing report. Describing the machine is not.
     return 1 if any(r["returncode"] != 0 for r in results) else 0
