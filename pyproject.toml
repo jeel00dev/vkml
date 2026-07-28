@@ -42,8 +42,10 @@ dependencies = ["numpy>=1.24"]
 # number disagree the first time someone bumps one of them.
 dynamic = ["version"]
 
-[project.urls]
-Source = "https://github.com/jeel00dev/vkml"
+# [project.urls] is deliberately absent: the repository has no remote yet, and a
+# URL that does not resolve is worse than none. Add Source/Homepage here when
+# there is a real one -- README.md's logo should become an absolute URL at the
+# same time, since PyPI does not render relative image paths.
 
 [tool.scikit-build]
 minimum-version = "0.10"
