@@ -199,12 +199,33 @@ makes that outcome well defined.
 
 ## 7. Gate
 
-**P1 asks for every major subsystem required for a usable framework. With D
-complete, the list is closed:** operators (B), `nn` modules and optimisers (C),
-data utilities and serialisation (D), demonstrated by a real application (E).
-
-The two P1 items not built — prefetch and transforms — are deferred with
-recorded triggers rather than missed, per P7.
-
 **Gate for Milestone D specifically — a data pipeline and a checkpoint format,
 both proven against a real caller — is met.**
+
+### Correction: P1 is not closed
+
+An earlier draft of this section claimed that with D complete "the list is
+closed." That was wrong, and it is corrected here rather than quietly dropped,
+because a phase marked done is a phase nobody re-reads. Checking P1's list item
+by item against the code:
+
+| P1 item | State |
+|---|---|
+| Tensor system, runtime, all core operators | done (A, B) |
+| Optimisers — SGD, Momentum, Adam, AdamW, RMSProp | done (C) |
+| Data utilities, model save/load/checkpoint | done (D), less prefetch and transforms |
+| `nn` — Linear, Embedding, Attention, MHA, TransformerBlock (encoder), residuals | done (C) |
+| **`nn` — Conv1d, Conv3d** | **not built.** Only `Conv2d` exists |
+| **`nn` — FeedForward, PositionalEncoding, decoder block** | **not built** |
+| **Losses — BCE, KL, Huber** | **not built.** Only `mse_loss`, `cross_entropy` |
+| **Autograd — checkpointing, custom gradients** | **not built.** `autograd.h` describes checkpointing as an affordance of the graph design; no implementation and no user-facing API |
+
+Six subsystems from P1's own sentence, not two. The error came from reasoning
+about milestones B–E — which did close what *they* set out to do — instead of
+re-reading the phase definition. It is the same failure the Milestone B ledger
+warned about: a list written in advance is a prediction, and checking work
+against the milestone rather than against the specification lets the gap survive.
+
+`Conv3d` additionally needs rank 5, which `kMaxDims = 4` forbids. That is a
+push-constant budget consequence (`ARCHITECTURE.md`), so it is a design change,
+not a missing layer.
