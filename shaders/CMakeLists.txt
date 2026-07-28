@@ -7,7 +7,28 @@
 # specialisation constants -- one SPIR-V module, many pipelines -- rather than
 # recompiling per variant.
 
-find_program(VKML_GLSLC glslc REQUIRED)
+# Either shader compiler will do, and requiring one specifically was a real
+# barrier: glslc comes from shaderc, which is a SEPARATE package from the Vulkan
+# SDK on most distributions, while glslangValidator ships with glslang and is
+# what find_package(Vulkan) locates. A GitHub runner with the Vulkan SDK
+# installed has the second and not the first, so the build failed there while
+# the README claimed the SDK was enough.
+#
+# glslc is preferred only because -O optimises harder than glslangValidator's
+# -Os; both emit valid SPIR-V and the suite passes on either.
+find_program(VKML_GLSLC glslc)
+find_program(VKML_GLSLANG glslangValidator)
+
+if(VKML_GLSLC)
+    message(STATUS "  shader compiler .. ${VKML_GLSLC}")
+elseif(VKML_GLSLANG)
+    message(STATUS "  shader compiler .. ${VKML_GLSLANG} (glslc not found)")
+else()
+    message(FATAL_ERROR
+        "No GLSL compiler found. vkml needs one of:\n"
+        "  glslc            (Debian/Ubuntu: glslc, Arch: shaderc, or the Vulkan SDK)\n"
+        "  glslangValidator (Debian/Ubuntu: glslang-tools, Arch: glslang)")
+endif()
 
 set(VKML_SHADERS
     fill.comp
@@ -47,20 +68,33 @@ foreach(SHADER ${VKML_SHADERS})
     set(SPV ${CMAKE_CURRENT_BINARY_DIR}/${NAME_WE}.spv)
     set(HDR ${SPV_HEADER_DIR}/${NAME_WE}.h)
 
-    # -MD emits a depfile so edits to common.glsl trigger a rebuild of every
-    # shader that includes it; without it, a change to the shared preamble is
+    # Both compilers emit a depfile, so an edit to common.glsl rebuilds every
+    # shader that includes it; without one, a change to the shared preamble is
     # silently ignored until a clean build.
+    #
+    # The flag SPELLINGS differ and are not interchangeable: glslangValidator
+    # wants the include path attached to the flag (-Idir, not -I dir) and takes
+    # --target-env as two words.
+    if(VKML_GLSLC)
+        set(VKML_COMPILE_SHADER ${VKML_GLSLC}
+            --target-env=vulkan1.3 -O
+            -I ${CMAKE_CURRENT_SOURCE_DIR}
+            -MD -MF ${SPV}.d
+            -o ${SPV} ${SRC})
+    else()
+        set(VKML_COMPILE_SHADER ${VKML_GLSLANG}
+            --target-env vulkan1.3 -Os
+            -I${CMAKE_CURRENT_SOURCE_DIR}
+            --depfile ${SPV}.d
+            -o ${SPV} ${SRC})
+    endif()
+
     add_custom_command(
         OUTPUT ${SPV}
-        COMMAND ${VKML_GLSLC}
-                --target-env=vulkan1.3
-                -O
-                -I ${CMAKE_CURRENT_SOURCE_DIR}
-                -MD -MF ${SPV}.d
-                -o ${SPV} ${SRC}
+        COMMAND ${VKML_COMPILE_SHADER}
         DEPENDS ${SRC}
         DEPFILE ${SPV}.d
-        COMMENT "glslc ${SHADER}"
+        COMMENT "compile ${SHADER}"
         VERBATIM)
 
     add_custom_command(

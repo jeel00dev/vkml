@@ -92,9 +92,12 @@ python examples/mnist/gui.py            # draw a digit and watch it predict
 pip install .
 ```
 
-Requires a C++20 compiler, CMake ≥ 3.25 and the Vulkan SDK. The SPIR-V for every
-shader is compiled into the extension, so an installed vkML has no data files to
-find at run time.
+Requires a C++20 compiler, CMake ≥ 3.25, the Vulkan SDK, and a GLSL compiler —
+either `glslc` (Debian/Ubuntu: `glslc`, Arch: `shaderc`) or `glslangValidator`
+(Debian/Ubuntu: `glslang-tools`, Arch: `glslang`). Whichever you have will do.
+
+The SPIR-V for every shader is compiled into the extension, so an installed
+vkML has no data files to find at run time.
 
 Without the Vulkan SDK I make the build **fail** rather than quietly hand you a
 CPU-only library, since that would not be the thing you installed. If it is
