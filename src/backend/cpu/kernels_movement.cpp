@@ -494,9 +494,149 @@ void k_col2im(Node& out) {
     }
 }
 
+/// Position of the first maximum in one pooling window, as a flat offset into
+/// the window's (kernel_h x kernel_w) grid, or -1 if the window lies entirely
+/// in the padding.
+///
+/// Scanned in row-major order with a strict `>`, so the FIRST maximum wins --
+/// matching torch, and matching k_argmax's convention. Using `>=` would silently
+/// select the last, which changes where the gradient lands whenever a window
+/// contains a tie.
+///
+/// Padding is -infinity rather than zero, so a window of negative values reports
+/// its true maximum. This is the reason max pooling needs a kernel at all
+/// instead of composing as a max over im2col, which pads with zero.
+template <typename Load>
+[[nodiscard]] int64_t argmax_in_window(const UnfoldParams& p, int64_t oh, int64_t ow,
+                                       const Load& load_at) {
+    float best = -std::numeric_limits<float>::infinity();
+    int64_t best_offset = -1;
+
+    for (int64_t ki = 0; ki < p.kernel_h; ++ki) {
+        const int64_t h = oh * p.stride_h - p.pad_h + ki * p.dilation_h;
+        if (h < 0 || h >= p.image_h) {
+            continue;
+        }
+        for (int64_t kj = 0; kj < p.kernel_w; ++kj) {
+            const int64_t x = ow * p.stride_w - p.pad_w + kj * p.dilation_w;
+            if (x < 0 || x >= p.image_w) {
+                continue;
+            }
+            const float v = load_at(h, x);
+            if (v > best) {
+                best = v;
+                best_offset = ki * p.kernel_w + kj;
+            }
+        }
+    }
+    return best_offset;
+}
+
+void k_max_pool2d(Node& out) {
+    const Node& in = *out.src[0];
+    if (out.dtype != DType::F32) {
+        unsupported_dtype(out);
+    }
+    const auto p = out.params.get<UnfoldParams>();
+
+    const int64_t out_h = out.shape.dim(2);
+    const int64_t out_w = out.shape.dim(3);
+    const int64_t planes = out.shape.dim(0) * out.shape.dim(1);
+
+    for (int64_t plane = 0; plane < planes; ++plane) {
+        const int64_t base = plane * p.image_h * p.image_w;
+        auto load_at = [&](int64_t h, int64_t x) {
+            return load<float>(in, base + h * p.image_w + x);
+        };
+
+        for (int64_t oh = 0; oh < out_h; ++oh) {
+            for (int64_t ow = 0; ow < out_w; ++ow) {
+                const int64_t offset = argmax_in_window(p, oh, ow, load_at);
+                VKML_ASSERT(offset >= 0, "max_pool2d window at ({}, {}) is entirely padding", oh,
+                            ow);
+                const int64_t h = oh * p.stride_h - p.pad_h + (offset / p.kernel_w) * p.dilation_h;
+                const int64_t x = ow * p.stride_w - p.pad_w + (offset % p.kernel_w) * p.dilation_w;
+                store<float>(out, (plane * out_h + oh) * out_w + ow, load_at(h, x));
+            }
+        }
+    }
+}
+
+/// Routes each window's gradient to the single input position that produced its
+/// maximum.
+///
+/// Walks the OUTPUT -- the input-shaped gradient -- and pulls, for the same
+/// reason col2im and scatter_add do: with a stride below the kernel extent one
+/// input position can be the maximum of several windows, so a push would need
+/// accumulation the target device cannot do deterministically. Pulling makes
+/// every destination the property of one iteration, so the fold order is fixed
+/// and both backends agree bit-for-bit.
+///
+/// src[0] is the incoming gradient and src[1] the original input, which is
+/// needed because the argmax is recomputed rather than stored. Storing it would
+/// need a second output per node, which the graph does not have and which is
+/// not worth introducing for one operator.
+void k_max_pool2d_backward(Node& out) {
+    const Node& grad = *out.src[0];
+    const Node& in = *out.src[1];
+    if (out.dtype != DType::F32) {
+        unsupported_dtype(out);
+    }
+    const auto p = out.params.get<UnfoldParams>();
+
+    const int64_t out_h = grad.shape.dim(2);
+    const int64_t out_w = grad.shape.dim(3);
+    const int64_t planes = out.shape.dim(0) * out.shape.dim(1);
+
+    for (int64_t plane = 0; plane < planes; ++plane) {
+        const int64_t base = plane * p.image_h * p.image_w;
+        auto load_at = [&](int64_t h, int64_t x) {
+            return load<float>(in, base + h * p.image_w + x);
+        };
+
+        for (int64_t h = 0; h < p.image_h; ++h) {
+            for (int64_t x = 0; x < p.image_w; ++x) {
+                float acc = 0.0F;
+
+                // Only kernel_h * kernel_w window offsets can reach this
+                // position, and each determines at most one window -- the same
+                // bounded scan col2im uses.
+                for (int64_t ki = 0; ki < p.kernel_h; ++ki) {
+                    const int64_t top = h + p.pad_h - ki * p.dilation_h;
+                    if (top < 0 || top % p.stride_h != 0) {
+                        continue;
+                    }
+                    const int64_t oh = top / p.stride_h;
+                    if (oh >= out_h) {
+                        continue;
+                    }
+                    for (int64_t kj = 0; kj < p.kernel_w; ++kj) {
+                        const int64_t left = x + p.pad_w - kj * p.dilation_w;
+                        if (left < 0 || left % p.stride_w != 0) {
+                            continue;
+                        }
+                        const int64_t ow = left / p.stride_w;
+                        if (ow >= out_w) {
+                            continue;
+                        }
+                        // This position receives the window's gradient only if
+                        // it is that window's first maximum.
+                        if (argmax_in_window(p, oh, ow, load_at) == ki * p.kernel_w + kj) {
+                            acc += load<float>(grad, (plane * out_h + oh) * out_w + ow);
+                        }
+                    }
+                }
+                store<float>(out, base + h * p.image_w + x, acc);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 void register_movement_kernels(KernelTable& t) {
+    t[static_cast<size_t>(OpKind::MaxPool2d)] = k_max_pool2d;
+    t[static_cast<size_t>(OpKind::MaxPool2dBackward)] = k_max_pool2d_backward;
     t[static_cast<size_t>(OpKind::Im2Col)] = k_im2col;
     t[static_cast<size_t>(OpKind::Col2Im)] = k_col2im;
     t[static_cast<size_t>(OpKind::Cat)] = k_cat;

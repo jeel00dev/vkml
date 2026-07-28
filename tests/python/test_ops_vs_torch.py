@@ -1055,3 +1055,90 @@ def test_conv2d_rejects_bad_bias():
     w = V.tensor(make_input((3, 2, 3, 3), seed=129))
     with pytest.raises(V.ShapeError):
         V.conv2d(x, w, V.tensor(make_input((5,), seed=130)))
+
+
+POOLS = [
+    # (shape, kernel, stride, padding)
+    ((1, 1, 4, 4), (2, 2), (2, 2), (0, 0)),
+    ((2, 3, 6, 6), (2, 2), (2, 2), (0, 0)),
+    ((1, 2, 5, 5), (3, 3), (1, 1), (1, 1)),   # padded, overlapping
+    ((2, 1, 7, 5), (3, 2), (2, 1), (1, 0)),   # asymmetric
+    ((1, 2, 8, 8), (2, 2), (0, 0), (0, 0)),   # stride defaults to kernel
+    ((1, 1, 3, 3), (3, 3), (1, 1), (0, 0)),   # kernel == image
+]
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad", POOLS)
+def test_max_pool2d(shape, kernel, stride, pad):
+    x = make_input(shape, seed=140)
+    v, t = pair(x)
+    tstride = kernel if stride == (0, 0) else stride
+    assert_close("max_pool2d", V.max_pool2d(v, kernel, stride, pad),
+                 torch.nn.functional.max_pool2d(t, kernel, stride=tstride, padding=pad),
+                 inputs=[x])
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad", POOLS)
+def test_avg_pool2d(shape, kernel, stride, pad):
+    x = make_input(shape, seed=141)
+    v, t = pair(x)
+    tstride = kernel if stride == (0, 0) else stride
+    assert_close("avg_pool2d", V.avg_pool2d(v, kernel, stride, pad),
+                 torch.nn.functional.avg_pool2d(t, kernel, stride=tstride, padding=pad),
+                 TOLERANCES["reduction"], inputs=[x])
+
+
+def test_max_pool2d_pads_with_negative_infinity():
+    """The reason max pooling needs its own kernel rather than composing as a
+    max over im2col: im2col pads with zero, so an all-negative window would
+    report 0 as its maximum. Verified against torch, which does not."""
+    x = np.array([[[[-1.0, -2.0], [-3.0, -4.0]]]], dtype=np.float32)
+    v, t = pair(x)
+    got = V.max_pool2d(v, [2, 2], [1, 1], [1, 1])
+    assert_close("max_pool2d(-inf padding)", got,
+                 torch.nn.functional.max_pool2d(t, 2, stride=1, padding=1), inputs=[x])
+    assert not np.any(got.numpy() == 0.0), f"zero leaked from the padding: {got.numpy()}"
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad", POOLS[:4])
+def test_max_pool2d_gradients(shape, kernel, stride, pad):
+    x = make_input(shape, seed=142)
+    v = V.tensor(x, requires_grad=True)
+    t = torch.from_numpy(x.copy()).requires_grad_(True)
+    tstride = kernel if stride == (0, 0) else stride
+
+    V.sum(V.mul(V.max_pool2d(v, kernel, stride, pad),
+                V.max_pool2d(v, kernel, stride, pad))).backward()
+    (torch.nn.functional.max_pool2d(t, kernel, stride=tstride, padding=pad) ** 2).sum().backward()
+
+    assert_close("max_pool2d grad", v.grad, t.grad, TOLERANCES["reduction"], inputs=[x])
+
+
+def test_max_pool2d_gradient_goes_to_one_position_on_a_tie():
+    """torch routes a window's gradient to the FIRST maximum only, not split
+    among ties. A random sweep never produces a tie, so this pins it directly --
+    and a `>=` scan instead of `>` would silently pick the last."""
+    x = np.array([[[[5.0, 5.0], [1.0, 2.0]]]], dtype=np.float32)
+    v = V.tensor(x, requires_grad=True)
+    t = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    V.sum(V.max_pool2d(v, [2, 2])).backward()
+    torch.nn.functional.max_pool2d(t, 2).sum().backward()
+
+    assert_close("tie gradient", v.grad, t.grad, inputs=[x])
+    assert v.grad.numpy().tolist() == [[[[1.0, 0.0], [0.0, 0.0]]]], v.grad.numpy()
+
+
+def test_avg_pool2d_counts_padding_in_the_divisor():
+    """count_include_pad=True is torch's default, and it is what zero-padded
+    im2col plus a mean gives for free -- a corner of a ones tensor averages to
+    1/4, not 1."""
+    ones = V.full([1, 1, 2, 2], 1.0)
+    corner = V.avg_pool2d(ones, [2, 2], [1, 1], [1, 1]).numpy()[0, 0, 0, 0]
+    assert corner == pytest.approx(0.25), corner
+
+
+def test_max_pool2d_rejects_padding_beyond_half_the_kernel():
+    v = V.tensor(make_input((1, 1, 5, 5), seed=143))
+    with pytest.raises(V.ShapeError):
+        V.max_pool2d(v, [2, 2], [1, 1], [2, 2])

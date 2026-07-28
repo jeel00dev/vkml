@@ -1,0 +1,117 @@
+#version 450
+
+// 2D max pooling, and its adjoint, in one module.
+//
+// BACKWARD is a specialisation constant rather than a second shader: the two
+// share the window scan, the stride-boundary test and -- crucially -- the
+// argmax rule, and a second file would mean keeping two copies of that rule in
+// step. Getting them out of step is precisely the bug that would route a
+// gradient to the wrong element while every shape still checked out.
+//
+// Padding is -infinity, not zero, so a window of negative values reports its
+// true maximum. That is why max pooling cannot compose as a max over im2col,
+// which pads with zero.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+// false: forward, one thread per pooled output element.
+// true:  adjoint, one thread per INPUT element.
+layout(constant_id = 1) const bool BACKWARD = false;
+
+layout(push_constant, scalar) uniform Params {
+    uint64_t src;      // forward: input.  backward: incoming gradient.
+    uint64_t image;    // backward only: the original input, for the argmax.
+    uint64_t dst;
+    uint  n;
+    int   kernel_h, kernel_w;
+    int   stride_h, stride_w;
+    int   pad_h, pad_w;
+    int   dilation_h, dilation_w;
+    int   image_h, image_w;
+    int   out_h, out_w;
+} p;
+
+/// Flat offset of the first maximum within one window's kernel grid, or -1 when
+/// the window lies entirely in the padding.
+///
+/// Row-major scan with a strict `>`, so the FIRST maximum wins -- matching
+/// torch, and matching the CPU kernel it is validated against. `>=` would
+/// select the last, moving the gradient whenever a window contains a tie.
+int argmax_in_window(uint64_t plane_base, int oh, int ow) {
+    float best = -1.0 / 0.0;   // -infinity
+    int best_offset = -1;
+
+    for (int ki = 0; ki < p.kernel_h; ++ki) {
+        const int h = oh * p.stride_h - p.pad_h + ki * p.dilation_h;
+        if (h < 0 || h >= p.image_h) { continue; }
+
+        for (int kj = 0; kj < p.kernel_w; ++kj) {
+            const int x = ow * p.stride_w - p.pad_w + kj * p.dilation_w;
+            if (x < 0 || x >= p.image_w) { continue; }
+
+            const float v = F32Buf(plane_base).v[h * p.image_w + x];
+            if (v > best) {
+                best = v;
+                best_offset = ki * p.kernel_w + kj;
+            }
+        }
+    }
+    return best_offset;
+}
+
+void forward(uint i) {
+    const int positions = p.out_h * p.out_w;
+    const int ow    = int(i) % p.out_w;
+    const int oh    = (int(i) / p.out_w) % p.out_h;
+    const int plane = int(i) / positions;
+
+    const uint64_t base = p.src + uint64_t(plane) * uint64_t(p.image_h * p.image_w) * 4ul;
+    const int offset = argmax_in_window(base, oh, ow);
+
+    const int h = oh * p.stride_h - p.pad_h + (offset / p.kernel_w) * p.dilation_h;
+    const int x = ow * p.stride_w - p.pad_w + (offset % p.kernel_w) * p.dilation_w;
+    F32Buf(p.dst).v[i] = F32Buf(base).v[h * p.image_w + x];
+}
+
+void backward(uint i) {
+    const int pixels = p.image_h * p.image_w;
+    const int x     = int(i) % p.image_w;
+    const int h     = (int(i) / p.image_w) % p.image_h;
+    const int plane = int(i) / pixels;
+
+    const uint64_t base = p.image + uint64_t(plane) * uint64_t(pixels) * 4ul;
+
+    // Pull, do not push: with a stride below the kernel extent one input
+    // position can be the maximum of several windows. Pulling makes this
+    // element the property of one invocation, so nothing contends and the fold
+    // order is fixed -- the same reason col2im and scatter_add are inverted.
+    float acc = 0.0;
+    for (int ki = 0; ki < p.kernel_h; ++ki) {
+        const int top = h + p.pad_h - ki * p.dilation_h;
+        if (top < 0 || (top % p.stride_h) != 0) { continue; }
+        const int oh = top / p.stride_h;
+        if (oh >= p.out_h) { continue; }
+
+        for (int kj = 0; kj < p.kernel_w; ++kj) {
+            const int left = x + p.pad_w - kj * p.dilation_w;
+            if (left < 0 || (left % p.stride_w) != 0) { continue; }
+            const int ow = left / p.stride_w;
+            if (ow >= p.out_w) { continue; }
+
+            // Only the window's first maximum receives its gradient.
+            if (argmax_in_window(base, oh, ow) == ki * p.kernel_w + kj) {
+                acc += F32Buf(p.src).v[(plane * p.out_h + oh) * p.out_w + ow];
+            }
+        }
+    }
+    F32Buf(p.dst).v[i] = acc;
+}
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) { return; }
+    if (BACKWARD) { backward(i); } else { forward(i); }
+}

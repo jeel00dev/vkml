@@ -76,7 +76,7 @@ constexpr std::array<std::string_view, kNumOps> kOpNames = {
     "im2col",
     "col2im",
     "max_pool2d",
-    "avg_pool2d",
+
     "max_pool2d_backward",
 
     "index_select",

@@ -1242,3 +1242,85 @@ def test_conv2d_on_gpu(xs, ws, stride, pad, dil):
     k = ws[1] * ws[2] * ws[3]
     compare(ctx, gpu, cpu, terms_abs_sum=float(np.abs(x).max() * np.abs(w).max() * k),
             reduction_n=k)
+
+
+POOLS = [
+    ((1, 1, 4, 4), (2, 2), (2, 2), (0, 0)),
+    ((2, 3, 6, 6), (2, 2), (2, 2), (0, 0)),
+    ((1, 2, 5, 5), (3, 3), (1, 1), (1, 1)),   # padded, overlapping
+    ((2, 1, 7, 5), (3, 2), (2, 1), (1, 0)),   # asymmetric
+    ((1, 1, 17, 17), (3, 3), (2, 2), (1, 1)),  # crosses a workgroup boundary
+]
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad", POOLS)
+def test_max_pool2d_on_gpu(shape, kernel, stride, pad):
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, shape, "any")
+
+    def run(dev):
+        return V.max_pool2d(V.tensor(x, device=dev), kernel, stride, pad).numpy()
+
+    ctx = Context(op="max_pool2d", layout=Layout(shape), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad", POOLS)
+def test_max_pool2d_backward_on_gpu(shape, kernel, stride, pad):
+    """Overlapping windows are the case the inverted loop exists for: one input
+    position can be the maximum of several windows and so receives several
+    contributions."""
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, shape, "any")
+
+    def grad(dev):
+        v = V.tensor(x, device=dev, requires_grad=True)
+        pooled = V.max_pool2d(v, kernel, stride, pad)
+        V.sum(V.mul(pooled, pooled)).backward()
+        return v.grad.numpy()
+
+    ctx = Context(op="max_pool2d_backward", layout=Layout(shape), dtype="f32", seed=SEED,
+                  inputs=[x])
+    compare(ctx, grad(gpu_device()), grad(V.cpu))
+
+
+def test_max_pool2d_negative_padding_on_gpu():
+    """The -infinity padding, on the device. A shader padding with zero would
+    return 0 here and pass every shape check."""
+    x = -np.abs(make_data(np.random.default_rng(SEED), (1, 2, 5, 5), "any")) - 1.0
+
+    def run(dev):
+        return V.max_pool2d(V.tensor(x, device=dev), [3, 3], [1, 1], [1, 1]).numpy()
+
+    gpu = run(gpu_device())
+    ctx = Context(op="max_pool2d", layout=Layout(x.shape), dtype="f32", seed=SEED, inputs=[x])
+    compare(ctx, gpu, run(V.cpu))
+    assert not np.any(gpu == 0.0), f"zero leaked from the padding: {gpu}"
+
+
+def test_max_pool2d_tie_resolves_identically_on_gpu():
+    """Both backends must pick the same maximum when a window contains a tie,
+    or their gradients diverge while their forward outputs agree."""
+    x = np.array([[[[5.0, 5.0], [1.0, 2.0]]]], dtype=np.float32)
+
+    def grad(dev):
+        v = V.tensor(x, device=dev, requires_grad=True)
+        V.sum(V.max_pool2d(v, [2, 2])).backward()
+        return v.grad.numpy()
+
+    gpu, cpu = grad(gpu_device()), grad(V.cpu)
+    assert gpu.tobytes() == cpu.tobytes(), f"tie broken differently:\n{gpu}\nvs\n{cpu}"
+
+
+@pytest.mark.parametrize("shape,kernel,stride,pad", POOLS[:3])
+def test_avg_pool2d_on_gpu(shape, kernel, stride, pad):
+    rng = np.random.default_rng(SEED)
+    x = make_data(rng, shape, "any")
+
+    def run(dev):
+        return V.avg_pool2d(V.tensor(x, device=dev), kernel, stride, pad).numpy()
+
+    ctx = Context(op="mean", layout=Layout(shape), dtype="f32", seed=SEED, inputs=[x])
+    n = kernel[0] * kernel[1]
+    compare(ctx, run(gpu_device()), run(V.cpu),
+            terms_abs_sum=float(np.abs(x).max() * n), reduction_n=n)

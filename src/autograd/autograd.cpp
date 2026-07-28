@@ -252,6 +252,25 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
                            sub(Tensor::ones(node.shape.dims(), node.dtype, node.device), out()));
             return;
 
+        // Max pooling's adjoint needs the ORIGINAL INPUT, not just the
+        // gradient: the argmax is recomputed rather than stored, so src[1] is
+        // the input. See k_max_pool2d_backward for why storing it would need a
+        // second output per node.
+        case OpKind::MaxPool2d: {
+            const Tensor input = ta();
+            auto n = make_node(OpKind::MaxPool2dBackward,
+                               Shape::contiguous(input.shape(), dtype_size(input.dtype())),
+                               input.dtype(), input.device());
+            n->src[0] = grad.contiguous().node();
+            n->src[1] = input.contiguous().node();
+            n->n_src = 2;
+            n->params.set(node.params.get<UnfoldParams>());
+            Tensor scattered{std::move(n)};
+            scattered.realize();
+            accumulate(grads, a, scattered);
+            return;
+        }
+
         // im2col and col2im are each other's adjoint, exactly as index_select
         // and scatter_add are: extracting windows is linear, and the transpose
         // of an extraction is a sum back into the positions it drew from.

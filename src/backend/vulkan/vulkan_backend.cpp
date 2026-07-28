@@ -10,6 +10,7 @@
 #include "vkml/spv/cat.h"
 #include "vkml/spv/col2im.h"
 #include "vkml/spv/im2col.h"
+#include "vkml/spv/max_pool2d.h"
 #include "vkml/spv/index_select.h"
 #include "vkml/spv/scatter_add.h"
 #include "vkml/spv/fill.h"
@@ -189,6 +190,23 @@ struct UnfoldPush {
 };
 
 static_assert(sizeof(UnfoldPush) <= 256, "unfold push constants exceed the device budget");
+
+/// Max pooling and its adjoint. `input` is used only by the adjoint, which
+/// recomputes the argmax rather than reading a stored index.
+struct PoolPush {
+    uint64_t src;
+    uint64_t image;
+    uint64_t dst;
+    uint32_t n;
+    int32_t kernel_h, kernel_w;
+    int32_t stride_h, stride_w;
+    int32_t pad_h, pad_w;
+    int32_t dilation_h, dilation_w;
+    int32_t image_h, image_w;
+    int32_t out_h, out_w;
+};
+
+static_assert(sizeof(PoolPush) <= 256, "pool push constants exceed the device budget");
 
 struct ReducePush {
     uint64_t src;
@@ -775,6 +793,15 @@ bool VulkanBackend::supports(const Node& node) const {
         case OpKind::Col2Im:
             return node.dtype == DType::F32 && node.src[0] != nullptr &&
                    node.src[0]->dtype == DType::F32;
+        // The shaders index planes directly rather than through an Operand, so
+        // both operands must be contiguous as well as F32.
+        case OpKind::MaxPool2d:
+            return node.dtype == DType::F32 && node.src[0] != nullptr &&
+                   node.src[0]->dtype == DType::F32 && node.src[0]->shape.is_contiguous();
+        case OpKind::MaxPool2dBackward:
+            return node.dtype == DType::F32 && node.src[0] != nullptr &&
+                   node.src[0]->dtype == DType::F32 && node.src[0]->shape.is_contiguous() &&
+                   node.src[1] != nullptr && node.src[1]->shape.is_contiguous();
         case OpKind::IndexSelect:
         case OpKind::ScatterAdd:
             return node.dtype == DType::F32 && node.src[0] != nullptr &&
@@ -981,6 +1008,53 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 rec.dispatch(
                     pipes.get("binary", spv::binary, spv::binary_size, sizeof(BinaryPush), cfg),
                     &push, sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::MaxPool2d:
+            case OpKind::MaxPool2dBackward: {
+                const bool backward = node->op == OpKind::MaxPool2dBackward;
+                const Node& src = *node->src[0];
+                const auto up = node->params.get<UnfoldParams>();
+
+                // Forward reads the input directly; the adjoint reads the
+                // gradient from src[0] and the original input from src[1],
+                // which is what the argmax is recomputed from.
+                const Node& image = backward ? *node->src[1] : src;
+
+                // The pooled extent lives on whichever operand is pooled-shaped:
+                // the output going forward, the gradient coming back.
+                const Shape& pooled = backward ? src.shape : node->shape;
+
+                PoolPush push{};
+                push.src = address_of(src);
+                push.image = address_of(image);
+                push.dst = address_of(*node);
+                push.n = n_elems;
+                push.kernel_h = up.kernel_h;
+                push.kernel_w = up.kernel_w;
+                push.stride_h = up.stride_h;
+                push.stride_w = up.stride_w;
+                push.pad_h = up.pad_h;
+                push.pad_w = up.pad_w;
+                push.dilation_h = up.dilation_h;
+                push.dilation_w = up.dilation_w;
+                push.image_h = up.image_h;
+                push.image_w = up.image_w;
+                push.out_h = static_cast<int32_t>(pooled.dim(2));
+                push.out_w = static_cast<int32_t>(pooled.dim(3));
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg, backward ? 1U : 0U};
+
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "max_pool2d", cfg, sizeof(PoolPush),
+                                   (n_elems + wg - 1) / wg, impl_->caps.subgroup_size);
+                }
+                rec.dispatch(pipes.get("max_pool2d", spv::max_pool2d, spv::max_pool2d_size,
+                                       sizeof(PoolPush), cfg),
+                             &push, sizeof(push), n_elems);
                 break;
             }
 

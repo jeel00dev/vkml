@@ -20,6 +20,7 @@ set(VKML_SHADERS
     scatter_add.comp
     im2col.comp
     col2im.comp
+    max_pool2d.comp
     cast.comp
     reduce.comp
     softmax.comp

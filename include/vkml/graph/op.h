@@ -107,7 +107,6 @@ enum class OpKind : uint16_t {
     Im2Col,
     Col2Im,
     MaxPool2d,
-    AvgPool2d,
     MaxPool2dBackward,
 
     // -- indexing ----------------------------------------------------------

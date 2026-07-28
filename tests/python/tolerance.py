@@ -98,6 +98,11 @@ POLICY: dict[str, Tolerance] = {
     "cat": Tolerance(Kind.EXACT, note="moves bits; no arithmetic"),
     "index_select": Tolerance(Kind.EXACT, note="gathers elements; no arithmetic"),
     "im2col": Tolerance(Kind.EXACT, note="gathers elements or writes zero padding"),
+    "max_pool2d": Tolerance(Kind.EXACT, note="selects an existing element"),
+    # EXACT for the same reason as col2im: both backends walk the output and
+    # pull, so contributions to an input position arrive in the same window
+    # order and the two perform an identical sequence of additions.
+    "max_pool2d_backward": Tolerance(Kind.EXACT, note="same window-order fold on both backends"),
     # EXACT for the same reason as scatter_add: both backends walk the output
     # and pull, so the contributions to an image position arrive in the same
     # kernel order and the two perform an identical sequence of additions.

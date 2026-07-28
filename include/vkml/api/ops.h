@@ -139,6 +139,32 @@ enum class Reduction {
                             std::array<int, 2> padding = {0, 0},
                             std::array<int, 2> dilation = {1, 1});
 
+/// 2D max pooling, following torch.nn.functional.max_pool2d.
+///
+/// PADS WITH -INFINITY, not zero. A padded window must not report 0 as its
+/// maximum when every real element is negative, which is why this needs its own
+/// kernel rather than composing as `max` over `im2col` -- im2col pads with zero
+/// (verified against torch; `avg_pool2d` composes precisely because zero
+/// padding is what *it* wants).
+///
+/// Its gradient goes to exactly one position per window -- the first maximum in
+/// row-major order within the window, matching torch -- not split among ties.
+[[nodiscard]] Tensor max_pool2d(const Tensor& input, std::array<int, 2> kernel,
+                                std::array<int, 2> stride = {0, 0},
+                                std::array<int, 2> padding = {0, 0},
+                                std::array<int, 2> dilation = {1, 1});
+
+/// 2D average pooling, following torch.nn.functional.avg_pool2d with
+/// `count_include_pad=True`: padded positions contribute zero and are counted
+/// in the divisor.
+///
+/// Composed from im2col and a mean, because zero padding is exactly the
+/// semantics wanted here. Dilation is not accepted -- torch's avg_pool2d has no
+/// such parameter, and offering one would invent a behaviour to match.
+[[nodiscard]] Tensor avg_pool2d(const Tensor& input, std::array<int, 2> kernel,
+                                std::array<int, 2> stride = {0, 0},
+                                std::array<int, 2> padding = {0, 0});
+
 /// Gathers along `axis` at the positions named by `index`, following
 /// torch.index_select. `index` must be I64 and rank 1; the result takes its
 /// extent on `axis` from the index length, and every other extent from `a`.

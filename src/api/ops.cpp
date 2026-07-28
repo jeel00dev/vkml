@@ -456,6 +456,67 @@ Tensor col2im(const Tensor& cols, std::array<int, 2> image, std::array<int, 2> k
     return finish(std::move(n));
 }
 
+namespace {
+
+/// torch's convention: a stride of 0 means "same as the kernel", which is what
+/// makes `max_pool2d(x, 2)` halve the spatial extent as everyone expects.
+std::array<int, 2> pool_stride(std::array<int, 2> stride, std::array<int, 2> kernel) {
+    return {stride[0] == 0 ? kernel[0] : stride[0], stride[1] == 0 ? kernel[1] : stride[1]};
+}
+
+}  // namespace
+
+Tensor max_pool2d(const Tensor& input, std::array<int, 2> kernel, std::array<int, 2> stride,
+                  std::array<int, 2> padding, std::array<int, 2> dilation) {
+    VKML_CHECK(input.ndim() == 4, ShapeError, "max_pool2d() expects (N, C, H, W), got rank {}",
+               input.ndim());
+    const std::array<int, 2> step = pool_stride(stride, kernel);
+    check_window(kernel, step, padding, dilation, "max_pool2d()");
+
+    for (int i = 0; i < 2; ++i) {
+        // torch requires this, and allowing it would place a window entirely
+        // inside the padding, whose maximum is -infinity.
+        VKML_CHECK(padding[i] * 2 <= kernel[i], ShapeError,
+                   "max_pool2d(): padding {} must not exceed half the kernel extent {}", padding[i],
+                   kernel[i]);
+    }
+
+    const int64_t out_h = window_count(input.size(2), kernel[0], step[0], padding[0], dilation[0]);
+    const int64_t out_w = window_count(input.size(3), kernel[1], step[1], padding[1], dilation[1]);
+    VKML_CHECK(out_h > 0 && out_w > 0, ShapeError,
+               "max_pool2d(): the dilated kernel is larger than the padded image");
+
+    const std::vector<int64_t> dims{input.size(0), input.size(1), out_h, out_w};
+
+    auto n = make_node(OpKind::MaxPool2d, Shape::contiguous(dims, dtype_size(input.dtype())),
+                       input.dtype(), input.device());
+    n->src[0] = input.node();
+    n->n_src = 1;
+    n->params.set(
+        make_unfold_params(kernel, step, padding, dilation, input.size(2), input.size(3)));
+    n->requires_grad = grad_enabled() && input.requires_grad();
+    return finish(std::move(n));
+}
+
+Tensor avg_pool2d(const Tensor& input, std::array<int, 2> kernel, std::array<int, 2> stride,
+                  std::array<int, 2> padding) {
+    VKML_CHECK(input.ndim() == 4, ShapeError, "avg_pool2d() expects (N, C, H, W), got rank {}",
+               input.ndim());
+    const std::array<int, 2> step = pool_stride(stride, kernel);
+
+    const int64_t channels = input.size(1);
+    const int64_t patch = static_cast<int64_t>(kernel[0]) * kernel[1];
+    const int64_t out_h = window_count(input.size(2), kernel[0], step[0], padding[0], 1);
+    const int64_t out_w = window_count(input.size(3), kernel[1], step[1], padding[1], 1);
+
+    // im2col validates the geometry and pads with zero, which is exactly
+    // count_include_pad=True: the padded entries contribute nothing to the sum
+    // and the divisor stays kernel_h * kernel_w.
+    const Tensor cols = im2col(input, kernel, step, padding, {1, 1});
+    const Tensor grouped = cols.reshape({input.size(0), channels, patch, out_h * out_w});
+    return mean(grouped, {2}).reshape({input.size(0), channels, out_h, out_w});
+}
+
 Tensor conv2d(const Tensor& input, const Tensor& weight, const Tensor& bias,
               std::array<int, 2> stride, std::array<int, 2> padding, std::array<int, 2> dilation) {
     VKML_CHECK(input.ndim() == 4, ShapeError, "conv2d() expects (N, C, H, W) input, got rank {}",
