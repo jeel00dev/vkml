@@ -95,13 +95,50 @@ Both are now closed — see *Resolved* below.
 The decision was to implement f16 for the compute set and leave the integer
 types as what they already are. Both halves are now true rather than assumed.
 
-**f16 is a compute dtype on the CPU backend** — elementwise, comparisons,
-reductions, softmax, matmul, `full`, `where`, `clamp` — following §7.3's
-contract exactly: widen to float, compute, narrow once on the store. Every
-kernel body was left alone; the dtype decision lives in the four helpers they
-already routed through, which is why the f16 and f32 paths cannot drift into
-different numerics. Vulkan still refuses f16 and says so, which is the correct
-intermediate state: the CPU backend is the oracle and takes an operator first.
+**f16 is a compute dtype on both backends** — elementwise, comparisons,
+reductions, softmax, `full`, `where`, `clamp` — following §7.3's contract
+exactly: widen to float, compute, narrow once on the store. Every kernel body
+was left alone on either side; the dtype decision lives in the handful of
+helpers they already routed through (`widen` on the CPU, `load_f`/`store_f` in
+the shaders), which is why the f16 and f32 paths cannot drift into different
+numerics.
+
+The two backends agree **bit for bit** on every f16 operation, asserted as
+equality rather than within a tolerance — both widen, compute and narrow once,
+so any extra rounding in a shader is a defect rather than a rounding difference.
+That is the second link of the correctness chain, and it is the link that was
+missing when this section was first written.
+
+**Matmul is the exception and is still f32-only on the GPU.** The GEMM family is
+six tuned shaders with shared-memory tiling, double buffering and vec4 loads;
+giving them an f16 storage path is a change to the most delicate code in the
+project rather than the load/store swap everything else needed. f16 matmul runs
+on the CPU and raises on Vulkan, which is loud rather than silent.
+
+### What f16 buys, measured
+
+The reason to want f16 on a GPU is memory traffic, so it was measured rather
+than asserted — Vulkan timestamp queries, warm pipelines, minimum of the
+distribution, three independent runs (`MEASUREMENT-AUDIT.md` §7 rules 1, 2, 6).
+
+| elementwise `a * b`, 2^24 elements | gpu min | traffic | achieved |
+|---|---|---|---|
+| f32 | 0.832 ms | 0.201 GB | 242 GB/s |
+| f16 | 0.427 ms | 0.101 GB | 236 GB/s |
+
+**1.95× faster at the same GB/s**, which is the signature of a bandwidth-bound
+kernel: identical bytes per second, half the bytes, half the time. Both figures
+sit at roughly 84 % of the device's theoretical peak.
+
+The mechanism was confirmed by prediction rather than inferred. If the win is
+traffic and nothing else, then f16 at 2^25 elements moves the same 0.201 GB as
+f32 at 2^24 and should take the same time. Measured: **0.843 ms against
+0.832 ms**, within 1.4 %. Same bytes, same time, whatever the dtype.
+
+The corollary matters for anyone reading a smaller number: at 2^22 the win is
+only 1.40×, because halving the traffic also moves the kernel down the
+saturation curve. All six points lie on one curve when plotted against bytes
+moved. `bench/gpu_bench.py` tracks the 2^24 pair.
 
 **The integer types are storage and indices, not arithmetic**, and that is now
 stated in `dtype.h` rather than discovered at a call site.
@@ -220,7 +257,8 @@ rather than converted.
 | # | Item | Trigger |
 |---|---|---|
 | ~~26~~ | ~~Decide f16 and integer arithmetic~~ | **Done** — f16 computes on the CPU; integers are storage and indices (§2) |
-| 30 | **Implement f16 on the Vulkan backend** | §2. `F16Buf` and the spec-constant pattern in `cast.comp` are the template; until then f16 computes on one backend only |
+| ~~30~~ | ~~Implement f16 on the Vulkan backend~~ | **Done** — elementwise, comparisons, reductions and softmax; bit-exact against the CPU oracle (§2) |
+| 31 | **f16 in the GEMM family** | §2. The one operator still f32-only on the GPU. Six tuned shaders, so it wants its own measured increment |
 | 27 | Reconcile the backends' input requirements, or document the divergence | §5. Sharpens item 16 |
 | 28 | Implement `prod` on Vulkan, or state it is CPU-only | §4 |
 | 15 | Run the Python suite under a sanitizer in CI | Unchanged; still open |
@@ -242,15 +280,17 @@ exists, and the gaps it found are closed except where closing them requires a
 decision.**
 
 Both properties that were unreachable — mixed precision, and the backward half
-of `Cast` — are now reachable and covered, on the CPU backend. This remains
-*part 1* because f16 computes on one backend only: the Vulkan half is item 30,
-and until it lands the correctness chain for f16 runs its first link only.
+of `Cast` — are now reachable and covered, on **both** backends, with the two
+verified bit-exact against each other. This remains *part 1* only because
+matmul's GPU path is still f32 (item 31); every other f16 operator runs the full
+correctness chain.
 
 All gates green: layering (56 files) · clang-format · debug `-Werror` · release ·
-ASan build and suite · ctest · **1,120 Python tests, 5 skipped** · **27 of 27
-mutations killed**.
+ASan build and suite · ctest · **1,156 Python tests, 5 skipped** · **29 of 29
+mutations killed** · validation layers clean on the f16 GPU path.
 
-Three of those mutations exist for the f16 precision contract, which a tolerance
+Five of those mutations exist for the f16 precision contract, which a tolerance
 comparison cannot check: accumulating a reduction or a dot product in 16 bits,
-and reading every comparison operand as f32. All three are killed, by tests that
-assert exact values rather than approximate ones.
+reading every comparison operand as f32, and — on the shader side — ignoring the
+DTYPE specialisation constant or narrowing twice on store. All five are killed,
+by tests that assert exact values rather than approximate ones.
