@@ -94,7 +94,21 @@ jobs:
           cmake --build build/release -j$(nproc)
 
       - name: Run validation suite
+        # Coverage is recorded on the same run: it costs nothing measurable and
+        # the gate below needs it.
+        env:
+          VKML_COVERAGE: coverage.tsv
         run: python -m pytest tests/python -q
+
+      - name: Coverage gate
+        # Fails when a path the suite used to exercise stops being exercised --
+        # invisible in a green run, which is the whole point.
+        #
+        # The baseline is recorded WITHOUT a GPU, because this runner has none
+        # and roughly a third of the strided and large-size coverage comes from
+        # the Vulkan tests. The script refuses to compare across a different
+        # backend set rather than reporting dozens of phantom gaps.
+        run: python scripts/coverage_matrix.py coverage.tsv --check docs/coverage-baseline.json
 
       - name: Assert the suite is not silently empty
         # A misconfigured import path would make pytest collect nothing and

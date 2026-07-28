@@ -33,13 +33,31 @@ Everything else -- dtypes, ranks, empty tensors -- is printed as data rather tha
 judged, because applicability varies per operator and a report that cries wolf on
 meaningless cells is a report nobody reads twice.
 
-Exit code is always 0. This is a measurement, not a gate; making it one requires
-a baseline of accepted gaps, which is worth doing once the blocking ones are
-closed.
+THREE MODES
+
+    coverage_matrix.py <dump>                        print the report
+    coverage_matrix.py <dump> --check <baseline>     fail on a NEW gap
+    coverage_matrix.py <dump> --write-baseline <p>   record what is accepted
+
+The gate is asymmetric on purpose: a new gap fails, a closed one only warns.
+A new gap is a path some change stopped exercising, which a green suite cannot
+show you. A closed gap is good news, and failing CI for improving coverage
+would teach people to route around the gate rather than read it.
+
+A baseline records the BACKENDS it was made with, and the check refuses to
+compare across a different set. That is not caution for its own sake: hiding
+the GPU turns 49 covered paths into apparent gaps, because the Vulkan suite is
+where much of the strided and large-size coverage lives. CI has no GPU, so
+`docs/coverage-baseline.json` is recorded without one — regenerate it the same
+way:
+
+    VK_DRIVER_FILES=/nonexistent VKML_COVERAGE=cov.tsv python -m pytest tests/python -q
+    python scripts/coverage_matrix.py cov.tsv --write-baseline docs/coverage-baseline.json
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from collections import defaultdict
@@ -180,20 +198,63 @@ def bar(present: set[str], order: list[str]) -> str:
     return " ".join(v[-1] if v in present else "." for v in order)
 
 
-def report(dump: Path) -> None:
+def analyse(dump: Path) -> dict:
+    """Everything both the report and the gate need, computed once.
+
+    Extracted so the two cannot disagree about what a gap is -- a ratchet that
+    accepted a different set from the one the report prints would be worse than
+    no ratchet, because it would look like it was watching.
+    """
     dispatches, backward_fired = read_dump(dump)
     declared, categories = declared_operators()
     rule_keys = {normalised(r) for r in declared_backward_rules(ROOT / "src/autograd/autograd.cpp")}
 
-    # Everything downstream compares by normalised key, so an enum identifier and
-    # the name op_name() prints are the same thing regardless of spelling.
     rules = sorted(op for op in declared if normalised(op) in rule_keys)
     fired = {op for op in declared if normalised(op) in {normalised(k) for k in backward_fired}}
 
     observable = [op for op in declared if categories.get(op) != "leaf"]
     executed = set(dispatches)
-    never = [op for op in observable if op not in executed]
     backends_seen = set().union(*(c.backends for c in dispatches.values())) - {"view"}
+
+    single_backend = []
+    if len(backends_seen) >= 2:
+        single_backend = [op for op, c in sorted(dispatches.items())
+                          if not c.is_view and len(c.backends & backends_seen) < len(backends_seen)]
+
+    return {
+        "dispatches": dispatches,
+        "declared": declared,
+        "categories": categories,
+        "observable": observable,
+        "executed": executed,
+        "backends_seen": backends_seen,
+        "rules": rules,
+        "fired": fired,
+        "backward_fired": backward_fired,
+        "rule_keys": rule_keys,
+        # The gap sets. These, and only these, are what the baseline records.
+        "gaps": {
+            "never_executed": sorted(op for op in observable if op not in executed),
+            "backward_never_fired": sorted(op for op in rules if op not in fired),
+            "single_backend_only": sorted(single_backend),
+            "never_strided_input": sorted(
+                op for op, c in dispatches.items()
+                if not c.is_view and c.takes_tensors and not c.strided_input),
+            "never_across_workgroups": sorted(
+                op for op, c in dispatches.items()
+                if not c.is_view and "many_groups" not in c.sizes),
+        },
+    }
+
+
+def report(dump: Path) -> None:
+    a = analyse(dump)
+    dispatches, backward_fired = a["dispatches"], a["backward_fired"]
+    declared, categories, observable = a["declared"], a["categories"], a["observable"]
+    rules, fired, executed = a["rules"], a["fired"], a["executed"]
+    backends_seen, rule_keys = a["backends_seen"], a["rule_keys"]
+    gaps = a["gaps"]
+    never = gaps["never_executed"]
 
     print("# Operator coverage\n")
     print(f"Recording: `{dump}`\n")
@@ -217,7 +278,7 @@ def report(dump: Path) -> None:
     print()
 
     print("## BLOCKING — backward rules that never fired\n")
-    unfired = [op for op in rules if op not in fired]
+    unfired = gaps["backward_never_fired"]
     if unfired:
         print("A rule that never runs is a rule nobody has seen produce a number.\n")
         for op in unfired:
@@ -240,8 +301,7 @@ def report(dump: Path) -> None:
         print(f"Not assessable: only `{', '.join(backends_seen) or 'no'}` backend(s) ran, so "
               "every operator would show a false gap. Re-run with both.\n")
     else:
-        single = [(op, c) for op, c in sorted(dispatches.items())
-                  if not c.is_view and len(c.backends & backends_seen) < len(backends_seen)]
+        single = [(op, dispatches[op]) for op in gaps["single_backend_only"]]
         if single:
             print("The correctness chain (`ARCHITECTURE.md` §7) is CPU-against-PyTorch for "
                   "semantics, then Vulkan-against-CPU for kernel bugs. One backend breaks it.\n")
@@ -257,10 +317,8 @@ def report(dump: Path) -> None:
 
     # -- PATH ---------------------------------------------------------------
     print("## PATH — kernel paths never taken\n")
-    no_strided = [op for op, c in sorted(dispatches.items())
-                  if not c.is_view and c.takes_tensors and not c.strided_input]
-    no_large = [op for op, c in sorted(dispatches.items())
-                if not c.is_view and "many_groups" not in c.sizes]
+    no_strided = gaps["never_strided_input"]
+    no_large = gaps["never_across_workgroups"]
 
     print("**Never given a non-contiguous input.** Kernels index their sources through "
           "`operand_offset`; an operator that has only ever seen contiguous inputs has "
@@ -303,13 +361,106 @@ def report(dump: Path) -> None:
         print(f"| `{op}` | {by_key.get(normalised(op), 0):,} |")
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
-        print(__doc__)
-        print(f"usage: {sys.argv[0]} <dump.tsv>", file=sys.stderr)
+GAP_LABELS = {
+    "never_executed": "never executed at all",
+    "backward_never_fired": "backward rule never fired",
+    "single_backend_only": "ran on only one backend",
+    "never_strided_input": "never given a non-contiguous input",
+    "never_across_workgroups": "never run across more than one workgroup",
+}
+
+
+def write_baseline(dump: Path, path: Path) -> None:
+    a = analyse(dump)
+    payload = {
+        "comment": "Coverage gaps accepted as of this revision. A NEW gap fails the "
+                   "gate; regenerate with --write-baseline to accept one deliberately.",
+        # The backend set is part of the baseline, not decoration. Roughly a
+        # third of the strided and large-size coverage comes from the Vulkan
+        # tests, so a recording made without a GPU shows dozens of gaps a
+        # GPU recording does not. Comparing across the two is meaningless.
+        "backends": sorted(a["backends_seen"]),
+        "gaps": a["gaps"],
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    print(f"wrote {path} (backends: {', '.join(payload['backends']) or 'none'})")
+
+
+def check(dump: Path, baseline_path: Path) -> int:
+    """Fail on a gap that is not in the baseline. Closed gaps only warn.
+
+    ASYMMETRIC ON PURPOSE. A new gap is a path some change stopped exercising,
+    which a green suite cannot show you -- that is what this exists to catch.
+    A gap that CLOSED is good news, and failing CI for improving coverage would
+    teach people to route around the gate rather than read it. It is reported
+    loudly instead, because a baseline listing gaps that no longer exist is one
+    nobody trusts.
+    """
+    baseline = json.loads(baseline_path.read_text())
+    a = analyse(dump)
+
+    # A baseline is only meaningful against the backends it was recorded with.
+    # Measured: hiding the GPU turns 49 covered paths into apparent gaps,
+    # because the Vulkan suite is where much of the strided and large-size
+    # coverage comes from. Comparing anyway would produce a gate that fails
+    # every run on a machine unlike the one that recorded it -- and a gate that
+    # always fails gets deleted, which is worse than not having one.
+    recorded = baseline.get("backends")
+    observed = sorted(a["backends_seen"])
+    if recorded is not None and recorded != observed:
+        print(f"coverage gate SKIPPED: {baseline_path.name} was recorded with "
+              f"backends {recorded or ['none']}, this run saw {observed or ['none']}.\n"
+              "Those are not comparable. Regenerate the baseline under the same "
+              "conditions, or run the report instead.", file=sys.stderr)
         return 2
-    report(Path(sys.argv[1]))
-    return 0
+
+    accepted = baseline["gaps"]
+    found = a["gaps"]
+
+    appeared, closed = {}, {}
+    for key in GAP_LABELS:
+        was, now = set(accepted.get(key, [])), set(found.get(key, []))
+        if now - was:
+            appeared[key] = sorted(now - was)
+        if was - now:
+            closed[key] = sorted(was - now)
+
+    for key, ops in closed.items():
+        print(f"closed: {', '.join(ops)} no longer {GAP_LABELS[key]}. "
+              f"Re-run with --write-baseline to record that.")
+
+    if not appeared:
+        print(f"coverage gate: no new gaps against {baseline_path.name}")
+        return 0
+
+    print(f"\ncoverage gate FAILED against {baseline_path.name}\n", file=sys.stderr)
+    for key, ops in appeared.items():
+        print(f"  NEW — {GAP_LABELS[key]}:", file=sys.stderr)
+        for op in ops:
+            print(f"      {op}", file=sys.stderr)
+    print("\nSomething stopped exercising a path the suite used to reach. Either "
+          "restore the coverage,\nor accept it deliberately with --write-baseline.",
+          file=sys.stderr)
+    return 1
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if len(args) == 3 and args[1] == "--check":
+        return check(Path(args[0]), Path(args[2]))
+    if len(args) == 3 and args[1] == "--write-baseline":
+        write_baseline(Path(args[0]), Path(args[2]))
+        return 0
+    if len(args) == 1:
+        report(Path(args[0]))
+        return 0
+
+    print(__doc__)
+    print(f"usage: {sys.argv[0]} <dump.tsv>                        # print the report\n"
+          f"       {sys.argv[0]} <dump.tsv> --check <baseline>     # fail on a new gap\n"
+          f"       {sys.argv[0]} <dump.tsv> --write-baseline <path>",
+          file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

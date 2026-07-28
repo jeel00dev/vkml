@@ -24,6 +24,8 @@ compile_commands.json
 # benchmark + test artifacts
 bench/results/*.json
 tests/data/
+# coverage recording, written wherever VKML_COVERAGE points (CI uses the root)
+coverage.tsv
 
 # third-party reference clones (read-only study material, not vendored)
 third_party/reference/

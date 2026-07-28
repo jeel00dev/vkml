@@ -39,6 +39,24 @@ the suite reaches.
 the diff: a gap that appears between two revisions is a path some change stopped
 exercising, which a green suite cannot show you.
 
+**That diff is now a CI gate.** `coverage_matrix.py --check` compares against
+`docs/coverage-baseline.json` and fails on a gap that is not accepted there. It
+is asymmetric on purpose — a new gap fails, a closed one only warns — because
+failing CI for *improving* coverage teaches people to route around a gate rather
+than read it.
+
+One thing the design had to get right, and did not at first. A baseline records
+the **backends** it was made with, and the check refuses to compare across a
+different set. Hiding the GPU turns 49 covered paths into apparent gaps, since
+the Vulkan suite is where much of the strided and large-size coverage lives — so
+the obvious version of this gate would have failed every CI build, and a gate
+that always fails gets deleted. The committed baseline is therefore recorded
+without a GPU, matching the runner.
+
+Verified both ways: a run with `test_ops_vs_torch.py` removed fails the gate
+naming `ne` as never executed and `cat`'s backward rule as never fired, and the
+unmodified run passes.
+
 ---
 
 ## 2. The headline finding: one dtype computes
@@ -408,7 +426,7 @@ rather than converted.
 | ~~28~~ | ~~Implement `prod` on Vulkan, or state it is CPU-only~~ | **Done** — stated CPU-only, with the ordering argument and a test (§4) |
 | ~~15~~ | ~~Run the Python suite under a sanitizer in CI~~ | **Done** — `scripts/asan_python.py` plus a CI job; verified against the bug that motivated it (§4c) |
 | 16 | CPU fallback via graph splitting, or Vulkan all-or-nothing | Now has a reproduction (§5) |
-| 29 | Make the coverage report a CI gate against a baseline of accepted gaps | Once §2 is decided; a ratchet is only useful when the accepted set is stable |
+| ~~29~~ | ~~Make the coverage report a CI gate~~ | **Done** — `--check` against `docs/coverage-baseline.json`, wired into the Python CI job |
 
 Empty tensors, dtype and rank coverage are reported as **data** rather than
 judged, because applicability varies per operator — a triangular mask has no
