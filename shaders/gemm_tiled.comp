@@ -123,7 +123,7 @@ void main() {
         // -- phase 4: compute ----------------------------------------------
         // As[ty][*] is broadcast across the row and Bs[*][tx] is unit-stride,
         // so neither access pattern conflicts on shared-memory banks.
-        float block = 0.0;
+        precise float block = 0.0;
         for (uint kk = 0; kk < TILE; ++kk) {
             block += As[ty * TILE + kk] * Bs[kk * TILE + tx];
         }
