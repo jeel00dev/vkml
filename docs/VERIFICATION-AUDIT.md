@@ -52,9 +52,11 @@ the same. Probed directly rather than inferred:
 | dtype | works | raises |
 |---|---|---|
 | f32 | everything | — |
-| f16 | comparisons, cast | `add`, `sub`, `mul`, `neg`, `sum`, `where`, … |
-| i32 | comparisons, cast | as above |
-| i64 | comparisons, cast | as above |
+| f16 | cast, and comparisons that *silently returned the wrong answer* | `add`, `sub`, `mul`, `neg`, `sum`, `where`, … |
+| i32 | as above | as above |
+| i64 | as above | as above |
+
+(The "comparisons work" entry was itself wrong; see *The bug this uncovered*.)
 
 ```
 DTypeError: cpu backend: op 'add' does not support dtype f16
@@ -63,25 +65,74 @@ DTypeError: cpu backend: op 'add' does not support dtype f16
 **This is a capability gap wearing a coverage gap's clothes, and no test closes
 it.** P2's "mixed precision" requirement cannot be satisfied by writing tests.
 
-It is also the Milestone B finding repeating in a different enum. There, twenty
-`OpKind` enumerators were declared with no implementation, and the resolution was
-to implement nine and delete eleven. `DType::F16` is the same shape of promise:
-the device reports `fp16 true` and `16-bit storage true`, `conftest.py` defines an
-`fp16` tolerance, and nothing computes.
+> **Correction, added when this was acted on.** The paragraph that stood here
+> called `DType::F16` "the same shape of promise" as the twenty undocumented
+> `OpKind` enumerators Milestone B resolved. That was wrong, and unfair to the
+> design. f16 storage-only was deliberate and recorded: `dtype.h` scheduled
+> arithmetic to a later milestone, `Half` is *intentionally* not an arithmetic
+> type so nothing can accumulate in 16 bits by accident, `ARCHITECTURE.md` §7.3
+> pre-derives the "fp16 storage, fp32 accum" tolerance, the IEEE conversions
+> handle subnormals, and both `F16Buf` and `cast.comp` already existed. The
+> *finding* below stands — nothing consumed f16, which is why `Cast`'s backward
+> rule was unreachable — but "narrow the enum" was never a real option, because
+> it would have discarded infrastructure built on purpose. The reason it had not
+> happened is that the M-milestone plan deferred it while `PHASE2-MANIFESTO.md`
+> P2 requires it; the manifesto is the later document and wins.
 
 Two consequences already visible, both verified:
 
 - The `Cast` backward rule **cannot be exercised at all**. Reaching it needs a
   graph that casts and then computes; casting f32→f32 creates no node, and
-  casting anywhere else yields a tensor no operator accepts. It is the one
-  backward rule still unfired, and it is blocked rather than untested
-  (`test_cast_backward_is_unreachable_because_only_f32_computes`).
-- `cast` is the one operator never given a non-contiguous input, for the same
+  casting anywhere else yields a tensor no operator accepts. It was the one
+  backward rule still unfired, and it was blocked rather than untested.
+- `cast` was the one operator never given a non-contiguous input, for the same
   reason.
 
-**This needs a decision, not more testing** — implement f16/integer arithmetic,
-or narrow the enum to what exists. Same choice as Milestone B's, and the
-manifesto's rule that an enum entry is a promise applies unchanged.
+Both are now closed — see *Resolved* below.
+
+### Resolved: f16 computes, integers do not
+
+The decision was to implement f16 for the compute set and leave the integer
+types as what they already are. Both halves are now true rather than assumed.
+
+**f16 is a compute dtype on the CPU backend** — elementwise, comparisons,
+reductions, softmax, matmul, `full`, `where`, `clamp` — following §7.3's
+contract exactly: widen to float, compute, narrow once on the store. Every
+kernel body was left alone; the dtype decision lives in the four helpers they
+already routed through, which is why the f16 and f32 paths cannot drift into
+different numerics. Vulkan still refuses f16 and says so, which is the correct
+intermediate state: the CPU backend is the oracle and takes an operator first.
+
+**The integer types are storage and indices, not arithmetic**, and that is now
+stated in `dtype.h` rather than discovered at a call site.
+
+**Consequences measured, not assumed:** all 47 backward rules now fire, `Cast`
+included — the last blocking gap. f16 went from 7 node evaluations, all of them
+cast outputs, to 66 of real arithmetic.
+
+### The bug this uncovered
+
+Acting on the finding turned up a defect the coverage recording had pointed at
+without naming: **the comparison kernels never checked their input dtype.**
+`compare_f32` asserted only that its *output* was Bool, then read both operands
+as f32 whatever they stored. So `a > b` on f16 read 2-byte halves as 4-byte
+floats, and on i64 read two elements as one. Both returned a plausible mask and
+neither raised.
+
+```
+f16 [1,2,3,4] > [4,3,2,1]  ->  [F, T, T, F]      correct: [F, F, T, T]
+i32 with negatives         ->  [F, F, F, F]      correct: [F, T, T, T]
+```
+
+The i32 case is the instructive one: it agrees for *positive* values, because
+IEEE-754 positive floats order the same way their bit patterns do as integers.
+A test using positive inputs would have passed.
+
+This is why the audit's dtype table said "works: comparisons" for all three —
+it recorded that nothing raised, not that anything was right. Checking for
+exceptions is not checking for correctness, and the recording surfaced the
+combination without being able to judge it. Fixed: f16 compares correctly,
+integers raise.
 
 ---
 
@@ -90,12 +141,12 @@ manifesto's rule that an enum entry is a promise applies unchanged.
 | Gap | Before | After |
 |---|---|---|
 | Operators never executed | 0 of 63 | 0 |
-| Backward rules never fired | **5** of 47 | **1** (blocked, §2) |
+| Backward rules never fired | **5** of 47 | **0** (the last needed f16, §2) |
 | Operators never given a strided input | **15** | **3** (2 impossible, 1 blocked) |
 | Operators never run across workgroups | **9** | **0** |
 | Operators on one backend only | 1 | 1 (`prod`, §4) |
 
-77 tests added: 1,009 → 1,086.
+111 tests added: 1,009 → 1,120.
 
 **Backward rules.** `pow`, `clamp`, `scatter_add` and `col2im` had rules that had
 never run. All four now have gradient tests against PyTorch. Writing them found
@@ -168,7 +219,8 @@ rather than converted.
 
 | # | Item | Trigger |
 |---|---|---|
-| 26 | **Decide f16 and integer arithmetic: implement, or narrow `DType`** | §2. Needs a decision |
+| ~~26~~ | ~~Decide f16 and integer arithmetic~~ | **Done** — f16 computes on the CPU; integers are storage and indices (§2) |
+| 30 | **Implement f16 on the Vulkan backend** | §2. `F16Buf` and the spec-constant pattern in `cast.comp` are the template; until then f16 computes on one backend only |
 | 27 | Reconcile the backends' input requirements, or document the divergence | §5. Sharpens item 16 |
 | 28 | Implement `prod` on Vulkan, or state it is CPU-only | §4 |
 | 15 | Run the Python suite under a sanitizer in CI | Unchanged; still open |
@@ -189,11 +241,16 @@ operator applicability model, which is item 29's real cost.
 exists, and the gaps it found are closed except where closing them requires a
 decision.**
 
-Two of P2's eight properties — mixed precision, and the backward half of
-`Cast` — cannot be reached until §2 is resolved. That is why this is *part 1*:
-P2 is not complete, and the reason it is not complete is a capability gap rather
-than missing tests.
+Both properties that were unreachable — mixed precision, and the backward half
+of `Cast` — are now reachable and covered, on the CPU backend. This remains
+*part 1* because f16 computes on one backend only: the Vulkan half is item 30,
+and until it lands the correctness chain for f16 runs its first link only.
 
 All gates green: layering (56 files) · clang-format · debug `-Werror` · release ·
-ASan build and suite · ctest · **1,086 Python tests, 5 skipped** · **24 of 24
+ASan build and suite · ctest · **1,120 Python tests, 5 skipped** · **27 of 27
 mutations killed**.
+
+Three of those mutations exist for the f16 precision contract, which a tolerance
+comparison cannot check: accumulating a reduction or a dot product in 16 bits,
+and reading every comparison operand as f32. All three are killed, by tests that
+assert exact values rather than approximate ones.
