@@ -30,6 +30,19 @@ message and called `init_vulkan`, which is only bound when the backend is
 compiled in. Both passed locally and broke all three jobs at once. The script
 reproduces it in about a minute.
 
+**Where this bites, specifically.** Almost every Vulkan-touching test is marked
+`requires_vulkan`, and that marker calls `vulkan_ready()`, which checks
+`has_vulkan and vulkan_available()` — so it already screens out a CPU-only
+build. 25 call sites across `test_invariants.py` and `test_vulkan_kernels.py`
+are safe for free.
+
+**`tests/python/test_device_report.py` is the exception, deliberately.** It
+carries no such marker anywhere, because its contract is to answer *"on a device
+the backend cannot use, on a machine with no GPU, and on a build with no Vulkan
+at all"* — its own docstring. Anything added there has to handle both builds
+explicitly. Both tests that broke CI were added to that file, which is the one
+place the safety net does not extend.
+
 `check_cpu_only_build.py` swaps the extension and restores it afterwards.
 Do not do that swap by hand: both configurations link to the same
 `python/vkml/_vkml_core*.so`, and rebuilding the Vulkan one afterwards sees the
