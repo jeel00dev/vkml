@@ -13,6 +13,13 @@ DELIBERATELY ABSENT, recorded so the omissions are decisions rather than gaps:
   path, for a problem nobody has yet. Revisit when a dataset does not fit in
   memory or when a profile shows the training loop waiting on data.
 
+  MEASURED, so this is no longer only an argument. A CIFAR-100 CNN over 2343
+  steps on the GPU (examples/cifar100/train.py, which times the loader, the
+  host-to-device upload and the compute separately) spends 0.2% of each step
+  producing batches, 0.8% uploading them and 99.0% computing. Prefetching hides
+  only the first of those, so its entire ceiling here is two tenths of one
+  percent. The trigger above stands unchanged and remains unmet.
+
   A transform pipeline. Every caller so far normalises once, up front, over the
   whole array -- which is faster than per-sample transforms and simpler to
   reproduce. Revisit when augmentation is wanted, since that genuinely has to
