@@ -521,6 +521,17 @@ NB_MODULE(_vkml_core, m) {
     m.def("mul", nb::overload_cast<const Tensor&, const Tensor&>(&vkml::mul));
     m.def("div", nb::overload_cast<const Tensor&, const Tensor&>(&vkml::div));
     m.def("pow", nb::overload_cast<const Tensor&, const Tensor&>(&vkml::pow));
+
+    // Scalar right-hand sides, registered AFTER the tensor-tensor forms so an
+    // exact Tensor match is always found first. The operators above already
+    // work this way (`__mul__` is bound twice); these are the same overloads
+    // reached by name, which is what a caller writing `V.mul(t, 2.0)` expects
+    // and what every expression in ops.cpp already uses internally.
+    m.def("add", nb::overload_cast<const Tensor&, double>(&vkml::add));
+    m.def("sub", nb::overload_cast<const Tensor&, double>(&vkml::sub));
+    m.def("mul", nb::overload_cast<const Tensor&, double>(&vkml::mul));
+    m.def("div", nb::overload_cast<const Tensor&, double>(&vkml::div));
+    m.def("pow", nb::overload_cast<const Tensor&, double>(&vkml::pow));
     m.def("maximum", &vkml::maximum);
     m.def("minimum", &vkml::minimum);
 

@@ -1302,3 +1302,66 @@ def test_dropout_rejects_probability_of_one():
     v = V.tensor(make_input((3, 3), seed=162))
     with pytest.raises(V.ShapeError):
         V.dropout(v, 1.0, seed=1)
+
+
+# ---------------------------------------------------------------------------
+# Scalar right-hand sides, reached by NAME rather than by operator
+#
+# `t * 2.0` always worked -- `__mul__` is bound twice. `V.mul(t, 2.0)` did not:
+# only the tensor-tensor overload was exposed, so the call raised TypeError
+# while the identical C++ overload sat unbound. Found while writing an unrelated
+# test, which is the usual way a hole like this surfaces.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name, vk, tt, scalar",
+    [
+        ("add", V.add, torch.add, 1.5),
+        ("sub", V.sub, torch.sub, 1.5),
+        ("mul", V.mul, torch.mul, 2.0),
+        ("div", V.div, torch.div, 4.0),
+        ("pow", V.pow, torch.pow, 2.0),
+    ],
+)
+def test_scalar_overloads_match_torch(name, vk, tt, scalar):
+    """Each scalar form against torch, and against its own operator."""
+    x = make_input((4, 5), seed=901)
+    v, t = pair(x)
+    assert_close(f"{name} scalar", vk(v, scalar), tt(t, scalar))
+
+
+def test_scalar_overload_agrees_with_the_operator():
+    """The named form and the operator must be the same computation.
+
+    They call the same C++ overload, so a divergence here would mean the
+    binding resolved to something else entirely -- which is exactly the failure
+    an overload set can produce silently.
+    """
+    x = make_input((3, 3), seed=902)
+    v, _ = pair(x)
+    np.testing.assert_array_equal(V.add(v, 1.5).numpy(), (v + 1.5).numpy())
+    np.testing.assert_array_equal(V.sub(v, 1.5).numpy(), (v - 1.5).numpy())
+    np.testing.assert_array_equal(V.mul(v, 2.0).numpy(), (v * 2.0).numpy())
+    np.testing.assert_array_equal(V.div(v, 4.0).numpy(), (v / 4.0).numpy())
+
+
+def test_tensor_overload_is_not_shadowed_by_the_scalar_one():
+    """Adding an overload can capture calls meant for the existing one.
+
+    Registration order decides it, so this pins that a Tensor argument still
+    reaches the tensor-tensor form rather than being converted to something.
+    """
+    x = make_input((3, 4), seed=903)
+    y = make_input((3, 4), seed=904)
+    a, ta = pair(x)
+    b, tb = pair(y)
+    assert_close("mul tensor still resolves", V.mul(a, b), torch.mul(ta, tb))
+
+
+def test_scalar_overloads_accept_a_python_int():
+    """`V.mul(t, 3)` must work, not just `3.0`. int -> double is nanobind's
+    implicit conversion pass, which only runs when no exact match is found."""
+    x = make_input((2, 2), seed=905)
+    v, t = pair(x)
+    assert_close("mul by int", V.mul(v, 3), torch.mul(t, 3.0))
