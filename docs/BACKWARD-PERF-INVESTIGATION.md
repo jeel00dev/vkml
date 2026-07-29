@@ -1,6 +1,6 @@
 # Backward-pass performance investigation
 
-**Status:** open. Root cause NOT found. Seven hypotheses eliminated with measurements.
+**Status:** open. Root cause NOT found. Nine hypotheses eliminated with measurements.
 **Date:** 2026-07-29
 **Hardware:** AMD RX 5600M (RDNA1), RADV, Vulkan 1.4.354. All figures from this machine.
 
@@ -259,4 +259,4 @@ one place rather than being copied between `bench/gpu_bench.py` and ad-hoc scrip
   ~0.6 GB/s. It only bites callers who accumulate across micro-batches, which nothing
   in the repository does yet, so it is recorded here rather than raised as a task.
 * **No optimisation should be attempted on the backward path** until §4 is answered.
-  Six of the seven natural guesses have already been wrong.
+  Nine hypotheses have already been wrong, including every one about the compiled code.
