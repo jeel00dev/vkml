@@ -99,6 +99,15 @@ either `glslc` (Debian/Ubuntu: `glslc`, Arch: `shaderc`) or `glslangValidator`
 The SPIR-V for every shader is compiled into the extension, so an installed
 vkML has no data files to find at run time.
 
+**At run time you need the Vulkan loader**, `libvulkan.so.1` — the small system
+library that finds your driver. The extension links against it directly, so
+without it `import vkml` fails before you reach any of the Python API, and pip
+cannot install it for you. Most systems with working graphics already have it;
+on a headless server, install `libvulkan1` (Debian/Ubuntu), `vulkan-loader`
+(Fedora/RHEL) or `vulkan-icd-loader` (Arch). The loader is not the driver: with
+it present but no driver, vkML imports and runs on the CPU backend, and
+`vulkan_device_count()` returns 0.
+
 Without the Vulkan SDK I make the build **fail** rather than quietly hand you a
 CPU-only library, since that would not be the thing you installed. If it is
 genuinely what you want, ask for it:

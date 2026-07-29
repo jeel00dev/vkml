@@ -71,3 +71,48 @@ VKML_VULKAN = "ON"
 VKML_BUILD_TESTS = "OFF"
 VKML_BUILD_BENCH = "OFF"
 VKML_BUILD_PYTHON = "ON"
+
+# ---------------------------------------------------------------------------
+# Redistributable wheels
+#
+# `pip wheel .` produces a linux_x86_64 wheel, which PyPI REJECTS: that tag
+# promises nothing about the glibc it was built against. A publishable Linux
+# wheel has to be built inside a manylinux image and relabelled by auditwheel.
+#
+# Every step below was run locally in quay.io/pypa/manylinux_2_28_x86_64 before
+# being written down, because two things about that image are not obvious:
+#
+#   it has vulkan-headers and vulkan-loader-devel, but NO GLSL compiler at all,
+#   so glslang is built from source -- ENABLE_OPT=OFF to avoid dragging in
+#   SPIRV-Tools, which is why shaders/CMakeLists.txt now probes for -Os instead
+#   of assuming it;
+#
+#   auditwheel would otherwise BUNDLE libvulkan.so.1 into the wheel, and that is
+#   actively wrong. The Vulkan loader is the component that finds the user's
+#   driver; a copy frozen at build time would not see it. It is excluded so the
+#   extension keeps resolving the system loader -- verified with ldd inside the
+#   repaired wheel.
+#
+# The consequence for users is a real runtime dependency the wheel cannot state
+# in metadata: libvulkan.so.1 must exist or `import vkml` fails. The README says
+# so under Installation.
+# ---------------------------------------------------------------------------
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-*"
+# musllinux and aarch64 are unverified; claiming them without a build that ran
+# would be the sort of promise this project does not make.
+skip = "*-musllinux*"
+archs = "x86_64"
+build-frontend = "build"
+test-command = "python -c \"import vkml, numpy as np; print(vkml.__version__, vkml.matmul(vkml.tensor(np.ones((8,8),dtype=np.float32)), vkml.tensor(np.ones((8,8),dtype=np.float32))).numpy().sum())\""
+
+[tool.cibuildwheel.linux]
+before-all = """
+dnf -y install epel-release
+dnf -y install vulkan-headers vulkan-loader-devel vulkan-loader
+curl -sL https://github.com/KhronosGroup/glslang/archive/refs/tags/16.4.0.tar.gz | tar xz -C /tmp
+cmake -S /tmp/glslang-16.4.0 -B /tmp/glslang-build -DCMAKE_BUILD_TYPE=Release \
+      -DENABLE_OPT=OFF -DGLSLANG_TESTS=OFF -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build /tmp/glslang-build -j4 --target install
+"""
+repair-wheel-command = "auditwheel repair --exclude libvulkan.so.1 -w {dest_dir} {wheel}"

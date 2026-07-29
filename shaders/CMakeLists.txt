@@ -23,6 +23,30 @@ if(VKML_GLSLC)
     message(STATUS "  shader compiler .. ${VKML_GLSLC}")
 elseif(VKML_GLSLANG)
     message(STATUS "  shader compiler .. ${VKML_GLSLANG} (glslc not found)")
+
+    # glslangValidator accepts -Os only when it was built against SPIRV-Tools.
+    # Distribution packages generally are; a minimal source build is not, and
+    # then EVERY shader fails with "-Os not available; optimizer not linked" --
+    # which is how the manylinux wheel build failed, since that image ships no
+    # GLSL compiler and one has to be built from source.
+    #
+    # Probed by compiling rather than by reading --help, because the help text
+    # lists the flag either way. Unoptimised SPIR-V is valid and correct; the
+    # driver optimises regardless, so losing -Os costs module size, not
+    # behaviour.
+    set(_opt_probe ${CMAKE_CURRENT_BINARY_DIR}/opt_probe.comp)
+    file(WRITE ${_opt_probe} "#version 450\nvoid main() {}\n")
+    execute_process(
+        COMMAND ${VKML_GLSLANG} --target-env vulkan1.3 -Os
+                -o ${CMAKE_CURRENT_BINARY_DIR}/opt_probe.spv ${_opt_probe}
+        RESULT_VARIABLE _opt_result OUTPUT_QUIET ERROR_QUIET)
+    if(_opt_result EQUAL 0)
+        set(VKML_GLSLANG_OPT -Os)
+        message(STATUS "  spirv optimiser .. available (-Os)")
+    else()
+        set(VKML_GLSLANG_OPT "")
+        message(STATUS "  spirv optimiser .. not linked in; compiling unoptimised")
+    endif()
 else()
     message(FATAL_ERROR
         "No GLSL compiler found. vkml needs one of:\n"
@@ -83,7 +107,7 @@ foreach(SHADER ${VKML_SHADERS})
             -o ${SPV} ${SRC})
     else()
         set(VKML_COMPILE_SHADER ${VKML_GLSLANG}
-            --target-env vulkan1.3 -Os
+            --target-env vulkan1.3 ${VKML_GLSLANG_OPT}
             -I${CMAKE_CURRENT_SOURCE_DIR}
             --depfile ${SPV}.d
             -o ${SPV} ${SRC})

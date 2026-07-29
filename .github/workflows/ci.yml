@@ -459,6 +459,52 @@ jobs:
       - name: Run the suite
         run: python -m pytest tests/python -q
 
+  manylinux:
+    name: Linux / redistributable wheel (manylinux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build a manylinux wheel
+        # The ordinary wheel job builds a linux_x86_64 wheel, which PyPI
+        # rejects. This one builds what could actually be published. All of the
+        # configuration lives in pyproject.toml under [tool.cibuildwheel] and
+        # was verified locally in the manylinux image first.
+        #
+        # One Python here rather than the declared four: the glslang source
+        # build dominates, and a push does not need to prove all four when the
+        # only difference is the interpreter. A release run drops the override.
+        env:
+          CIBW_BUILD: cp312-*
+        run: pipx run cibuildwheel==2.21.3 --output-dir wheelhouse
+
+      - name: Check the tag, and that no Vulkan loader was bundled
+        # Two things make this wheel correct rather than merely present: a
+        # manylinux tag PyPI will accept, and the ABSENCE of libvulkan.so.1
+        # inside it. Bundling the loader would ship one frozen at build time
+        # that cannot see the user's driver.
+        run: |
+          ls -la wheelhouse/
+          for w in wheelhouse/*.whl; do
+            case "$w" in
+              *manylinux*) echo "ok: manylinux tag -- $(basename "$w")" ;;
+              *) echo "::error::not a manylinux wheel: $(basename "$w")"; exit 1 ;;
+            esac
+            if python -m zipfile -l "$w" | grep -q "libvulkan"; then
+              echo "::error::libvulkan is bundled inside the wheel; it must come from the system"
+              exit 1
+            fi
+          done
+          echo "ok: no Vulkan loader bundled"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: manylinux-wheel
+          path: wheelhouse/*.whl
+
   windows:
     name: Windows / MSVC
     runs-on: windows-latest
