@@ -1,5 +1,9 @@
 #pragma once
 
+#if defined(_MSC_VER)
+#    include <intrin.h>  // _ReadWriteBarrier, used by keep() below
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -113,9 +117,30 @@ private:
 };
 
 /// Prevents the optimiser from discarding a computed value.
+///
+/// Two implementations because there is no portable one. The GCC/Clang form is
+/// the usual empty asm with a memory clobber. MSVC has no inline assembler on
+/// x64 in any form, so the whole benchmark target failed to compile there --
+/// and because VKML_BUILD_BENCH defaults ON, that broke the README's plain
+/// Windows build command on a clean checkout (issue #13).
+///
+/// The MSVC path reads the object through a `volatile` reference, which the
+/// compiler may not elide, and then issues a compiler-only barrier so the read
+/// cannot be hoisted past surrounding work. `_ReadWriteBarrier` is deprecated
+/// but is still what MSVC offers for this, and it emits no instruction -- the
+/// alternative, a real fence, would be measured by the benchmark it exists to
+/// keep honest.
 template <typename T>
 inline void keep(T&& value) {
+#if defined(_MSC_VER)
+    // Read THROUGH a volatile pointer. Merely binding a volatile reference
+    // performs no access and the compiler may still drop the computation; a
+    // volatile load is an observable side effect it may not.
+    (void)*static_cast<const volatile char*>(static_cast<const void*>(&value));
+    _ReadWriteBarrier();
+#else
     asm volatile("" : : "r,m"(value) : "memory");
+#endif
 }
 
 struct Options {

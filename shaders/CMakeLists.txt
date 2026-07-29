@@ -19,6 +19,27 @@
 find_program(VKML_GLSLC glslc)
 find_program(VKML_GLSLANG glslangValidator)
 
+# Fall back to whatever find_package(Vulkan) already located.
+#
+# find_program searches PATH, and the LunarG Windows installer does not put
+# C:\VulkanSDK\<ver>\Bin on it. So a configure could print
+# "found components: glslc glslangValidator" and then fail two lines later with
+# "No GLSL compiler found" -- from the same run (issue #5). find_package had the
+# absolute paths all along and nothing in the repo referenced them.
+#
+# PATH still wins, so nothing changes on a machine where this already worked;
+# this only adds a route where there was none. Set as normal variables rather
+# than into the cache, so a later reconfigure re-derives them from whichever SDK
+# find_package finds then.
+if(NOT VKML_GLSLC AND Vulkan_GLSLC_EXECUTABLE)
+    set(VKML_GLSLC "${Vulkan_GLSLC_EXECUTABLE}")
+    message(STATUS "  glslc not on PATH; using the one find_package(Vulkan) found")
+endif()
+if(NOT VKML_GLSLANG AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
+    set(VKML_GLSLANG "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}")
+    message(STATUS "  glslangValidator not on PATH; using the one find_package(Vulkan) found")
+endif()
+
 if(VKML_GLSLC)
     message(STATUS "  shader compiler .. ${VKML_GLSLC}")
 elseif(VKML_GLSLANG)

@@ -71,10 +71,15 @@ def main() -> int:
     checked = 0
 
     for path in iter_sources():
+        # as_posix(), not str(): layer names are written with forward slashes,
+        # and str() renders a WindowsPath with backslashes, so `rel` never
+        # matched, `own` was always None, and every file took the continue
+        # below. The script then reported "layering check passed (0 files)" and
+        # exited 0 -- a gate that examined nothing and said yes (issue #11).
         try:
-            rel = str(path.relative_to(ROOT / "include" / "vkml"))
+            rel = path.relative_to(ROOT / "include" / "vkml").as_posix()
         except ValueError:
-            rel = str(path.relative_to(ROOT / "src"))
+            rel = path.relative_to(ROOT / "src").as_posix()
 
         own = layer_of(rel)
         if own is None:
@@ -102,6 +107,25 @@ def main() -> int:
         print(f"layering check FAILED -- {len(violations)} violation(s):\n", file=sys.stderr)
         for v in violations:
             print(v, file=sys.stderr)
+        return 1
+
+    # A gate that examined nothing must not report success. On Windows this
+    # script found all 56 sources, resolved none of them to a layer, and printed
+    # "passed (0 files)" with exit code 0 -- the count was right there and the
+    # word "passed" is what anyone reads (issue #11).
+    #
+    # The floor is deliberately crude. Its job is to separate "checked the tree"
+    # from "checked nothing", not to track how many files the project has, which
+    # would make it a second thing to update on every commit.
+    MINIMUM_FILES = 20
+    if checked < MINIMUM_FILES:
+        print(
+            f"layering check INCONCLUSIVE -- examined only {checked} file(s), expected at "
+            f"least {MINIMUM_FILES}.\nThe sources were found and then not resolved to a "
+            f"layer, so nothing was actually checked. This is a bug in the checker, not a "
+            f"clean tree.",
+            file=sys.stderr,
+        )
         return 1
 
     print(f"layering check passed ({checked} files)")

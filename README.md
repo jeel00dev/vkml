@@ -32,8 +32,8 @@ result, so a whole expression can go over in a single submission.
 import numpy as np
 import vkml as V
 
-V.init_vulkan(0)
-device = V.device("vulkan:0") if V.vulkan_available() else V.cpu
+device, why = V.best_device()   # the GPU if one is usable, otherwise the CPU
+print(why)
 
 model = V.nn.Sequential(
     V.nn.Flatten(),
@@ -385,8 +385,19 @@ Then:
 
 ```sh
 python -m pytest tests/python -q      # Python suite, checked against PyTorch
-ctest --preset release                # C++ suite
 ```
+
+The C++ suite is run through whichever build directory you made above:
+
+```sh
+ctest --preset release                          # Linux and macOS
+ctest --test-dir build/msvc -C Release          # Windows
+```
+
+The Windows form is different for the same reason the build command was: the
+`release` preset points at `build/release`, which the Windows instructions never
+create, so `ctest --preset release` there reports "No tests were found!!!" and
+exits 8.
 
 ---
 
@@ -428,6 +439,8 @@ they run.
 
 ```sh
 python examples/mnist/train.py          # trains on the GPU, compared to PyTorch
+
+pip install pillow                      # gui.py only; train.py does not need it
 python examples/mnist/gui.py            # draw a digit and watch it predict
 ```
 
