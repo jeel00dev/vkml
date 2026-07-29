@@ -2,7 +2,7 @@
 
 <img src="https://raw.githubusercontent.com/jeel00dev/vkml/main/assets/vkml_logo.png" alt="vkML — Vulkan based machine learning library" width="440">
 
-**A deep learning framework built on Vulkan compute.**
+**A deep learning framework that runs on Vulkan compute.**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://en.cppreference.com/w/cpp/20)
@@ -14,42 +14,19 @@
 
 ---
 
-## What vkML is
+## About vkML
 
-vkML is a tensor library with reverse-mode autograd, neural network layers,
-optimisers and a data pipeline — the shape of API you would expect from PyTorch
-— running on the GPU through **Vulkan compute shaders** instead of CUDA or ROCm.
+vkML is a deep learning library. It gives you tensors, automatic differentiation,
+neural network layers, optimisers and a data loader — roughly the same API you
+already know from PyTorch — and it runs them on your GPU using **Vulkan compute
+shaders** instead of CUDA or ROCm.
 
-I wrote it in C++20 — about 13k lines of core and shader code — with a Python
-API through [nanobind](https://github.com/wjakob/nanobind). Tensors are lazy: an
-operation appends a node to a graph, and work happens when a result is actually
-needed, so a whole expression reaches the GPU as one submission.
+The core is written in C++20 (about 16k lines, including the shaders), and the
+Python API is built with [nanobind](https://github.com/wjakob/nanobind).
 
-### Why Vulkan
-
-CUDA is the reason most GPU deep learning runs on NVIDIA hardware. ROCm covers
-some AMD cards and not others, and mine is one of the ones it does not cover —
-that is why I started this.
-
-Vulkan is a different bet: it is a **vendor-neutral compute API**, with drivers
-from AMD, NVIDIA, Intel, Qualcomm, ARM and Apple (through MoltenVK). A compute
-shader compiled to SPIR-V runs on all of them. What I gave up for that is CUDA's
-mature libraries — there is no cuBLAS and no cuDNN here, so every kernel is one
-I had to write — and what I get back is the possibility of a single build that
-runs anywhere.
-
-I leaned on the Vulkan features that make that trade cheaper:
-
-| Feature | What it buys |
-|---|---|
-| `bufferDeviceAddress` | Buffers are 64-bit pointers in push constants — no descriptor sets, pools, or per-dispatch updates |
-| Specialisation constants | One SPIR-V module per operator family, specialised per op, dtype and layout at pipeline creation |
-| `scalar_block_layout` | Push-constant structs lay out identically in GLSL and C++, so shape metadata is mirrored, not translated |
-| Timeline semaphores | Submission and readback synchronise without fences per dispatch |
-
----
-
-## Quick start
+Tensors are lazy. When you write `a + b`, nothing runs yet — vkML just records
+the operation in a graph. The work is sent to the GPU when you actually need a
+result, so a whole expression can go over in a single submission.
 
 ```python
 import numpy as np
@@ -76,97 +53,381 @@ for images, labels in loader:                     # vkml.data.DataLoader
     optimiser.step()
 ```
 
-A complete, runnable version — which also checks itself against PyTorch step by
-step — is in [`examples/mnist`](examples/mnist):
+### Why Vulkan?
 
-```sh
-python examples/mnist/train.py          # trains on the GPU, compares to PyTorch
-python examples/mnist/gui.py            # draw a digit and watch it predict
-```
+Most GPU deep learning runs on NVIDIA cards because it runs on CUDA. AMD has
+ROCm, but it only supports some cards — and mine is not one of them. That is the
+problem that started this project.
+
+Vulkan is a different approach. It is a **vendor-neutral** API, and drivers exist
+for AMD, NVIDIA, Intel, Qualcomm, ARM and Apple (through MoltenVK). A compute
+shader compiled to SPIR-V can run on all of them.
+
+The trade-off is real, and worth knowing before you start: there is no cuBLAS and
+no cuDNN here, so every kernel in vkML is one that had to be written by hand. In
+return, one build can potentially run anywhere.
+
+A few Vulkan features make that trade cheaper than it sounds:
+
+| Feature | What it gives us |
+|---|---|
+| `bufferDeviceAddress` | Buffers become 64-bit pointers passed in push constants, so there are no descriptor sets or pools to manage per dispatch |
+| Specialisation constants | One SPIR-V module per operator family, specialised for the op, dtype and layout when the pipeline is created |
+| `scalarBlockLayout` | Push-constant structs have the same layout in GLSL and C++, so shape metadata is mirrored instead of translated |
+| Timeline semaphores | Submission and readback stay in sync without a fence for every dispatch |
 
 ---
 
 ## Installation
 
+### Step 1 — install the dependencies
+
+vkML is compiled when you install it, so you need a few tools on your machine
+first. Pick your platform below.
+
+<details open>
+<summary><b>Linux (Debian / Ubuntu)</b></summary>
+
 ```sh
+sudo apt-get update
+sudo apt-get install -y build-essential cmake ninja-build \
+                        libvulkan-dev glslang-tools
+```
+
+That gives you a C++ compiler, CMake, the Vulkan development files and
+`glslangValidator` to compile the shaders.
+
+If you do not have a GPU (or your driver is not working), you can install a
+software Vulkan driver and still use the library:
+
+```sh
+sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+```
+
+</details>
+
+<details>
+<summary><b>Linux (Fedora / RHEL)</b></summary>
+
+```sh
+sudo dnf install -y gcc-c++ cmake ninja-build \
+                    vulkan-headers vulkan-loader-devel vulkan-loader
+```
+
+You also need a GLSL compiler, which provides either `glslc` or
+`glslangValidator`. We have not verified which package supplies it on Fedora, so
+we would rather not send you after the wrong name — if the build stops with "no
+GLSL compiler found", search your package manager for `glslang` or `shaderc`.
+Please open an issue with what worked and we will put it here.
+
+</details>
+
+<details>
+<summary><b>Linux (Arch)</b></summary>
+
+```sh
+sudo pacman -S base-devel cmake ninja vulkan-headers vulkan-icd-loader glslang
+```
+
+`glslang` provides `glslangValidator`. If you would rather have `glslc`, install
+`shaderc` instead. Either one works.
+
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+Vulkan is not native on macOS, so you also need MoltenVK, which translates
+Vulkan to Metal. Homebrew has everything:
+
+```sh
+brew install cmake ninja molten-vk vulkan-loader vulkan-headers vulkan-tools glslang
+```
+
+The Vulkan loader has to be told where MoltenVK is, because Homebrew does not
+install it where the loader looks by default. Rather than guess the path, ask
+Homebrew for it:
+
+```sh
+export VK_ICD_FILENAMES="$(brew list molten-vk | grep -m1 'MoltenVK_icd.json')"
+```
+
+Add that line to your `~/.zshrc` so it survives a new terminal.
+
+Do not be tempted to write the path out by hand. Our own CI got it wrong three
+times: the file lives under `etc/` on some versions and `share/` on others, and
+`brew --prefix` does not point where you would expect. Asking `brew list` costs
+nothing and is always right.
+
+Check it worked — this should list a device:
+
+```sh
+vulkaninfo --summary
+```
+
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
+
+You need three things:
+
+1. **Visual Studio 2022** with the "Desktop development with C++" workload
+   ([download](https://visualstudio.microsoft.com/downloads/)). The free
+   Community edition is fine.
+2. **CMake 3.25 or newer** ([download](https://cmake.org/download/)). Tick
+   "Add CMake to the system PATH" during setup.
+3. **The Vulkan SDK** from LunarG ([download](https://vulkan.lunarg.com/sdk/home)).
+   This includes the headers, the loader and `glslc`, so it covers everything
+   else vkML needs.
+
+The Vulkan SDK installer sets the `VULKAN_SDK` environment variable, which is how
+CMake finds it. **Open a new terminal after installing**, or the variable will
+not be set in your current one.
+
+Then run the install from a *Developer Command Prompt for VS 2022* — that is the
+shell that has the MSVC compiler on its PATH.
+
+> **Worth knowing:** Windows is built and tested on every commit, but only as a
+> CPU-only build, because the CI runners have no GPU. That means the Windows
+> build *with Vulkan enabled* has never run anywhere we can see. It should work,
+> and we would very much like to hear whether it does — see
+> [If you have hardware we do not](#if-you-have-hardware-we-do-not).
+
+</details>
+
+### Step 2 — install vkML
+
+You need Python 3.10 or newer. Clone the repository and install it:
+
+```sh
+git clone https://github.com/jeel00dev/vkml.git
+cd vkml
 pip install .
 ```
 
-Requires a C++20 compiler, CMake ≥ 3.25, the Vulkan SDK, and a GLSL compiler —
-either `glslc` (Debian/Ubuntu: `glslc`, Arch: `shaderc`) or `glslangValidator`
-(Debian/Ubuntu: `glslang-tools`, Arch: `glslang`). Whichever you have will do.
+That one command builds the C++ core, compiles the shaders into the extension
+and installs the Python package. It takes a few minutes the first time.
 
-The SPIR-V for every shader is compiled into the extension, so an installed
-vkML has no data files to find at run time.
+vkML is not on PyPI yet, so installing from source is the only way for now.
 
-**At run time you need the Vulkan loader**, `libvulkan.so.1` — the small system
-library that finds your driver. The extension links against it directly, so
-without it `import vkml` fails before you reach any of the Python API, and pip
-cannot install it for you. Most systems with working graphics already have it;
-on a headless server, install `libvulkan1` (Debian/Ubuntu), `vulkan-loader`
-(Fedora/RHEL) or `vulkan-icd-loader` (Arch). The loader is not the driver: with
-it present but no driver, vkML imports and runs on the CPU backend, and
-`vulkan_device_count()` returns 0.
+### Step 3 — check that it worked
 
-Without the Vulkan SDK I make the build **fail** rather than quietly hand you a
-CPU-only library, since that would not be the thing you installed. If it is
-genuinely what you want, ask for it:
+```sh
+python -c "import vkml; print(vkml.__version__); print(vkml.vulkan_device_names())"
+```
+
+You should see a version number and a list of your GPUs. If the list is empty,
+vkML installed correctly but cannot see a Vulkan device — see
+[Troubleshooting](#troubleshooting) below.
+
+### Installing without Vulkan
+
+vkML also has a CPU backend, mostly used to check the GPU results against. If
+you want to build only that — for example on a machine with no Vulkan SDK — ask
+for it explicitly:
 
 ```sh
 pip install . -C cmake.define.VKML_VULKAN=OFF
 ```
 
+By default the build **fails** when the Vulkan SDK is missing rather than quietly
+giving you a CPU-only library, because that would not be the thing you asked to
+install.
+
+### One runtime dependency pip cannot install for you
+
+vkML links against the **Vulkan loader** — `libvulkan.so.1` on Linux,
+`libvulkan.1.dylib` on macOS, `vulkan-1.dll` on Windows. This is the small system
+library that finds your graphics driver. Without it, `import vkml` fails before
+you reach any Python code, and pip cannot fix that for you.
+
+Most machines with working graphics already have it. On a headless server you may
+need to install it:
+
+| System | Package |
+|---|---|
+| Debian / Ubuntu | `libvulkan1` |
+| Fedora / RHEL | `vulkan-loader` |
+| Arch | `vulkan-icd-loader` |
+| macOS | `brew install vulkan-loader` |
+| Windows | included with the Vulkan SDK and with most GPU drivers |
+
+The loader is not the same thing as the driver. If you have the loader but no
+driver, vkML will import and run on the CPU backend, and
+`vulkan_device_count()` returns `0`.
+
 ---
 
-## Components
+## Building from source
 
-| Component | What it provides |
+If you want to work on vkML rather than just use it, build it with CMake
+directly. This gives you the C++ tests and the benchmarks too.
+
+### Linux and macOS
+
+```sh
+cmake --preset release -DVKML_VULKAN=ON
+cmake --build build/release -j$(nproc)          # macOS: -j$(sysctl -n hw.ncpu)
+```
+
+The Python extension is written straight into `python/vkml/`, so you can use it
+by putting that folder on your path:
+
+```sh
+PYTHONPATH=python python -c "import vkml; print(vkml.__version__)"
+```
+
+### Windows
+
+Windows uses a multi-config generator, which ignores `CMAKE_BUILD_TYPE`. Do not
+use the presets there — pass the config to the build instead:
+
+```sh
+cmake -B build/msvc -DVKML_VULKAN=ON -DVKML_BUILD_PYTHON=ON
+cmake --build build/msvc --config Release --parallel
+```
+
+### Build options
+
+| Option | Default | What it does |
+|---|---|---|
+| `VKML_VULKAN` | `OFF` | Build the Vulkan backend. `pip install` turns this on for you; with CMake you pass it yourself, as above |
+| `VKML_BUILD_TESTS` | `ON` | Build the C++ test suite |
+| `VKML_BUILD_PYTHON` | `ON` | Build the Python extension |
+| `VKML_BUILD_BENCH` | `ON` | Build the benchmarks |
+| `VKML_WERROR` | `OFF` | Treat warnings as errors |
+| `VKML_SANITIZE` | `OFF` | Enable ASan and UBSan |
+
+Presets: `release`, `debug` (warnings as errors), `asan`, `relwithdebinfo`.
+
+### Running the tests
+
+The Python test suite compares every operator against PyTorch, so you need
+PyTorch installed. The CPU build is much smaller and is all the tests need:
+
+```sh
+pip install numpy pytest nanobind
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+Then:
+
+```sh
+python -m pytest tests/python -q      # Python suite, checked against PyTorch
+ctest --preset release                # C++ suite
+```
+
+---
+
+## Troubleshooting
+
+**`import vkml` fails with "libvulkan.so.1: cannot open shared object file"**
+The Vulkan loader is missing. Install it from the table
+[above](#one-runtime-dependency-pip-cannot-install-for-you).
+
+**The build stops with "no GLSL compiler found"**
+vkML needs either `glslc` or `glslangValidator` to compile its shaders. Install
+`glslang-tools` on Debian/Ubuntu, `glslang` on Fedora or Arch, or `shaderc` on
+Arch if you prefer `glslc`. On Windows and macOS the Vulkan SDK and Homebrew
+packages above already include one.
+
+**`vulkan_device_names()` returns an empty list**
+vkML installed fine, but the loader found no usable device. Run
+`vulkaninfo --summary` to see whether *anything* can find your GPU. If that is
+also empty, the problem is your driver, not vkML. On macOS, check that
+`VK_ICD_FILENAMES` points at a file that exists.
+
+**Your GPU is listed but vkML refuses it**
+The backend needs exactly three Vulkan features: `bufferDeviceAddress`,
+`scalarBlockLayout` and `timelineSemaphore`. If one is missing, vkML says which
+one instead of crashing. Run `python scripts/hardware_report.py` for the details.
+
+**CMake cannot find Vulkan on Windows**
+The `VULKAN_SDK` environment variable is set by the SDK installer, but only for
+terminals opened afterwards. Close your terminal, open a new one and try again.
+
+---
+
+## Examples
+
+Two complete training scripts, both of which check themselves against PyTorch as
+they run.
+
+**MNIST** downloads the dataset for you the first time:
+
+```sh
+python examples/mnist/train.py          # trains on the GPU, compared to PyTorch
+python examples/mnist/gui.py            # draw a digit and watch it predict
+```
+
+**CIFAR-100** needs the dataset downloaded by hand, because the site it comes
+from does not like being scripted at:
+
+```sh
+mkdir -p examples/cifar100/cache
+curl -L https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz \
+     -o examples/cifar100/cache/cifar-100-python.tar.gz
+
+python examples/cifar100/train.py
+```
+
+If the archive is missing, the script tells you exactly where to put it.
+
+---
+
+## What is included
+
+| Module | What it provides |
 |---|---|
 | `vkml` | Tensors, 65 operators, dtypes, devices, lazy evaluation |
 | `vkml.nn` | `Module`, Linear, Conv2d, MaxPool2d, AvgPool2d, BatchNorm2d, LayerNorm, Dropout, Embedding, MultiheadAttention, TransformerEncoderLayer, activations, and the MSE, cross-entropy, BCE-with-logits, KL-divergence and Huber losses |
 | `vkml.optim` | SGD (with momentum), Adam, AdamW, RMSProp |
 | `vkml.data` | `Dataset`, `ArrayDataset`, `DataLoader`, reproducible shuffling, `split` |
-| `vkml.serialize` | Checkpoints as a zip of `.npy` arrays plus JSON metadata |
+| `vkml.serialize` | Checkpoints stored as a zip of `.npy` arrays plus JSON metadata |
 
-Autograd is reverse-mode with 47 backward rules. I wrote each of them in terms
-of *forward* operations, so a gradient reuses the same kernels as the forward
-pass and a bug I fix in `mul` is fixed in the gradient of `mul` at the same
+Autograd is reverse-mode, with 47 backward rules. Each rule is written using
+*forward* operations, which means gradients reuse the same kernels as the forward
+pass — so a bug fixed in `mul` is fixed in the gradient of `mul` at the same
 time.
 
-Both **f32 and f16** compute on either backend. f16 is storage, never an
-accumulator: values widen to float at the memory boundary and narrow once on the
-store, so a reduction of any length keeps fp32 accumulation.
+Both **f32 and f16** work on either backend. f16 is used for storage only, never
+for accumulation: values widen to float when they are read and narrow once when
+written, so a reduction of any length still accumulates in fp32.
 
-### Checkpoints do not execute code
+### Checkpoints cannot execute code
 
-I made a vkML checkpoint a zip containing only data — `.npy` members read with
-`allow_pickle=False`, plus one JSON document. Neither can name a callable, so
-loading a model file cannot run a program. The well-known failure in this field
-is a format built on `pickle`, which reconstructs objects by *calling* what the
-stream names, and I did not want to repeat it.
+A vkML checkpoint is a zip file containing only data — `.npy` members read with
+`allow_pickle=False`, plus a single JSON document. Neither format can name a
+function, so loading a model file cannot run a program.
+
+This is a deliberate choice. The well-known problem in this area is model
+formats built on `pickle`, which rebuild objects by *calling* whatever the file
+names, and we did not want to repeat that.
 
 ---
 
-## How correctness is established
+## How we check correctness
 
-I check every operator against PyTorch, in a chain:
+Every operator is tested against PyTorch, in two stages:
 
 ```
-vkml-cpu  vs  PyTorch     catches wrong formulas, axes and broadcast rules
-vkml-vulkan  vs  vkml-cpu catches kernel bugs, against an oracle with identical semantics
+vkml-cpu     vs  PyTorch      catches wrong formulas, axes and broadcast rules
+vkml-vulkan  vs  vkml-cpu     catches kernel bugs, against an oracle with identical semantics
 ```
 
-I derive tolerances from the reduction length **in advance** and never widen one
-after a failure — a mismatch is a bug until an error analysis says otherwise.
+Tolerances are worked out from the reduction length **in advance**, and never
+widened after a failure. A mismatch is treated as a bug until an error analysis
+says otherwise.
 
-A green test suite only proves the tests ran, so I keep three further gates that
-check the suite *could* fail:
+A green test suite only proves the tests ran, so there are three more checks that
+ask whether the suite *could* have failed:
 
-| Gate | Question it answers |
+| Check | The question it answers |
 |---|---|
-| `scripts/mutation_check.py` | Break each kernel deliberately — does a test notice? |
+| `scripts/mutation_check.py` | If we break a kernel on purpose, does a test notice? |
 | `scripts/coverage_matrix.py` | Which operator × dtype × layout combinations are never exercised? |
-| `scripts/asan_python.py` | The Python suite against an AddressSanitizer build |
+| `scripts/asan_python.py` | Does the Python suite pass against an AddressSanitizer build? |
 
 ```sh
 python -m pytest tests/python -q        # the validation suite
@@ -174,91 +435,78 @@ python scripts/mutation_check.py        # can the suite fail?
 python scripts/asan_python.py           # the suite, instrumented
 ```
 
-Results are reproducible by construction, which I treat as part of correctness
-rather than a nicety: no global atomics, fixed reduction trees, and a
-counter-based RNG that is a pure function of seed and index.
+Results are reproducible by design, which we treat as part of correctness rather
+than a nice extra: no global atomics, fixed reduction trees, and a counter-based
+RNG that is a pure function of its seed and index.
 
 ---
 
 ## Project status
 
-**Alpha.** It trains real models and I test it hard, but the GPU evidence comes
-from two cards I own plus what CI can reach, and it does not cover everything a
+**Alpha.** vkML trains real models and is tested hard, but the GPU evidence comes
+from two cards plus whatever CI can reach, and it does not cover everything a
 mature framework does.
 
-**What works** — the MNIST MLP and CNN train end to end on the GPU and agree
-with PyTorch to well inside tolerance; 65 operators across both backends; 1,182
-Python tests and 96 C++ cases, across three Vulkan drivers, with CI on Linux,
+**What works.** The MNIST MLP and CNN train end to end on the GPU and agree with
+PyTorch well inside tolerance. 65 operators across both backends. 1,219 Python
+tests and 96 C++ cases, run against three Vulkan drivers, with CI on Linux,
 Windows and macOS.
 
-**What does not, stated plainly, because I would rather you found out here:**
+**What does not.** Listed plainly, because you should find out here rather than
+half an hour in:
 
-- **Three drivers, and one of them is software.** A discrete RX 5600M (RDNA1)
-  and an integrated Renoir iGPU under RADV; lavapipe, Mesa's software
-  rasteriser, with a subgroup size of 8 against RADV's 64 and half the shared
-  memory; and MoltenVK on Apple Silicon. The full suite passes on both RADV GPUs
-  and on lavapipe, and everything but one profiler test passes on MoltenVK — see
-  the next point. MNIST trains to the same accuracy and the same maximum
-  divergence from PyTorch on both GPUs. **No evidence at all about NVIDIA,
-  Intel, Qualcomm or ARM** — those are the reports I most want.
-- **What each platform actually proves.** Linux is the real test: every job
-  above runs there. Windows compiles under MSVC and passes the C++ suite, but
-  the runner has no GPU, so nothing Vulkan is exercised. macOS runs the whole
-  Python suite against MoltenVK — but on an *Apple Paravirtual device* in a VM,
-  not physical Apple hardware, and GPU timestamps do not advance there, so the
-  profiler is unusable on that runner. Validation layers are clean on it.
-- **Vulkan is all-or-nothing.** An operator the GPU cannot run raises rather than
-  falling back to the CPU. Two cases exist: `prod`, and `max_pool2d` given a
-  non-contiguous input.
-- **Missing layers:** Conv1d/Conv3d, gradient checkpointing.
-- **Rank ≤ 4.** A push-constant budget decision I made deliberately, not an
-  oversight.
+- **Three drivers, and one of them is software.** A discrete RX 5600M (RDNA1) and
+  an integrated Renoir iGPU, both under RADV; lavapipe, Mesa's software
+  rasteriser, which has a subgroup size of 8 against RADV's 64 and half the
+  shared memory; and MoltenVK on Apple Silicon. The full suite passes on both
+  RADV GPUs and on lavapipe, and everything except one profiler test passes on
+  MoltenVK. MNIST trains to the same accuracy and the same maximum divergence
+  from PyTorch on both GPUs. There is **no evidence at all about NVIDIA, Intel,
+  Qualcomm or ARM** — those are the reports we would most like to see.
+- **What each platform actually proves.** Linux is the real test; every job runs
+  there. Windows compiles under MSVC and passes the C++ suite, but the runner has
+  no GPU, so nothing Vulkan is exercised. macOS runs the whole Python suite
+  against MoltenVK, but on an *Apple Paravirtual device* in a VM rather than
+  physical Apple hardware, and GPU timestamps do not advance there, so the
+  profiler cannot be used on that runner. Validation layers are clean on it.
+- **Vulkan is all-or-nothing.** If the GPU cannot run an operator, vkML raises an
+  error instead of falling back to the CPU. Two cases exist today: `prod`, and
+  `max_pool2d` with a non-contiguous input.
+- **Missing layers:** Conv1d, Conv3d, gradient checkpointing.
+- **Tensors are limited to rank 4.** This is a deliberate push-constant budget
+  decision, not an oversight.
 - **f16 matmul is correct but slower than f32**, because the vectorised tile load
-  is f32-only.
+  is f32-only for now.
 - No distributed training, no quantisation, no ONNX.
 
-### If you have hardware I do not
+### If you have hardware we do not
 
-That list is short because I own two GPUs. If you have anything else — NVIDIA,
-Intel, Qualcomm, ARM, Apple, or Windows — one command tells us both whether
-vkML runs on it:
+That list is short because it was written by someone with two GPUs. If you have
+anything else — NVIDIA, Intel, Qualcomm, ARM, Apple, or Windows — a single
+command tells us both whether vkML runs on it:
 
 ```sh
 python scripts/hardware_report.py --run-tests
 ```
 
-It describes every Vulkan device it can see and runs the validation suite
-against the usable ones. It deliberately works on a device vkML **cannot** use,
-which is the report I most want: the backend requires exactly three things —
-`bufferDeviceAddress`, `scalarBlockLayout` and `timelineSemaphore` — and
-everything else it detects and adapts to. If your device is rejected, the report
-names which of the three is missing instead of crashing. Paste the output into
-an issue.
-
----
-
-## Building from source
-
-```sh
-cmake --preset release -DVKML_VULKAN=ON
-cmake --build build/release -j$(nproc)
-python -m pytest tests/python -q
-```
-
-Presets: `release`, `debug` (warnings as errors), `asan`, `relwithdebinfo`.
+It describes every Vulkan device it can find and runs the validation suite
+against the ones it can use. It is written to work even on a device vkML
+**cannot** use, which is the report we most want: if your device is rejected, it
+tells you which of the three required features is missing instead of crashing.
+Please paste the output into an issue.
 
 ---
 
 ## Documentation
 
-I keep design decisions with their reasoning, including the alternatives I
-rejected and why:
+Design decisions are kept together with the reasoning behind them, including the
+alternatives that were rejected and why:
 
-| Document | Contents |
+| Document | What is in it |
 |---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Layering, the graph IR, backend interface, the forks taken and their trade-offs |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Layering, the graph IR, the backend interface, and the forks taken along the way |
 | [`docs/THEORY.md`](docs/THEORY.md) | The numerics: error bounds, pairwise summation, stability |
-| [`docs/adr/`](docs/adr) | Decisions expensive to reverse — graph ownership, allocator, dtype promotion |
+| [`docs/adr/`](docs/adr) | Decisions that are expensive to reverse — graph ownership, the allocator, dtype promotion |
 | [`docs/MEASUREMENT-AUDIT.md`](docs/MEASUREMENT-AUDIT.md) | How performance is measured, and which instruments lie |
 | [`docs/PERFORMANCE-MODEL.md`](docs/PERFORMANCE-MODEL.md) | What the hardware can do, and what the kernels achieve |
 

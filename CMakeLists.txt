@@ -11,8 +11,10 @@ project(vkml
 # VKML_VULKAN defaults OFF so that a plain `cmake ..` builds and tests the CPU
 # backend without needing the Vulkan SDK -- that backend is the correctness
 # oracle and is useful on its own. It is not a statement about the project's
-# focus: the presets and the Python wheel both turn it ON, and turning it on is
-# what gets you the library's reason for existing.
+# focus: the Python wheel turns it ON (pyproject.toml), and turning it on is what
+# gets you the library's reason for existing. The PRESETS do not -- they set only
+# the build type and warning flags -- so a CMake build wanting Vulkan passes
+# -DVKML_VULKAN=ON explicitly, as README.md's build commands do.
 # ---------------------------------------------------------------------------
 option(VKML_BUILD_TESTS  "Build C++ unit tests"           ON)
 option(VKML_BUILD_PYTHON "Build the Python extension"     ON)
