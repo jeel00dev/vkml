@@ -459,6 +459,29 @@ jobs:
       - name: Run the suite
         run: python -m pytest tests/python -q
 
+      - name: pip install, then use it from outside the source tree
+        # The step above proves the CMake build works here; this proves the
+        # command a user actually types does. They are not the same path --
+        # scikit-build-core, the install() rule and the version read out of
+        # CMakeLists.txt are exercised by pip and by nothing else -- and none of
+        # that had ever run on macOS.
+        #
+        # Full Vulkan, unlike the Windows job: the toolchain installed above
+        # already has MoltenVK and a shader compiler, so there is no reason to
+        # settle for the CPU-only build here.
+        run: |
+          pip install --verbose .
+          cd "$RUNNER_TEMP"
+          python -c "
+          import vkml, numpy as np
+          assert 'site-packages' in vkml.__file__, vkml.__file__
+          print('vkml', vkml.__version__, 'from', vkml.__file__)
+          print('vulkan built in:', vkml.has_vulkan)
+          assert vkml.has_vulkan, 'the macOS install should carry the Vulkan backend'
+          a = vkml.tensor(np.ones((8, 8), dtype=np.float32))
+          print('cpu matmul sum:', float(vkml.matmul(a, a).numpy().sum()))
+          "
+
   manylinux:
     name: Linux / redistributable wheel (manylinux)
     runs-on: ubuntu-latest
@@ -533,3 +556,52 @@ jobs:
           cmake -B build/msvc -DVKML_BUILD_PYTHON=OFF -DVKML_BUILD_BENCH=OFF
           cmake --build build/msvc --config Release --parallel
           ctest --test-dir build/msvc -C Release --output-on-failure
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pytest nanobind
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build the extension and run the validation suite
+        # "Can I build the whole library from scratch and run its tests?" --
+        # answered on Windows for the first time. The C++ step above builds with
+        # VKML_BUILD_PYTHON=OFF, so until now nothing here had ever produced a
+        # .pyd, let alone imported one.
+        #
+        # This is also what confirms the generator-expression fix in
+        # bindings/CMakeLists.txt: a multi-config generator appends the config
+        # name to a plain output directory, which would put the extension in
+        # python/vkml/Release/ where `import vkml` cannot see it.
+        shell: bash
+        run: |
+          cmake -B build/py -DVKML_BUILD_PYTHON=ON -DVKML_BUILD_TESTS=OFF -DVKML_BUILD_BENCH=OFF
+          cmake --build build/py --config Release --parallel
+          ls -la python/vkml/
+          python -m pytest tests/python -q
+
+      - name: pip install, then use it from outside the source tree
+        # The command a user types first, on the platform where it has never
+        # run. CPU-only via the escape hatch the README documents -- and which
+        # was itself documented and never executed anywhere until now. The
+        # runner has no Vulkan driver, so the full install would need an SDK
+        # this job does not have.
+        shell: bash
+        run: |
+          pip install --verbose . -C cmake.define.VKML_VULKAN=OFF
+          cd "$RUNNER_TEMP"
+          python -c "
+          import vkml, numpy as np
+          assert 'site-packages' in vkml.__file__, vkml.__file__
+          print('vkml', vkml.__version__, 'from', vkml.__file__)
+          print('vulkan built in:', vkml.has_vulkan)
+          a = vkml.tensor(np.ones((8, 8), dtype=np.float32))
+          print('cpu matmul sum:', float(vkml.matmul(a, a).numpy().sum()))
+          "
+
+      - name: Hardware report
+        # Runs against the INSTALLED package, which is the case it exists for.
+        # Never fails the job: a Windows machine with no Vulkan driver is a
+        # legitimate answer, and this records what it looks like.
+        shell: bash
+        run: python scripts/hardware_report.py || true

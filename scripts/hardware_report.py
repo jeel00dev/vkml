@@ -35,6 +35,7 @@ Paste the output into an issue at https://github.com/jeel00dev/vkml/issues.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import platform
@@ -43,7 +44,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "python"))
+
+# Prefer an INSTALLED vkml, falling back to the in-tree package -- the same rule
+# examples/mnist/train.py follows. This used to insert the source tree
+# unconditionally, which meant that run from a clone it always reported on the
+# local build and never on the wheel. That is backwards for a script whose
+# entire job is describing the vkml someone actually has.
+if importlib.util.find_spec("vkml") is None:
+    sys.path.insert(0, str(ROOT / "python"))
 
 try:
     import vkml as V

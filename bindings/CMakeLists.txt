@@ -35,8 +35,19 @@ target_link_libraries(_vkml_core PRIVATE vkml)
 # Drop the built extension straight into the Python package so that an in-tree
 # `import vkml` works without an install step. This keeps the edit-build-test
 # loop short, which matters a lot while the validation suite is being written.
+#
+# The $<1:...> wrapper is not decoration. A multi-config generator -- Visual
+# Studio, and Ninja Multi-Config -- appends the configuration name to a plain
+# output directory, so the extension would land in python/vkml/Release/ and
+# `import vkml` would not find it. Wrapping the path in a generator expression
+# is the documented way to suppress that, and it changes nothing for the
+# single-config generators used on Linux and macOS.
+#
+# PREDICTED, NOT YET OBSERVED: no Visual Studio build of this target has ever
+# run. The Windows job added alongside this is what confirms it.
 set_target_properties(_vkml_core PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/python/vkml)
+    LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_SOURCE_DIR}/python/vkml>"
+    RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_SOURCE_DIR}/python/vkml>")
 
 # ...and install it beside the package for a wheel build. Both are needed and
 # they are not the same thing: the line above serves the in-tree loop, while
