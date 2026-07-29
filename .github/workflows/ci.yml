@@ -14,7 +14,7 @@ jobs:
   # Cheap checks first, so an obvious mistake fails in seconds rather than
   # after a full toolchain build.
   static:
-    name: layering + format
+    name: Linux / layering + format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -34,7 +34,7 @@ jobs:
             | xargs clang-format --dry-run --Werror
 
   cpp:
-    name: C++ (${{ matrix.preset }})
+    name: Linux / C++ (${{ matrix.preset }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -69,7 +69,7 @@ jobs:
         run: ctest --preset ${{ matrix.preset }} --output-on-failure
 
   python:
-    name: Python + PyTorch validation
+    name: Linux / Python + PyTorch validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -119,7 +119,7 @@ jobs:
           test "$COUNT" -ge 250
 
   wheel:
-    name: Wheel builds and installs
+    name: Linux / Wheel builds and installs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -153,7 +153,7 @@ jobs:
           "
 
   second-driver:
-    name: Vulkan suite on a second driver (lavapipe)
+    name: Linux / Vulkan suite on a second driver (lavapipe)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -191,7 +191,7 @@ jobs:
         run: python -m pytest tests/python -q
 
   python-asan:
-    name: Python suite under AddressSanitizer
+    name: Linux / Python suite under AddressSanitizer
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -223,7 +223,7 @@ jobs:
         run: python scripts/asan_python.py
 
   benchmark:
-    name: Benchmark smoke run
+    name: Linux / Benchmark smoke run
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
