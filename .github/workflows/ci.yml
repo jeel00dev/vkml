@@ -460,6 +460,11 @@ jobs:
         run: python -m pytest tests/python -q
 
       - name: pip install, then use it from outside the source tree
+        # Runs even when the suite above fails. It always will, for now: the
+        # profiler timestamp test cannot pass on this virtualised device, and
+        # that documented limitation was silently skipping this step -- so an
+        # accepted failure was preventing an unrelated check from ever running.
+        if: ${{ !cancelled() }}
         # The step above proves the CMake build works here; this proves the
         # command a user actually types does. They are not the same path --
         # scikit-build-core, the install() rule and the version read out of
