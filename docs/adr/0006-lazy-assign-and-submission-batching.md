@@ -369,3 +369,85 @@ differ only by run-to-run noise, which is the expected result: neither calls
 
 **GPU time is unchanged at 7.33 ms in both arms**, which is the check that matters.
 Stage A moves no arithmetic; if the GPU total had moved, something would be wrong.
+
+---
+
+## 8. Stage B0 -- the assumptions, tested
+
+4 and 5 named two assumptions, both read and neither run. They are now run
+(`tests/cpp/test_aliasing.cpp`, plus API-level cases in
+`tests/python/test_vulkan_kernels.py`). **One of them is false.**
+
+### Assumption 1 -- an Assign node can bind to its destination. FALSE.
+
+`is_realized()` is *defined* as `storage != nullptr` (`graph/node.h`), and
+`topological_order()` treats a realised node as a leaf:
+
+```cpp
+// A realised node is a leaf for scheduling purposes: its value
+// already exists, so nothing behind it needs recomputing.
+if (node->is_realized()) { done.insert(node); stack.pop_back(); continue; }
+```
+
+So binding an Assign node to its destination's storage up front makes the
+scheduler **skip it**. It would look computed before it had run. Verified:
+
+```
+order size while unbound   3
+order size once bound      0
+```
+
+**Consequence for stage B.** The predicate conflates two facts that coincide
+for every node today -- *has storage* and *has been computed*. Assign is the
+first node for which they differ, so stage B must separate them before it can
+schedule anything. The smallest form is an explicit flag or a distinct
+`is_computed()`; that is a design decision, not an implementation detail, and
+it belongs in stage B's own commit rather than being smuggled in.
+
+### Assumption 2 -- the global barrier orders WAR. SUPPORTED BY READING, NOT BY TEST.
+
+The barrier is one `VkMemoryBarrier2`:
+
+```
+srcStageMask = dstStageMask = COMPUTE_SHADER | TRANSFER
+srcAccessMask = SHADER_WRITE | TRANSFER_WRITE
+dstAccessMask = SHADER_READ | SHADER_WRITE | TRANSFER_READ | TRANSFER_WRITE
+```
+
+RAW and WAW need availability and visibility, and the access masks supply both.
+WAR needs only an **execution** dependency -- the earlier access only reads, so
+there is nothing to make available -- and the stage masks supply that. On the
+spec's rules the barrier is sufficient for all three.
+
+**The tests cannot confirm it, and saying so is the point of this section.**
+Behavioural tests were written for WAR across independent dispatches, RAW within
+a graph, a dispatch writing the buffer its own input aliases, and determinism
+over 20 repeats, on both backends. They pass. They **also pass with
+`rec.barrier()` commented out of `VulkanBackend::compute()`** -- measured, not
+assumed. A test that passes in both arms distinguishes nothing.
+
+Vulkan's synchronization validation is the instrument built for this, and it is
+blind here. It discovers shader accesses through **descriptor bindings**, and
+vkML has none: `grep vkCmdBindDescriptorSets src/` returns nothing, because
+buffers reach shaders as `bufferDeviceAddress` values in push constants. The
+layer sees dispatches that touch no resources and reports no hazards whether or
+not any exist. Enabling it changed nothing in either arm, which is why the
+negative control came back empty.
+
+**This is a standing limitation of the project, not of this task.** vkML's
+central design choice -- no descriptors, addresses in push constants -- costs it
+the ability to machine-check its own synchronisation. Worth knowing before the
+next person reaches for the validation layer expecting an answer.
+
+### What this changes about stage B
+
+* The storage-binding question has a concrete answer and a concrete blocker.
+  Stage B starts by separating "bound" from "computed", not by adding an OpKind.
+* The synchronisation question does not block stage B: the barrier is
+  conservative and the analysis says it covers WAR. But it cannot be *verified*
+  by test on this design, so stage B should keep the barrier exactly as it is
+  and treat any future attempt to make it selective as needing a different kind
+  of evidence.
+* The tests are worth keeping as value-regression guards. They are labelled in
+  the file with what they do and do not detect, so nobody later mistakes a green
+  run for proof.

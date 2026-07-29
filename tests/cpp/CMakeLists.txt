@@ -27,6 +27,7 @@ set(VKML_TEST_SOURCES
     test_shape.cpp
     test_graph.cpp
     test_ops.cpp
+    test_aliasing.cpp
 )
 
 if(VKML_VULKAN)

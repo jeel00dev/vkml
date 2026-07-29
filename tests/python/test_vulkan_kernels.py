@@ -1714,3 +1714,53 @@ def test_assign_between_overlapping_slices_of_one_storage():
         expected = values.copy()
         expected[0:5] = values[2:7]
         np.testing.assert_array_equal(t.numpy(), expected), f"on {dev}"
+
+
+def test_assign_is_deterministic_across_repeats():
+    """Repeated identical assignment must produce identical BYTES.
+
+    Determinism is part of the correctness contract (docs/THEORY.md), and it is
+    the property a synchronisation bug is most likely to break -- a missing
+    ordering usually shows up as a result that varies rather than one that is
+    always wrong, so a single-shot check can pass straight over it.
+    """
+    rng = np.random.default_rng(SEED)
+    p0 = make_data(rng, (128, 128), "any")
+    g = make_data(rng, (128, 128), "any")
+
+    for dev in (gpu_device(), V.cpu):
+        seen = []
+        for _ in range(20):
+            p = V.tensor(p0, device=dev)
+            grad = V.tensor(g, device=dev)
+            p.assign_(p.detach() - grad * 0.1)
+            seen.append(p.numpy().tobytes())
+        assert len(set(seen)) == 1, f"assign_ gave {len(set(seen))} distinct results on {dev}"
+
+
+def test_assign_through_a_view_writes_the_base():
+    """A view shares its base's storage, so assigning through one must be
+    visible in the base. `nn.BatchNorm2d` and every optimiser depend on the
+    write landing in the tensor the module still holds."""
+    for dev in (gpu_device(), V.cpu):
+        base = V.tensor(np.zeros((2, 4), dtype=np.float32), device=dev)
+        row = base[0]
+        row.assign_(V.tensor(np.ones((4,), dtype=np.float32), device=dev))
+        expected = np.zeros((2, 4), dtype=np.float32)
+        expected[0] = 1.0
+        np.testing.assert_array_equal(base.numpy(), expected)
+
+
+def test_assign_between_disjoint_slices_of_one_storage():
+    """Non-overlapping views of the SAME storage: the device copy is legal here
+    -- disjoint regions -- so this is the case that must NOT be pushed onto the
+    host fallback, and must still be correct."""
+    rng = np.random.default_rng(SEED)
+    values = make_data(rng, (10,), "any")
+
+    for dev in (gpu_device(), V.cpu):
+        t = V.tensor(values, device=dev)
+        t[0:5].assign_(t[5:10])
+        expected = values.copy()
+        expected[0:5] = values[5:10]
+        np.testing.assert_array_equal(t.numpy(), expected)
