@@ -100,10 +100,13 @@ def resolve_device(name: str):
         return V.cpu
 
     if name == "auto":
-        if not (V.has_vulkan and V.vulkan_available()):
-            print("no Vulkan device found; running on the CPU")
-            return V.cpu
-        name = "vulkan:0"
+        # V.best_device() is the library's own choice-and-explain path. It never
+        # raises and always returns the reason, so the script prints it rather
+        # than deciding for itself what "no Vulkan" looks like -- this block used
+        # to be copied into both examples and said only "no Vulkan device found".
+        device, why = V.best_device()
+        print(why)
+        return device
 
     # Initialise the device that was ASKED FOR, not device 0. This used to
     # init_vulkan(0) unconditionally and then hand back V.device(name), so

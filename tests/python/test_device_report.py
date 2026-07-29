@@ -12,9 +12,13 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python"))
 
 import vkml as V  # noqa: E402
+
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 # Keys every report carries. Pinned as a set rather than checked one by one so
 # that a field disappearing from the binding fails here rather than silently
@@ -211,3 +215,102 @@ print(count)
     )
     assert result.returncode == 0, result.stderr
     assert int(result.stdout.strip()) == V.vulkan_device_count()
+
+
+# ---------------------------------------------------------------------------
+# best_device()
+#
+# The ONE path that falls back to the CPU, and it always says why. A device the
+# caller NAMES is never quietly downgraded.
+# docs/adr/0008-backend-selection-and-cpu-fallback.md.
+# ---------------------------------------------------------------------------
+
+# A driver manifest that does not exist. The Vulkan loader reads
+# VK_ICD_FILENAMES to find drivers, so pointing it at nothing is how a machine
+# with no GPU is simulated without needing one.
+_NO_DRIVER = {"VK_ICD_FILENAMES": "/nonexistent/vkml-test-no-such-icd.json"}
+
+
+def _run(snippet, env=None):
+    """Runs `snippet` in a fresh interpreter, returning stdout."""
+    full_env = {**os.environ, **(env or {})}
+    out = subprocess.run([sys.executable, "-c", snippet], cwd=REPO, env=full_env,
+                         capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0, out.stderr[-2000:]
+    return out.stdout
+
+
+_BEST_DEVICE = (
+    "import sys;sys.path.insert(0,'python');import vkml as V;"
+    "V.set_log_level(V.LogLevel.ERROR);"
+    "d,why=V.best_device();print(repr(str(d)));print(repr(why))"
+)
+
+
+def test_best_device_returns_a_device_and_a_reason():
+    lines = _run(_BEST_DEVICE).strip().splitlines()
+    name, why = eval(lines[-2]), eval(lines[-1])  # noqa: S307 - our own repr
+    assert name in ("cpu",) or name.startswith("vulkan:"), name
+    assert why, "best_device must always explain its choice"
+    # Whichever it picked, the reason must name it.
+    assert ("CPU" in why) if name == "cpu" else ("Vulkan device" in why), why
+
+
+def test_best_device_falls_back_to_cpu_with_an_actionable_reason():
+    """No driver: the CPU, and a reason a user can act on.
+
+    This is the case the whole ADR is about. It must not raise, must not be
+    silent, and must say something better than a bare Vulkan enum.
+    """
+    lines = _run(_BEST_DEVICE, _NO_DRIVER).strip().splitlines()
+    name, why = eval(lines[-2]), eval(lines[-1])  # noqa: S307
+    assert name == "cpu", f"expected the CPU with no driver, got {name}"
+    assert "running on the CPU" in why, why
+    # Actionable: names a cause AND a next step, not just a result code.
+    assert "driver" in why.lower(), why
+    assert "vulkan_device_reports" in why, why
+
+
+def test_a_named_device_is_never_silently_downgraded():
+    """`init_vulkan` must RAISE when the device asked for is unusable.
+
+    The rule best_device() exists to preserve: someone who names a device wants
+    that device, and quietly handing back the CPU hides what they asked about.
+    """
+    snippet = (
+        "import sys;sys.path.insert(0,'python');import vkml as V;"
+        "V.set_log_level(V.LogLevel.ERROR);"
+        "\ntry:\n"
+        "    V.init_vulkan(0)\n"
+        "    print('NO_ERROR')\n"
+        "except V.DeviceError as e:\n"
+        "    print(repr(str(e)))\n"
+    )
+    out = _run(snippet, _NO_DRIVER).strip().splitlines()[-1]
+    assert out != "NO_ERROR", "init_vulkan silently succeeded with no driver"
+    message = eval(out)  # noqa: S307
+    assert "does not fall back" in message, message
+    assert "best_device" in message, message
+
+
+def test_unsupported_op_error_states_there_is_no_fallback():
+    """`prod` is CPU-only. The error must say vkML will not silently move the
+    work, and name what to do instead -- an all-or-nothing backend is only a
+    good design if it explains itself."""
+    if not (V.has_vulkan and V.vulkan_available()):
+        pytest.skip("no Vulkan device present")
+    snippet = (
+        "import sys;sys.path.insert(0,'python');import numpy as np,vkml as V;"
+        "V.set_log_level(V.LogLevel.ERROR);V.init_vulkan(0);"
+        "t=V.tensor(np.ones((4,),dtype=np.float32),device=V.device('vulkan:0'))\n"
+        "try:\n"
+        "    V.prod(t).numpy()\n"
+        "    print('NO_ERROR')\n"
+        "except V.NotImplementedError_ as e:\n"
+        "    print(repr(str(e)))\n"
+    )
+    out = _run(snippet, {"VKML_VULKAN_VALIDATION": "0"}).strip().splitlines()[-1]
+    assert out != "NO_ERROR", "prod unexpectedly ran on Vulkan"
+    message = eval(out)  # noqa: S307
+    assert "does not fall back" in message, message
+    assert "CPU" in message, message

@@ -64,7 +64,15 @@ Backend& backend_for(Device device) {
             return *b;
         }
     }
-    throw DeviceError(std::format("no backend registered for device '{}'", device.str()));
+    // Deliberately says nothing Vulkan-specific. This is backend/api, LAYER 3;
+    // backend/vulkan is layer 4, so the reason a Vulkan device failed to
+    // register -- vulkan_unavailable_reason() -- is out of reach from here and
+    // is added by the Python layer, where both are visible.
+    throw DeviceError(std::format(
+        "no backend registered for device '{}'. A device must be initialised before use: "
+        "call vkml.init_vulkan(index) for a Vulkan device. If that fails, the device is "
+        "unavailable -- vkml.best_device() picks a usable one and explains its choice.",
+        device.str()));
 }
 
 std::vector<Device> available_devices() {

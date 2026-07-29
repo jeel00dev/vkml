@@ -108,8 +108,20 @@ void realize(std::span<const NodePtr> roots) {
 
     for (Node* n : order) {
         if (!backend.supports(*n)) {
-            throw NotImplementedError(std::format("backend '{}' cannot evaluate op '{}'",
-                                                  backend.name(), op_name(n->op)));
+            // States the absence of a fallback rather than leaving the reader to
+            // infer it. vkML will NOT split the graph to run this one operator
+            // elsewhere: that moves data through host memory at every split,
+            // measured at roughly three times the cost of the arithmetic it
+            // carries, and it would do so silently. An explicit error that names
+            // the remedy is the better trade. See
+            // docs/adr/0008-backend-selection-and-cpu-fallback.md.
+            throw NotImplementedError(std::format(
+                "backend '{}' cannot evaluate op '{}'. vkML does not fall back to another "
+                "device automatically -- doing so would move data through host memory on "
+                "every use and be far slower without saying so. Move this part of the "
+                "computation to the CPU explicitly, or open an issue if you need '{}' on "
+                "this backend.",
+                backend.name(), op_name(n->op), op_name(n->op)));
         }
         if (coverage::enabled()) {
             record_coverage(*n, backend.name());

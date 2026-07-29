@@ -294,7 +294,27 @@ void Context::create_instance(bool enable_validation) {
         ci.pNext = &dbg;
     }
 
-    check(vkCreateInstance(&ci, nullptr, &instance_), "vkCreateInstance");
+    // Not `check()`: its message is the bare VkResult, which is a Vulkan enum
+    // shown to someone who may not know Vulkan exists. This is the FIRST call
+    // that touches the driver, so it is where "no GPU" is usually discovered,
+    // and it is worth spending a sentence on.
+    if (const VkResult r = vkCreateInstance(&ci, nullptr, &instance_); r != VK_SUCCESS) {
+        // unavailable_reason() probes with a MINIMAL instance, so the two can
+        // legitimately disagree: an empty reason means a bare instance works and
+        // this one failed for something we asked for on top -- validation
+        // layers being the usual culprit. Report whichever actually explains it,
+        // and never both, since the reason already quotes the result code.
+        const std::string reason = unavailable_reason();
+        throw DeviceError(std::format(
+            "could not create a Vulkan instance: {}. vkML does not fall back to the CPU "
+            "on its own -- vkml.best_device() picks a usable device and explains its "
+            "choice, and vkml.vulkan_device_reports() lists what the loader can see.",
+            reason.empty()
+                ? std::format("a minimal instance works, so this failed on something vkML "
+                              "requested ({})",
+                              result_string(r))
+                : reason));
+    }
 
     if (want_validation) {
         auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(

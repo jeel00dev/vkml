@@ -189,6 +189,86 @@ if has_vulkan:
 
 
 # ---------------------------------------------------------------------------
+# Choosing a device
+# ---------------------------------------------------------------------------
+
+# Where to send someone whose GPU did not work out. `vulkan_device_reports()` is
+# the right pointer because it exists in every install -- scripts/ is not shipped
+# in a wheel, so naming hardware_report.py alone would be advice half the users
+# cannot follow.
+_NEXT_STEPS = (
+    "Call vkml.vulkan_device_reports() to see every device the loader can find "
+    "and what each one is missing. README.md's Troubleshooting section covers "
+    "installing a driver and the Vulkan loader."
+)
+
+
+def best_device() -> tuple[device, str]:
+    """The best usable device, and a plain-English reason for the choice.
+
+    ``V.best_device()`` is for callers who want vkML to decide. It never raises:
+    if no GPU is usable it returns the CPU and says why.
+
+    Returns the reason instead of printing it. A library writing to someone's
+    stdout is a nuisance, and a caller that wants to log it, show it in a UI, or
+    ignore it should be free to::
+
+        device, why = V.best_device()
+        print(why)      # "using Vulkan device 0: AMD Radeon RX 5600M ..."
+
+    THIS IS THE ONLY PATH THAT FALLS BACK. A device you NAME is never quietly
+    downgraded -- ``V.device("vulkan:1")`` with no second GPU fails, because
+    someone who typed that wants that GPU and handing back the CPU would hide
+    the thing they asked about. See
+    docs/adr/0008-backend-selection-and-cpu-fallback.md.
+
+    A discrete GPU is preferred over an integrated one when both are usable,
+    which is an ordinary laptop. The reason names the device picked, so the
+    choice is never a mystery.
+    """
+    if not has_vulkan:
+        return cpu, (
+            "running on the CPU: this build has no Vulkan backend. It was built "
+            "with VKML_VULKAN=OFF; reinstall without that flag to use a GPU."
+        )
+
+    reports = vulkan_device_reports()
+    if not reports:
+        return cpu, f"running on the CPU: {vulkan_unavailable_reason()}. {_NEXT_STEPS}"
+
+    usable = [(i, r) for i, r in enumerate(reports) if not r["missing_requirement"]]
+    if not usable:
+        # Devices exist but none qualifies -- a different problem from having no
+        # driver, and one the user can act on only if we name the feature.
+        detail = "; ".join(f"{r['name']} is missing {r['missing_requirement']}" for r in reports)
+        return cpu, (
+            f"running on the CPU: {len(reports)} Vulkan device(s) found, none meeting "
+            f"vkML's requirements ({detail}). vkML needs bufferDeviceAddress, "
+            f"scalarBlockLayout and timelineSemaphore; a newer driver sometimes adds "
+            f"them. {_NEXT_STEPS}"
+        )
+
+    # First discrete if there is one, else first usable. `min` is stable, so
+    # among equals this keeps enumeration order.
+    index, report = min(usable, key=lambda pair: 0 if pair[1]["device_type"] == "discrete" else 1)
+    try:
+        init_vulkan(index)
+    except Error as exc:
+        # The capability probe passed and creating the device still failed. Rare,
+        # and worth reporting verbatim rather than swallowing -- it is the one
+        # case where the reason is something neither check predicted.
+        return cpu, (
+            f"running on the CPU: Vulkan device {index} ({report['name']}) reported the "
+            f"features vkML needs, but initialising it failed: {exc}. {_NEXT_STEPS}"
+        )
+    return device(f"vulkan:{index}"), (
+        f"using Vulkan device {index}: {report['name']} "
+        f"({report['device_type']}, Vulkan {report['api_version']}, "
+        f"driver {report['driver_name']})"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Array coercion
 # ---------------------------------------------------------------------------
 
