@@ -595,6 +595,55 @@ def test_submit_window_bounds_concurrent_dispatches():
     assert w8 < w1, f"split-K window {w8} should beat the unsplit {w1}"
 
 
+@requires_vulkan
+def test_cumulative_gpu_time_accumulates_across_submissions():
+    """`vulkan_stats()['gpu_ms']` must total the whole-submit windows.
+
+    `vulkan_last_profile()` holds only the LAST submission, so a workload that
+    submits repeatedly -- any training step -- had no admissible GPU total, and
+    MEASUREMENT-AUDIT 7 rule 1b could not be checked for it. This counter is
+    what makes the stage split in docs/BACKWARD-PERF-INVESTIGATION.md 1
+    measurable at all.
+
+    The law: over N separate submissions the counter grows by the sum of their
+    windows. Asserted against the profile's own `submit` entry for the last
+    one, so the two instruments have to agree, and summing across SEPARATE
+    submissions is what rule 3 permits -- they are serial.
+
+    In a subprocess: the counter is inert unless profiling is on, and switching
+    that on is process-global -- it would follow every later test in the file.
+    """
+    if not V.vulkan_timestamps_supported(VULKAN_DEVICE):
+        pytest.skip("device cannot produce timestamps (no valid bits, or a zero period)")
+
+    script = (
+        "import sys;sys.path.insert(0,'python');import numpy as np,vkml as V;"
+        "V.set_log_level(V.LogLevel.ERROR);V.init_vulkan(0);V.vulkan_set_profiling(True);"
+        "d=V.device('vulkan:0');"
+        "t=V.tensor(np.ones((4096,),dtype=np.float32),device=d);"
+        "V.relu(t).realize();"                       # rule 6: warm
+        "b=V.vulkan_stats(0)['gpu_ms'];"
+        "[V.relu(t).realize() for _ in range(8)];"
+        "print(V.vulkan_stats(0)['gpu_ms']-b, V.vulkan_submit_ms(V.vulkan_last_profile()))"
+    )
+    out = subprocess.run([sys.executable, "-c", script], cwd=REPO, env=_env({}),
+                         capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0, out.stderr[-2000:]
+    grew, last = (float(v) for v in out.stdout.strip().splitlines()[-1].split())
+
+    assert grew > 0, "cumulative gpu_ms did not move over 8 submissions"
+    assert grew >= last, (
+        f"cumulative gpu_ms grew {grew} ms over 8 submissions but the LAST one "
+        f"alone reports {last} ms -- the counter is not accumulating"
+    )
+    # Eight comparable submissions: the total must look like several of them,
+    # not like one. Deliberately loose -- this pins accumulation, not timing.
+    assert grew > 2 * last, (
+        f"cumulative gpu_ms grew only {grew} ms over 8 submissions of ~{last} ms; "
+        f"it looks like it is being overwritten rather than summed"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 7. Compiler-behaviour invariants (M3-R2)
 #

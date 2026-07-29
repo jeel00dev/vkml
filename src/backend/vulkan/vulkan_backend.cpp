@@ -2252,6 +2252,7 @@ VulkanStats VulkanBackend::stats() const {
     s.submissions = impl_->recorder.submitted_count();
     s.dispatches = impl_->recorder.dispatch_count();
     s.pipelines = impl_->pipelines.pipeline_count();
+    s.gpu_ms = impl_->recorder.total_gpu_ms();
     return s;
 }
 

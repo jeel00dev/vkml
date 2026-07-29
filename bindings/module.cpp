@@ -723,6 +723,7 @@ NB_MODULE(_vkml_core, m) {
             d["submissions"] = s.submissions;
             d["dispatches"] = s.dispatches;
             d["pipelines"] = s.pipelines;
+            d["gpu_ms"] = s.gpu_ms;
             return d;
         },
         "index"_a = 0);

@@ -118,6 +118,10 @@ void Recorder::resolve_timestamps() {
             const double ms =
                 end > start ? static_cast<double>(end - start) * ns_per_tick / 1e6 : 0.0;
             profile_.push_back(ProfileEntry{label, ms});
+            // Only the whole-submit window accumulates; see total_gpu_ms().
+            if (label == "submit") {
+                total_gpu_ms_ += ms;
+            }
         }
     }
     pending_.clear();

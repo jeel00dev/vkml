@@ -121,6 +121,18 @@ public:
     /// afterwards is what keeps the report correct when the two are not 1:1.
     void set_label(std::string_view label) { label_ = label; }
 
+    /// GPU milliseconds summed over every submission so far. 0 unless
+    /// profiling is on.
+    ///
+    /// Summing the WHOLE-SUBMIT windows is the one summation rule 3 permits:
+    /// submissions are serial, so their windows cannot overlap. The
+    /// per-dispatch entries inside a submission can, which is why they are not
+    /// what accumulates here. This exists because `profile()` holds only the
+    /// LAST submission, so a workload that submits repeatedly -- a training
+    /// step -- had no admissible GPU total, and rule 1b could not be checked
+    /// for it at all.
+    [[nodiscard]] double total_gpu_ms() const noexcept { return total_gpu_ms_; }
+
     [[nodiscard]] uint64_t submitted_count() const noexcept { return timeline_value_; }
 
     [[nodiscard]] uint64_t dispatch_count() const noexcept { return dispatch_count_; }
@@ -146,6 +158,7 @@ private:
     std::string label_;
     std::vector<std::pair<std::string, uint32_t>> pending_;  // label, first query slot
     std::vector<ProfileEntry> profile_;
+    double total_gpu_ms_ = 0.0;
 
     void begin_timestamp(const char* label);
     void end_timestamp();

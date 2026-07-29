@@ -27,6 +27,26 @@ optimiser           32            48         4.41 ms
 Backward issues roughly the same number of dispatches as forward and takes **23x**
 longer. That ratio is the subject of this document.
 
+**After the H11 fix, re-measured the same way** (batch 64, minimum of 12 steps,
+profiling on throughout, so this table is internally comparable but must NOT be
+compared against the one above -- rule 4):
+
+```
+                submissions   dispatches      wall     gpu   gpu/wall
+forward              1            42         2.52    2.32     0.92
+backward            11            42         6.12    4.84     0.79
+optimiser           32            48         3.30    0.31     0.09
+                                            -----   -----
+step                                        11.94    7.47     0.63
+```
+
+Backward is **13.5x** faster and the ratio to forward is now **2.4x**, against
+1.6x on the CPU backend -- normal. Its dispatch count fell 46 -> 42, which is
+exactly the four degenerate reductions counted in the CIFAR graph, and is an
+independent confirmation of the cause.
+
+**The bottleneck has moved to the optimiser**, and 6 records what that means.
+
 ---
 
 ## 2. What was eliminated, and by what evidence
@@ -49,6 +69,8 @@ cost would be flat. It is not.
 ### H2 — submission/synchronisation overhead. REJECTED for backward, CONFIRMED for the optimiser.
 
 Per-submission submit+wait latency, minimum of 200 trivial realises: **0.106 ms**.
+(Re-measured later at **0.0729 ms** over 400 realises. The table below is left at
+the value it was computed with; use the newer figure for new work -- see 6.)
 
 ```
              submissions   predicted   measured
@@ -363,11 +385,21 @@ one place rather than being copied between `bench/gpu_bench.py` and ad-hoc scrip
 
 ## 6. Consequences for the task list
 
-* **#19 (batch optimiser realise calls)** stays a standalone task. It is now
-  evidence-backed -- the optimiser is essentially pure submission overhead, ~3.4 ms of
-  its 4.41 ms -- but it addresses about 5% of the step and is unrelated to whatever is
-  wrong with backward. Do not fold the two together until the backward cause is known;
-  on current evidence it is not a batching problem.
+* **#19 (batch optimiser realise calls) is now the largest remaining win**, and
+  the re-measurement is what changed its priority -- not its cost, which never
+  moved. It was ~5% of a 90 ms step; it is **27.6% of an 11.94 ms step**.
+
+  The optimiser's `gpu/wall` is **0.09**: 3.30 ms of wall against 0.31 ms of GPU.
+  Rule 1b would refuse wall clock for a claim about kernel speed, and no such
+  claim is made -- a ratio that low is precisely the evidence that the time is
+  NOT in the kernels. Submit+wait latency re-measured at **0.0729 ms** (minimum
+  of 400 trivial realises; the 0.106 ms recorded earlier in 2 is stale and should
+  not be reused), so 32 submissions account for 2.33 ms of the 2.99 ms non-GPU
+  time, and the rest is host-side graph work.
+
+  Collapsing the step to one submission removes 31 of them: **~2.3 ms saved on an
+  11.94 ms step**, a floor rather than an estimate, since per-realise host work
+  falls too.
 * **A new item is implied but not yet filed:** the gradient-accumulation add running at
   ~0.6 GB/s. It only bites callers who accumulate across micro-batches, which nothing
   in the repository does yet, so it is recorded here rather than raised as a task.

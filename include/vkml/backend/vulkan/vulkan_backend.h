@@ -50,6 +50,9 @@ struct VulkanStats {
     uint64_t submissions = 0;
     uint64_t dispatches = 0;
     size_t pipelines = 0;
+    /// GPU milliseconds over every submission so far; 0 unless profiling is on.
+    /// The only admissible GPU total for a workload that submits repeatedly.
+    double gpu_ms = 0.0;
 
     [[nodiscard]] std::string describe() const;
 };
