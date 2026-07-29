@@ -101,6 +101,12 @@ POLICY: dict[str, Tolerance] = {
     "rand": Tolerance(Kind.EXACT, note="identical integer rounds on both backends"),
     "dropout": Tolerance(Kind.EXACT, note="a select and one multiply over an exact mask"),
     "copy": Tolerance(Kind.EXACT, note="moves bits"),
+    # A byte copy into existing storage, whichever route it takes -- a device
+    # copy, or staging through the host when the regions overlap. Neither reads
+    # a value as a float, so EXACT is the whole point: any difference at all is
+    # a transfer bug, and a tolerance would hide exactly the failure that
+    # matters.
+    "assign_": Tolerance(Kind.EXACT, note="moves bits into existing storage"),
     "cat": Tolerance(Kind.EXACT, note="moves bits; no arithmetic"),
     "index_select": Tolerance(Kind.EXACT, note="gathers elements; no arithmetic"),
     "im2col": Tolerance(Kind.EXACT, note="gathers elements or writes zero padding"),

@@ -2194,6 +2194,38 @@ void VulkanBackend::copy_to_host(void* dst, const Storage& src, int64_t src_offs
     impl_->staging.download(dst, it->second, static_cast<uint64_t>(src_offset), nbytes);
 }
 
+void VulkanBackend::copy_device_to_device(Storage& dst, int64_t dst_offset, const Storage& src,
+                                          int64_t src_offset, size_t nbytes) {
+    if (nbytes == 0) {
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(impl_->map_mutex);
+
+    const auto find = [this](const Storage& s, const char* what) {
+        const auto addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(s.data()));
+        const auto it = impl_->live.find(addr);
+        VKML_ASSERT(it != impl_->live.end(), "unknown device address in copy_device_to_device ({})",
+                    what);
+        return it->second;
+    };
+    const vk::Allocation dst_alloc = find(dst, "destination");
+    const vk::Allocation src_alloc = find(src, "source");
+
+    // No staging buffer, so no chunking: this is one command whatever the size,
+    // which is the whole point of the method. The download path next door has to
+    // loop because it is bounded by the staging capacity.
+    vk::Recorder& rec = impl_->recorder;
+    rec.begin();
+    // Ordered against any shader still writing the source, exactly as
+    // StagingBuffer::download is.
+    rec.barrier();
+    rec.copy(impl_->allocator.buffer_of(src_alloc),
+             src_alloc.offset + static_cast<uint64_t>(src_offset),
+             impl_->allocator.buffer_of(dst_alloc),
+             dst_alloc.offset + static_cast<uint64_t>(dst_offset), nbytes);
+    rec.wait(rec.submit());
+}
+
 std::vector<PipelineStats> VulkanBackend::pipeline_stats() const {
     std::vector<PipelineStats> out;
     for (const auto& [key, st] : impl_->pipelines.all_stats()) {

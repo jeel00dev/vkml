@@ -7,12 +7,22 @@ executes on the device -- an Adam step issues ~16 dispatches per parameter and
 no host arithmetic.
 
 What it does not yet achieve is docs/ARCHITECTURE.md 0 (decision 3): the whole
-forward, backward and update as ONE submission. Measured, an Adam step costs
-about five submissions per parameter, and they come from the explicit
-``.realize()`` calls below plus ``assign_`` -- from how often Python forces
-materialisation, not from the number of nodes. Fusing the update into a single
-kernel would therefore not deliver it; capturing the step into one command
-buffer (``vkml.compile()``) would.
+forward, backward and update as ONE submission. The submissions come from the
+explicit ``.realize()`` calls below plus ``assign_``, not from the number of
+nodes, so fusing the update into a single kernel would not deliver it.
+
+Two halves, and an earlier version of this note only had one of them. The
+smaller half is how often Python forces materialisation. The larger half was
+that ``assign_`` moved every parameter through HOST memory even though source
+and destination were on the same device -- three submissions per assignment
+against one for the same arithmetic. That is fixed
+(docs/adr/0006-lazy-assign-and-submission-batching.md, stage A): a same-device
+assignment is now a device-side copy, worth one submission per parameter per
+step, measured 1.6x on an SGD step and 1.5x on Adam.
+
+What remains is that ``assign_`` is still EAGER, so it cuts the graph and caps
+how much can be batched. Stage B of that ADR makes it a graph node and realises
+every parameter together.
 
 Dedicated ``SgdStep``/``AdamStep`` OpKinds were previously reserved for a fused
 version. They were removed: a reservation is a speculative abstraction, the
@@ -20,9 +30,12 @@ measurement above shows fusion is not what the goal needs, and re-adding an
 enumerator later is a one-line change made with evidence behind it.
 
 The realize calls exist to cut the graph between steps, without which each
-step would build on the last and grow without bound. Batching them so a step is
-one submission rather than several is a real and available improvement, gated
-on a profile showing submission overhead matters on a real workload.
+step would build on the last and grow without bound. Batching them is a real
+and available improvement -- but "so a step is one submission" is the wrong
+target and was dropped: ggml-vulkan submits several times per graph on purpose,
+to overlap command recording with execution, and caps submission size per device
+because a large one can trip a driver timeout on weaker AMD parts. Few
+submissions with the GPU kept busy is the goal.
 """
 
 from __future__ import annotations

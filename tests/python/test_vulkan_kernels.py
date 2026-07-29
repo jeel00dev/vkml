@@ -1619,3 +1619,98 @@ def test_attention_agrees_across_backends():
 
     ctx = Context(op="softmax", layout=Layout((2, 6, 8)), dtype="f32", seed=SEED, inputs=[x])
     compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+# ---------------------------------------------------------------------------
+# assign_
+#
+# The in-place write behind every optimiser update and BatchNorm's running
+# statistics. It had NO test until now, which is how it went unnoticed that it
+# moved every assignment through host memory even when source and destination
+# were on the same device (docs/adr/0006-lazy-assign-and-submission-batching.md).
+#
+# These pin BEHAVIOUR, not the transfer path: the point of the device-side copy
+# is that nothing observable changes.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape", [(1,), (7,), (64, 64), (3, 4, 5)])
+def test_assign_writes_the_source_values_on_both_backends(shape):
+    """assign_ must leave the destination holding exactly the source bytes."""
+    rng = np.random.default_rng(SEED)
+    dst = make_data(rng, shape, "any")
+    src = make_data(rng, shape, "any")
+
+    def run(dev):
+        d = V.tensor(dst, device=dev)
+        d.assign_(V.tensor(src, device=dev))
+        return d.numpy()
+
+    ctx = Context(op="assign_", layout=Layout(shape), dtype="f32", seed=SEED, inputs=[dst, src])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+    # Against numpy too, so a bug identical on both backends cannot pass.
+    np.testing.assert_array_equal(run(gpu_device()), src)
+
+
+def test_assign_is_visible_to_an_existing_alias():
+    """The Module holds the same Tensor object, so the write must be in place.
+
+    `optim.py` relies on this: it assigns THROUGH the parameter rather than
+    rebinding it, because rebinding would update the optimiser's list and leave
+    the model looking at the old tensor.
+    """
+    for dev in (gpu_device(), V.cpu):
+        t = V.tensor(np.zeros((4,), dtype=np.float32), device=dev)
+        alias = t
+        t.assign_(V.tensor(np.arange(4, dtype=np.float32), device=dev))
+        np.testing.assert_array_equal(alias.numpy(), np.arange(4, dtype=np.float32))
+
+
+def test_assign_from_a_computed_expression():
+    """The optimiser's actual shape: assign the result of arithmetic on the
+    destination itself, which is a read of `p` feeding a write to `p`."""
+    rng = np.random.default_rng(SEED)
+    p0 = make_data(rng, (32, 32), "any")
+    g = make_data(rng, (32, 32), "any")
+    lr = 0.1
+
+    def run(dev):
+        p = V.tensor(p0, device=dev)
+        grad = V.tensor(g, device=dev)
+        p.assign_(p.detach() - grad * lr)
+        return p.numpy()
+
+    ctx = Context(op="assign_", layout=Layout((32, 32)), dtype="f32", seed=SEED, inputs=[p0, g])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+    np.testing.assert_allclose(run(V.cpu), p0 - g * lr, rtol=1e-6, atol=1e-6)
+
+
+def test_assign_to_itself_is_a_no_op():
+    """`t.assign_(t)` is the degenerate overlap: source and destination are the
+    same bytes. vkCmdCopyBuffer forbids overlapping regions in one buffer, so
+    this is the case the device-side path must NOT take."""
+    rng = np.random.default_rng(SEED)
+    values = make_data(rng, (16,), "any")
+
+    for dev in (gpu_device(), V.cpu):
+        t = V.tensor(values, device=dev)
+        t.assign_(t)
+        np.testing.assert_array_equal(t.numpy(), values)
+
+
+def test_assign_between_overlapping_slices_of_one_storage():
+    """Partial overlap within a single storage, which slicing makes reachable.
+
+    Same-shape views at different offsets of the same buffer. The device copy
+    cannot express this, so assign_ must fall back to staging through the host
+    -- and the result must still be the plain copy semantics numpy gives.
+    """
+    rng = np.random.default_rng(SEED)
+    values = make_data(rng, (10,), "any")
+
+    for dev in (gpu_device(), V.cpu):
+        t = V.tensor(values, device=dev)
+        t[0:5].assign_(t[2:7])
+        expected = values.copy()
+        expected[0:5] = values[2:7]
+        np.testing.assert_array_equal(t.numpy(), expected), f"on {dev}"

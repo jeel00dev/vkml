@@ -1,6 +1,7 @@
 # ADR 0006 — Lazy assign, and how work is batched into submissions
 
-**Status:** proposed
+**Status:** accepted; **stage A implemented and measured (7 below)**, stages B and C
+still proposed
 **Date:** 2026-07-29
 **Covers:** task #19 ("batch optimiser realize calls so a step is one submission"), whose
 premise this document corrects.
@@ -270,3 +271,101 @@ tested either.** This is the first thing to verify when B starts.
   the larger half, and it is not about frequency.
 * A test asserting a submission BUDGET for an optimiser step, in the style of
   `test_backward_emits_no_degenerate_reductions`, is the right gate for both stages.
+
+---
+
+## 7. Stage A, as built and measured
+
+`Backend` gained one method:
+
+```cpp
+virtual void copy_device_to_device(Storage& dst, int64_t dst_offset, const Storage& src,
+                                   int64_t src_offset, size_t nbytes) = 0;
+```
+
+Pure virtual rather than defaulted. A default staging through the host would be
+correct and quietly slow, which is the exact defect this removes; a new backend
+should have to answer the question rather than inherit a silent answer. CPU
+implements it with `memmove`, Vulkan by reusing the `Recorder::copy` that staging
+already used, with no chunking -- there is no staging capacity to bound it.
+
+`assign_` stays **eager**. Nothing about when work happens changed, only where the
+bytes travel.
+
+**The overlap case is the one that still goes through the host.** `vkCmdCopyBuffer`
+requires disjoint regions when source and destination are the same buffer, and
+`t[0:5].assign_(t[2:7])` reaches exactly that. `storages_overlap()` detects it and
+falls back to the previous path, so the semantics are unchanged rather than
+narrowed.
+
+### Method
+
+Both arms measured with the same script on the same machine, the A arm being the
+frozen unmodified build restored with `git stash` and rebuilt (rule 7). Minimum
+across runs (rule 2), validation off (rule 5), warm (rule 6), profiling on in both
+arms (rule 4).
+
+**A measurement hazard worth recording.** Part-way through, the stage split
+reported the step at 28.50 ms against a 11.99 ms baseline -- an apparent 2.4x
+regression in `forward` and `backward`, which this change cannot touch. Re-running
+gave 11.20 ms and 26.13 ms for identical builds. The cause was the GPU sitting at
+a low DPM state:
+
+```
+/sys/class/drm/card1/device/pp_dpm_sclk
+0: 200Mhz    1: 400Mhz *    2: 1500Mhz
+```
+
+400 MHz of a possible 1500. Every wall and GPU figure on this machine is therefore
+bimodal, and a single run of either arm can land in the wrong mode. The minimum
+over several **process** runs is what selects the high-clock samples; a minimum
+within one process is not enough, because the clock state persists for the whole
+process. Submission COUNTS are unaffected, which is why they are the primary
+evidence below.
+
+### Results
+
+Per-operation, minimum of 3 process runs x 30 reps:
+
+```
+                        before          after
+assign_ 512x512      3 subs 0.704 ms   2 subs 0.234 ms    3.0x
+SGD step, 4 params  20 subs 2.046 ms  16 subs 1.276 ms    1.6x
+Adam step           24 subs 3.379 ms  20 subs 2.301 ms    1.5x
+AdamW step          24 subs 3.424 ms  20 subs 2.569 ms    1.3x
+BatchNorm2d train    9 subs 1.256 ms   7 subs 1.142 ms    1.1x
+BatchNorm2d eval     1 sub  0.316 ms   1 sub  0.325 ms    unchanged
+```
+
+Exactly **one submission per assignment** disappears, everywhere -- the download
+half of the round trip. The upload becomes the device copy, which still costs a
+submission because stage A is eager. That is the ceiling for this stage, and it is
+why stage B exists.
+
+Adam and AdamW were never measured before; they cost more than SGD because they
+realise `m` and `v` per parameter as well as assigning.
+
+**BatchNorm barely moves in wall time (1.256 -> 1.142) despite losing two
+submissions.** Its running statistics are 64 floats, so the transfer was never the
+cost there -- the submissions were, and one submission is roughly 0.07 ms. This is
+worth stating because the ADR predicted BatchNorm would benefit, and the honest
+answer is: in submissions yes, in time barely. A network with fifty such layers
+would save a hundred submissions, and whether that is visible needs measuring on
+such a network rather than inferring from this one.
+
+Whole CIFAR-100 step, minimum of 6 process runs x 25 reps:
+
+```
+              before                       after
+forward     1 sub   2.43 ms            1 sub   2.36 ms
+backward   11 subs  5.65 ms           11 subs  6.03 ms
+optimiser  32 subs  2.74 ms           24 subs  1.73 ms    1.6x
+step               11.01 ms                   10.23 ms
+```
+
+The optimiser stage is 37% faster and the whole step 7%. `forward` and `backward`
+differ only by run-to-run noise, which is the expected result: neither calls
+`assign_` in this model.
+
+**GPU time is unchanged at 7.33 ms in both arms**, which is the check that matters.
+Stage A moves no arithmetic; if the GPU total had moved, something would be wrong.

@@ -29,6 +29,21 @@ void require_defined(const Tensor& t, const char* what) {
     VKML_CHECK(t.defined(), Error, "{} called on an undefined tensor", what);
 }
 
+/// Whether two realised nodes name overlapping bytes of the SAME storage.
+///
+/// Different storages never overlap: the allocator hands out disjoint
+/// suballocations, and two distinct Storage objects cannot alias. So this is
+/// only a question when both nodes point at one storage, and then it is an
+/// ordinary interval test on `[offset, offset + nbytes)`.
+[[nodiscard]] bool storages_overlap(const Node& a, const Node& b, size_t nbytes) {
+    if (a.storage.get() != b.storage.get()) {
+        return false;
+    }
+    const int64_t a_end = a.storage_offset + static_cast<int64_t>(nbytes);
+    const int64_t b_end = b.storage_offset + static_cast<int64_t>(nbytes);
+    return a.storage_offset < b_end && b.storage_offset < a_end;
+}
+
 }  // namespace
 
 Tensor::Tensor() = default;
@@ -326,6 +341,25 @@ void Tensor::assign_(const Tensor& src) {
     }
 
     Backend& backend = backend_for(node_->device);
+
+    // Source and destination are on the same device -- checked above -- so the
+    // bytes have no reason to visit the host. They used to: this was a full
+    // device -> host -> device round trip for every assignment, which cost
+    // three submissions against one for the same arithmetic and hit BatchNorm's
+    // forward pass as well as every optimiser. See
+    // docs/adr/0006-lazy-assign-and-submission-batching.md.
+    //
+    // The one case that still needs the host is an OVERLAPPING copy within a
+    // single storage, which `t[0:5].assign_(t[2:7])` reaches: vkCmdCopyBuffer
+    // requires disjoint regions when the source and destination buffers are the
+    // same. Staging through host memory is what made that safe before, so that
+    // is what it keeps doing.
+    if (!storages_overlap(*node_, *flat.node(), nbytes)) {
+        backend.copy_device_to_device(*node_->storage, node_->storage_offset, *flat.node()->storage,
+                                      flat.node()->storage_offset, nbytes);
+        return;
+    }
+
     std::vector<std::byte> staging(nbytes);
     backend.copy_to_host(staging.data(), *flat.node()->storage, flat.node()->storage_offset,
                          nbytes);

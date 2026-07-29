@@ -105,6 +105,29 @@ void CpuBackend::copy_to_host(void* dst, const Storage& src, int64_t src_offset,
     std::memcpy(dst, static_cast<const std::byte*>(src.data()) + src_offset, nbytes);
 }
 
+void CpuBackend::copy_device_to_device(Storage& dst, int64_t dst_offset, const Storage& src,
+                                       int64_t src_offset, size_t nbytes) {
+    if (nbytes == 0) {
+        return;
+    }
+    VKML_CHECK(dst_offset >= 0 && static_cast<size_t>(dst_offset) + nbytes <= dst.nbytes(),
+               IndexError,
+               "copy_device_to_device writes {} bytes at offset {} into a {}-byte "
+               "storage",
+               nbytes, dst_offset, dst.nbytes());
+    VKML_CHECK(src_offset >= 0 && static_cast<size_t>(src_offset) + nbytes <= src.nbytes(),
+               IndexError,
+               "copy_device_to_device reads {} bytes at offset {} from a {}-byte "
+               "storage",
+               nbytes, src_offset, src.nbytes());
+    // The interface forbids overlap, so memcpy would be legal. memmove is used
+    // anyway: it costs nothing measurable at these sizes, and it means a caller
+    // that gets the overlap check wrong reads stale bytes rather than entering
+    // undefined behaviour. "CPU backend" here means host memory on both sides.
+    std::memmove(static_cast<std::byte*>(dst.data()) + dst_offset,
+                 static_cast<const std::byte*>(src.data()) + src_offset, nbytes);
+}
+
 Backend& cpu_backend() {
     static CpuBackend instance;
     return instance;

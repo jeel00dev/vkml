@@ -67,6 +67,21 @@ public:
     /// Copies device storage out to host bytes.
     virtual void copy_to_host(void* dst, const Storage& src, int64_t src_offset, size_t nbytes) = 0;
 
+    /// Copies bytes between two storages that both belong to THIS backend.
+    ///
+    /// The regions must not overlap. Callers that cannot rule that out route
+    /// through the host instead, which is always correct; requiring it here
+    /// keeps the implementations to one primitive each rather than making
+    /// every backend reimplement an overlap policy.
+    ///
+    /// Pure virtual on purpose. A default that staged through the host would
+    /// be correct and quietly slow, and that is exactly the defect this method
+    /// exists to remove -- vkML moved every assignment through host memory for
+    /// months without anyone noticing. A new backend should have to answer
+    /// this question rather than inherit a silent answer to it.
+    virtual void copy_device_to_device(Storage& dst, int64_t dst_offset, const Storage& src,
+                                       int64_t src_offset, size_t nbytes) = 0;
+
     /// Blocks until all previously submitted work has completed. A no-op for
     /// synchronous backends.
     virtual void synchronize() {}
