@@ -1010,3 +1010,39 @@ def test_backward_emits_no_degenerate_reductions():
     )
 
 
+
+
+@requires_vulkan
+def test_multi_root_realize_uses_one_submission():
+    """Four independent tensors realized together must cost ONE submission.
+
+    In a subprocess, and that is not incidental: the suite's autouse fixture
+    forces EAGER mode, which realises every operation as it is built, so by the
+    time V.realize() is reached there is nothing left to schedule. Measured
+    rather than assumed -- written in-process first, this reported 4 either way
+    and would have passed against a V.realize() that did nothing at all.
+
+    An upper BOUND, not an equality. Splitting a large graph over several
+    submissions is legitimate and deliberate elsewhere -- ggml-vulkan does it to
+    overlap command recording with execution, and caps submission size per
+    device to avoid driver timeouts -- so what is pinned here is "far fewer than
+    one each", never "exactly one".
+    """
+    script = (
+        "import sys;sys.path.insert(0,'python');import numpy as np,vkml as V;"
+        "V.set_log_level(V.LogLevel.ERROR);V.init_vulkan(0);"
+        "d=V.device('vulkan:0');rng=np.random.default_rng(0);"
+        "ts=[V.tensor(rng.random((64,64),dtype=np.float32),device=d) for _ in range(4)];"
+        "V.realize(*[V.relu(t) for t in ts]);"  # warm
+        "c=V.vulkan_stats(0)['submissions'];"
+        "V.realize(*[V.relu(t) for t in ts]);"
+        "print(V.vulkan_stats(0)['submissions']-c)"
+    )
+    out = subprocess.run([sys.executable, "-c", script], cwd=REPO, env=_env({}),
+                         capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0, out.stderr[-2000:]
+    used = int(out.stdout.strip().splitlines()[-1])
+    assert used <= 2, (
+        f"{used} submissions for 4 tensors realized together; the point of "
+        f"multi-root realize is that they share one"
+    )

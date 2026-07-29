@@ -557,6 +557,27 @@ NB_MODULE(_vkml_core, m) {
     m.def(
         "cat", [](const std::vector<vkml::Tensor>& ts, int axis) { return vkml::cat(ts, axis); },
         "tensors"_a, "axis"_a = 0);
+    m.def(
+        "realize",
+        [](const std::vector<vkml::Tensor>& ts) {
+            std::vector<vkml::NodePtr> roots;
+            roots.reserve(ts.size());
+            for (const vkml::Tensor& t : ts) {
+                if (!t.defined()) {
+                    // Caught here rather than left to the executor: a null root
+                    // is silently SKIPPED by topological_order, so the call
+                    // would appear to succeed having evaluated nothing.
+                    throw vkml::Error("realize() on an undefined tensor");
+                }
+                roots.push_back(t.node());
+            }
+            vkml::realize(roots);
+        },
+        "tensors"_a,
+        "Evaluate several tensors together, as ONE unit of work.\n\n"
+        "Equivalent in result to realizing each in turn, and cheaper: the whole\n"
+        "set is scheduled once and reaches the backend as a single submission,\n"
+        "rather than one submission per tensor. All must be on the same device.");
     nb::enum_<vkml::Reduction>(m, "Reduction")
         .value("mean", vkml::Reduction::Mean)
         .value("sum", vkml::Reduction::Sum)

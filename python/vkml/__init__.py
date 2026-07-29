@@ -117,6 +117,19 @@ arange = _C.arange
 backward = _C.backward
 detach = _C.detach
 
+
+def realize(*tensors) -> None:
+    """Evaluate several tensors together, as one unit of work.
+
+    ``V.realize(a, b, c)`` gives the same values as realizing each in turn and
+    costs less: the whole set is scheduled once and reaches the backend as a
+    single submission instead of three. All must be on the same device.
+
+    Variadic here, a list at the C++ boundary, because the call sites read
+    better this way -- ``V.realize(*params)`` is what an optimiser wants.
+    """
+    _C.realize(list(tensors))
+
 set_eager = _C.set_eager
 is_eager = _C.is_eager
 set_log_level = _C.set_log_level

@@ -1764,3 +1764,40 @@ def test_assign_between_disjoint_slices_of_one_storage():
         expected = values.copy()
         expected[0:5] = values[5:10]
         np.testing.assert_array_equal(t.numpy(), expected)
+
+
+# ---------------------------------------------------------------------------
+# Multi-root realize
+#
+# `V.realize(a, b, c)` schedules the whole set once, so it reaches the backend
+# as one submission rather than one per tensor. Stage B of
+# docs/adr/0006-lazy-assign-and-submission-batching.md.
+# ---------------------------------------------------------------------------
+
+
+def test_multi_root_realize_matches_realizing_each_in_turn():
+    """Same values, whichever way the work is scheduled. This is the property
+    that must hold; the submission count below is why it is worth doing."""
+    rng = np.random.default_rng(SEED)
+    data = [make_data(rng, (32, 32), "any") for _ in range(4)]
+
+    def run(dev, together):
+        ts = [V.tensor(d, device=dev) for d in data]
+        outs = [V.relu(t * 2.0) for t in ts]
+        if together:
+            V.realize(*outs)
+        else:
+            for o in outs:
+                o.realize()
+        return [o.numpy() for o in outs]
+
+    for dev in (gpu_device(), V.cpu):
+        for a, b in zip(run(dev, together=True), run(dev, together=False)):
+            np.testing.assert_array_equal(a, b)
+
+
+def test_multi_root_realize_rejects_an_undefined_tensor():
+    """A null root is silently skipped by the scheduler, so the call would
+    appear to succeed having evaluated nothing. It must raise instead."""
+    with pytest.raises(V.Error):
+        V.realize(V.tensor(np.ones((2,), dtype=np.float32)), V.Tensor())
