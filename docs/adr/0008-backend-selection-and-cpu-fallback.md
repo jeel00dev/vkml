@@ -234,3 +234,31 @@ failed on something vkML asked for -- validation layers being the usual cause.
 
 `V.device("vulkan:0")` still constructs without validating; the failure arrives
 at first use, with the improved message. No existing call gained a fallback.
+
+### Two places the proposal was wrong, corrected in the build
+
+Sections 2 and 3 are the proposal and are left as written. Two details did not
+survive contact:
+
+**`best_device()` has no `prefer` parameter.** 3 sketched
+`best_device(*, prefer="vulkan")`. `prefer="cpu"` would only ever mean "return
+`V.cpu`", which callers can already write, so the parameter was speculative
+(P6) and was dropped. The shipped signature is `best_device() -> (device, str)`.
+
+**2's draft error told users to run `t.to(vkml.cpu)`, and that API does not
+exist.** `Tensor::to()` takes a DType, not a Device -- checked, not assumed --
+so there is no direct device-move method at all. Advice naming a function that
+does not exist is worse than no advice, and it was caught only by trying it.
+
+The shipped message names a route that was RUN first:
+
+```python
+vkml.tensor(t.numpy(), device=vkml.cpu)
+```
+
+**That gap is worth recording separately:** moving a tensor between devices has
+no first-class API and goes through host memory via numpy. It is adequate for
+the case this error covers -- an occasional unsupported operator -- and would be
+poor as a general mechanism. Not filed as a task, because nothing needs it yet;
+noted here so the next person to want `t.to(device)` knows it is absent by
+omission rather than by decision.

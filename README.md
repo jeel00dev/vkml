@@ -314,8 +314,8 @@ vkML raises rather than moving that one operator to the CPU behind your back:
 NotImplementedError: backend 'vulkan:0' cannot evaluate op 'prod'. vkML does not
 fall back to another device automatically -- doing so would move data through
 host memory on every use and be far slower without saying so. Move this part of
-the computation to the CPU explicitly, or open an issue if you need 'prod' on
-this backend.
+the computation across explicitly, with `vkml.tensor(t.numpy(),
+device=vkml.cpu)`, or open an issue if you need 'prod' on this backend.
 ```
 
 Splitting a graph across devices means copying intermediates through host memory

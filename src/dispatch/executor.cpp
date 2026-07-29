@@ -119,8 +119,9 @@ void realize(std::span<const NodePtr> roots) {
                 "backend '{}' cannot evaluate op '{}'. vkML does not fall back to another "
                 "device automatically -- doing so would move data through host memory on "
                 "every use and be far slower without saying so. Move this part of the "
-                "computation to the CPU explicitly, or open an issue if you need '{}' on "
-                "this backend.",
+                "computation across explicitly, with "
+                "`vkml.tensor(t.numpy(), device=vkml.cpu)`, or open an issue if you need "
+                "'{}' on this backend.",
                 backend.name(), op_name(n->op), op_name(n->op)));
         }
         if (coverage::enabled()) {
