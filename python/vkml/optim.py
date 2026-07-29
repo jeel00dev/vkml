@@ -68,12 +68,27 @@ class Optimizer:
 
 
 class SGD(Optimizer):
+    """SGD with optional classical or Nesterov momentum, matching torch.optim.SGD.
+
+    torch also takes `dampening`, which this does not. Nesterov requires
+    dampening == 0 there, so the two features never combine, and adding an
+    option whose only supported value is its default would be noise. Add it when
+    something needs it.
+    """
+
     def __init__(self, params, lr: float = 1e-2, momentum: float = 0.0,
-                 weight_decay: float = 0.0):
+                 weight_decay: float = 0.0, nesterov: bool = False):
         super().__init__(params)
+        if nesterov and momentum == 0.0:
+            # torch rejects this too. Nesterov looks AHEAD along the momentum
+            # buffer, so with no momentum there is nothing to look along and
+            # the update silently degenerates to plain SGD -- which is worse
+            # than an error, because the run appears to work.
+            raise ValueError("nesterov momentum requires momentum != 0")
         self.lr = lr
         self.momentum = momentum
         self.weight_decay = weight_decay
+        self.nesterov = nesterov
         self._velocity: list[V.Tensor | None] = [None] * len(self.params)
 
     def step(self) -> None:
@@ -94,7 +109,13 @@ class SGD(Optimizer):
                     v = self._velocity[i]
                     v = g if v is None else (v * self.momentum + g)
                     self._velocity[i] = v.detach().realize()
-                    g = self._velocity[i]
+                    # Classical momentum steps ALONG the buffer. Nesterov steps
+                    # along it and then one more momentum-step further, which is
+                    # the "look ahead" -- so it uses the current gradient again
+                    # rather than replacing it. `g` here is the gradient after
+                    # weight decay, which is what torch feeds in too.
+                    g = (g + self._velocity[i] * self.momentum) if self.nesterov \
+                        else self._velocity[i]
 
                 # In place: the Module still holds this exact Tensor, so
                 # rebinding self.params[i] would update the optimizer's view and

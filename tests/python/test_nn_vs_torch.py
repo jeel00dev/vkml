@@ -886,3 +886,95 @@ def test_transformer_stack_trains():
 
     assert all(np.isfinite(losses)), losses
     assert losses[-1] < losses[0], f"loss did not fall: {losses[0]:.4f} -> {losses[-1]:.4f}"
+
+
+@pytest.mark.parametrize("weight_decay", [0.0, 0.01])
+def test_sgd_nesterov_matches_torch_step_for_step(weight_decay):
+    """Nesterov momentum against torch, every step.
+
+    Compared per STEP rather than at the end, for the reason the classical
+    momentum test gives: a wrong update rule still reaches a plausible final
+    loss, and the two rules differ by one extra momentum term that only shows up
+    as drift.
+
+    weight_decay is parametrised because it is where the ordering can go wrong.
+    Nesterov must reuse the DECAYED gradient in `g + momentum * buf`, not the
+    raw one -- using the raw gradient there gives a subtly different trajectory
+    that a final-loss check would very likely miss.
+    """
+    torch_model = torch.nn.Sequential(torch.nn.Linear(6, 8), torch.nn.ReLU(),
+                                      torch.nn.Linear(8, 2))
+    vkml_model = V.nn.Sequential(V.nn.Linear(6, 8), V.nn.ReLU(), V.nn.Linear(8, 2))
+    _copy_weights(vkml_model, torch_model)
+
+    x = make_input((10, 6), seed=2410)
+    y = make_input((10, 2), seed=2411)
+
+    v_opt = V.optim.SGD(vkml_model.parameters(), lr=0.05, momentum=0.9,
+                        weight_decay=weight_decay, nesterov=True)
+    t_opt = torch.optim.SGD(torch_model.parameters(), lr=0.05, momentum=0.9,
+                            weight_decay=weight_decay, nesterov=True)
+
+    for step in range(20):
+        v_opt.zero_grad()
+        v_loss = V.nn.mse_loss(vkml_model(V.tensor(x)), V.tensor(y))
+        v_loss.backward()
+        v_opt.step()
+
+        t_opt.zero_grad()
+        t_loss = torch.nn.functional.mse_loss(torch_model(torch.from_numpy(x.copy())),
+                                              torch.from_numpy(y.copy()))
+        t_loss.backward()
+        t_opt.step()
+
+        assert_close(f"SGD(nesterov, wd={weight_decay}) loss @ step {step}", v_loss, t_loss,
+                     Tol(1e-5, 1e-5))
+
+    for (vn, vp), (tn, tp) in zip(vkml_model.named_parameters(),
+                                  torch_model.named_parameters()):
+        assert vn == tn
+        assert_close(f"SGD nesterov final param {vn}", vp, tp, Tol(1e-5, 1e-5))
+
+
+def test_sgd_nesterov_actually_differs_from_classical_momentum():
+    """The NEGATIVE control for the test above.
+
+    Without it, a `nesterov=True` that silently ignored the flag would still
+    match torch on the classical path and pass everything else. The two rules
+    must produce different parameters from identical starting conditions.
+    """
+    x = make_input((10, 6), seed=2412)
+    y = make_input((10, 2), seed=2413)
+
+    # ONE reference, built once. Constructing a fresh torch model per arm would
+    # give the two arms different starting weights -- torch's global RNG is not
+    # reset here -- and they would then differ for reasons that have nothing to
+    # do with nesterov. That is not hypothetical: this test PASSED against an
+    # implementation that ignored the flag entirely until it was fixed.
+    torch_ref = torch.nn.Sequential(torch.nn.Linear(6, 8), torch.nn.ReLU(),
+                                    torch.nn.Linear(8, 2))
+
+    def train(nesterov):
+        model = V.nn.Sequential(V.nn.Linear(6, 8), V.nn.ReLU(), V.nn.Linear(8, 2))
+        _copy_weights(model, torch_ref)
+        opt = V.optim.SGD(model.parameters(), lr=0.05, momentum=0.9, nesterov=nesterov)
+        for _ in range(5):
+            opt.zero_grad()
+            V.nn.mse_loss(model(V.tensor(x)), V.tensor(y)).backward()
+            opt.step()
+        return [p.numpy().copy() for p in model.parameters()]
+
+    classical, nesterov = train(False), train(True)
+    assert any(not np.allclose(a, b) for a, b in zip(classical, nesterov)), (
+        "nesterov=True produced identical parameters to classical momentum; "
+        "the flag is being ignored"
+    )
+
+
+def test_sgd_nesterov_requires_momentum():
+    """Nesterov looks ahead along the momentum buffer. With no momentum there is
+    nothing to look along and the update degenerates to plain SGD -- silently,
+    which is worse than an error. torch rejects this too."""
+    model = V.nn.Linear(3, 3)
+    with pytest.raises(ValueError):
+        V.optim.SGD(model.parameters(), lr=0.01, momentum=0.0, nesterov=True)
