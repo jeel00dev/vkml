@@ -2,6 +2,7 @@
 
 #include "vkml/backend/api/capabilities.h"
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -160,6 +161,25 @@ private:
 /// different advice, so a report that cannot tell them apart sends whoever
 /// reads it looking in the wrong place.
 [[nodiscard]] std::string unavailable_reason();
+
+/// Validation-layer ERRORS seen since the process started.
+///
+/// Exists so a test can FAIL on one rather than merely print it. The layer
+/// never aborts the offending call -- `debug_callback` returns VK_FALSE by
+/// design, because stopping at the first VUID would hide the rest -- so
+/// without a counter an invalid call is a red line in a log that a green test
+/// run scrolls past.
+///
+/// That is not hypothetical: two pipeline probes declared a 44-byte push
+/// constant range for a 108-byte block for months. RADV tolerated it and AMD's
+/// Windows driver dereferenced null (issue #4). Validation describes it
+/// precisely -- "push constant buffer Block with range [0, 108] which outside
+/// the VkPushConstantRange of [0, 44]" -- and nothing was watching.
+///
+/// Process-wide and monotonic. A test records it before the work and compares
+/// after; it is never reset, so concurrent tests cannot clear each other's
+/// evidence.
+[[nodiscard]] std::atomic<uint64_t>& validation_error_count();
 
 /// Turns a VkResult into a readable string.
 [[nodiscard]] const char* result_string(VkResult r) noexcept;

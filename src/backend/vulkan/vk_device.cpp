@@ -4,10 +4,17 @@
 #include "vkml/util/log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <format>
 
 namespace vkml::vk {
+
+std::atomic<uint64_t>& validation_error_count() {
+    static std::atomic<uint64_t> count{0};
+    return count;
+}
+
 namespace {
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -17,6 +24,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
     // Routed through vkml's logger rather than stderr so the Python layer can
     // capture validation output alongside everything else.
     if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+        validation_error_count().fetch_add(1, std::memory_order_relaxed);
         VKML_LOG_ERROR("[validation] {}", data->pMessage);
     } else if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
         VKML_LOG_WARN("[validation] {}", data->pMessage);

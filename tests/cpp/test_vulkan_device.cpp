@@ -156,6 +156,28 @@ TEST_CASE("embedded SPIR-V is well formed") {
 #include "vkml/spv/gemv.h"
 #include "vkml/spv/probe_private_array.h"
 
+namespace {
+
+/// Size of gemv.comp's push-constant block, mirroring `shaders/gemv.comp`:
+///
+///     uint64_t a, b, d                    24
+///     uint n_out, b1, m, n, k             20
+///     Operand op_a, op_b (uvec4 x2 each)  64
+///                                        ---
+///                                        108
+///
+/// It has to be the WHOLE block. A pipeline layout that declares a smaller
+/// range than the shader reads is invalid Vulkan, and the failure is silent on
+/// a forgiving driver: RADV tolerated a 44-byte range here for months, and
+/// AMD's Windows shader compiler dereferenced null on it (issue #4).
+///
+/// Declared here rather than shared with `GemmPush` because that struct lives
+/// in the backend's anonymous namespace and is not visible to a test. The two
+/// must agree; if gemv.comp's block changes, this changes with it.
+constexpr uint32_t kGemvPushBytes = sizeof(uint64_t) * 3 + sizeof(uint32_t) * 5 + 64;
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // Engineering-theory probe (M3-R4).
 //
@@ -176,7 +198,7 @@ TEST_CASE("private array spill threshold is a property of the allocator") {
         MESSAGE("no Vulkan device present; skipping");
         return;
     }
-    Context ctx(0, false);
+    Context ctx(0, true);
     if (!ctx.info().pipeline_executable_properties) {
         MESSAGE("driver does not report pipeline statistics; skipping");
         return;
@@ -245,7 +267,7 @@ TEST_CASE("private array spill threshold, bracketed") {
     if (!have_device()) {
         return;
     }
-    Context ctx(0, false);
+    Context ctx(0, true);
     if (!ctx.info().pipeline_executable_properties) {
         return;
     }
@@ -272,7 +294,7 @@ TEST_CASE("O2: is the private-array budget per array or per kernel?") {
     if (!have_device()) {
         return;
     }
-    Context ctx(0, false);
+    Context ctx(0, true);
     if (!ctx.info().pipeline_executable_properties) {
         return;
     }
@@ -301,7 +323,7 @@ TEST_CASE("M3-R5: scope boundaries of the private-array budget") {
     if (!have_device()) {
         return;
     }
-    Context ctx(0, false);
+    Context ctx(0, true);
     if (!ctx.info().pipeline_executable_properties) {
         return;
     }
@@ -351,7 +373,7 @@ TEST_CASE("M3-R5: the scope boundaries of A1 and A2 are permanent") {
     if (!have_device()) {
         return;
     }
-    Context ctx(0, false);
+    Context ctx(0, true);
     if (!ctx.info().pipeline_executable_properties) {
         return;
     }
@@ -426,7 +448,7 @@ TEST_CASE("M4-R2: LDS footprint alone changes GEMV performance (H2 rejected)") {
     // instructions, same barriers, same fold -- and the pipeline's reported LDS
     // must move with it. If a future driver elides the padding, this test fails
     // and the M4-R2 discrimination must be re-run rather than assumed.
-    Context ctx(0, false);
+    Context ctx(0, true);
     if (!ctx.info().pipeline_executable_properties) {
         return;
     }
@@ -435,9 +457,7 @@ TEST_CASE("M4-R2: LDS footprint alone changes GEMV performance (H2 rejected)") {
         vkml::vk::KernelConfig cfg;
         cfg.workgroup_size = 64;
         cfg.spec_constants = {64, 8, 1, 64, pad_floats};
-        return pipes
-            .get("gemv", vkml::spv::gemv, vkml::spv::gemv_size, sizeof(uint64_t) * 3 + 20, cfg)
-            .stats;
+        return pipes.get("gemv", vkml::spv::gemv, vkml::spv::gemv_size, kGemvPushBytes, cfg).stats;
     };
     const auto none = lds_for(0);
     const auto padded = lds_for(2048);  // 8 KiB
@@ -452,7 +472,7 @@ TEST_CASE("M4-R3: resident workgroups are an INTEGER function of LDS") {
     if (!have_device()) {
         return;
     }
-    Context ctx(0, false);
+    Context ctx(0, true);
     if (!ctx.info().pipeline_executable_properties) {
         return;
     }
@@ -466,8 +486,7 @@ TEST_CASE("M4-R3: resident workgroups are an INTEGER function of LDS") {
         vkml::vk::KernelConfig cfg;
         cfg.workgroup_size = 64;
         cfg.spec_constants = {64, 8, 1, 64, pad_floats};
-        return pipes
-            .get("gemv", vkml::spv::gemv, vkml::spv::gemv_size, sizeof(uint64_t) * 3 + 20, cfg)
+        return pipes.get("gemv", vkml::spv::gemv, vkml::spv::gemv_size, kGemvPushBytes, cfg)
             .stats.lds_bytes;
     };
     const uint64_t base = lds_of(0);
@@ -495,7 +514,7 @@ TEST_CASE("M4-R5: MLP vs resident waves" * doctest::skip(false)) {
     if (!have_device()) {
         return;
     }
-    Context ctx(0, false);
+    Context ctx(0, true);
     if (!ctx.info().pipeline_executable_properties) {
         return;
     }
@@ -545,4 +564,33 @@ TEST_CASE("M4-R5: MLP vs resident waves" * doctest::skip(false)) {
     alloc.free(src);
     alloc.free(dst);
     CHECK(true);
+}
+
+// ---------------------------------------------------------------------------
+// The validation layer, as a GATE rather than a log line
+// ---------------------------------------------------------------------------
+
+TEST_CASE("no probe in this file provokes a validation error") {
+    // Every Context above is constructed with validation ENABLED, and the layer
+    // never aborts the call it complains about -- debug_callback returns
+    // VK_FALSE on purpose, so that one VUID does not hide the next. The
+    // consequence is that an invalid call prints a red line into a test run that
+    // still reports success, which is exactly what happened: two probes declared
+    // a 44-byte push-constant range for a 108-byte block, RADV shrugged, and
+    // AMD's Windows driver segfaulted (issue #4).
+    //
+    // Ordered last in the file so it observes every pipeline the probes above
+    // created. doctest runs test cases in declaration order within a file.
+    //
+    // Counts errors rather than asserting zero at the start: the count is
+    // process-wide and monotonic, and the Python suite runs in a different
+    // process, so a baseline read here belongs to this binary alone.
+    if (!have_device()) {
+        MESSAGE("no Vulkan device present; skipping");
+        return;
+    }
+    const uint64_t errors = vkml::vk::validation_error_count().load();
+    CHECK_MESSAGE(errors == 0, "the validation layer reported "
+                                   << errors
+                                   << " error(s); search the output above for '[validation]'");
 }
