@@ -876,3 +876,88 @@ def test_split_k_partition_count_is_always_a_power_of_two_chunk():
             f"{shape}: {splits} partitions over {ktiles} k-tiles is not reachable "
             f"with any power-of-two chunk (nearest non-power-of-two would be {chunk})"
         )
+
+
+
+# ---------------------------------------------------------------------------
+# 10. The graph must contain no work that does nothing
+#     (docs/BACKWARD-PERF-INVESTIGATION.md)
+#
+# `reduce_to_shape()` undoes broadcasting in the backward pass by summing the
+# axes that were stretched. It used to reduce every LEADING axis without
+# checking its extent -- and matmul promotes its operands to batched 4-D, so
+# every gradient flowing back through one arrives with leading axes of extent 1.
+#
+# The result was a reduction that reduced NOTHING. Because the reduce kernel
+# launches one workgroup per OUTPUT element, a (1, 1, 4096, 4096) gradient
+# became 16,777,216 workgroups -- 4.29 billion invocations to copy 16.7 M
+# floats -- and took 167 ms of a 170 ms backward pass.
+#
+# Ten hypotheses missed it, and no test caught it, for one reason worth
+# remembering: THE VALUES WERE ALWAYS CORRECT. Summing a single element returns
+# that element. Only the dispatch COUNT ever showed it.
+#
+# The test below runs in a subprocess, because the suite's autouse fixture
+# forces EAGER mode: that realises every operation separately, which inflates
+# the dispatch count and makes it vary with shape for reasons unrelated to the
+# property being asserted. The graph this test is about is the lazy one.
+#
+# ONE THING THAT DOES NOT WORK, so nobody spends an afternoon on it again: an
+# obvious-looking test that the dispatch count is independent of tensor size
+# does NOT catch this. It was written, and it PASSED against the bug. The
+# degenerate reduction adds exactly one dispatch whatever the shape -- what
+# scaled with size was that dispatch's cost, not the count. Only an absolute
+# budget catches it.
+# ---------------------------------------------------------------------------
+
+_BACKWARD_DISPATCHES = (
+    "import sys;sys.path.insert(0,'python');import numpy as np,vkml as V;"
+    "V.set_log_level(V.LogLevel.ERROR);V.init_vulkan(0);"
+    "d=V.device('vulkan:0');rng=np.random.default_rng(0);"
+    "n=int(sys.argv[1]);"
+    "a=V.tensor(rng.random((32,n),dtype=np.float32),device=d);"
+    "b=V.tensor(rng.random((n,32),dtype=np.float32),device=d);"
+    "a.requires_grad=True;b.requires_grad=True;"
+    "step=lambda:(setattr(a,'grad',V.Tensor()),setattr(b,'grad',V.Tensor()),"
+    "V.backward(V.sum(V.matmul(a,b))));"
+    "step();"                                  # warm: first run compiles pipelines
+    "c=V.vulkan_stats(0)['dispatches'];step();"
+    "print(V.vulkan_stats(0)['dispatches']-c)"
+)
+
+
+def _backward_dispatches(k: int) -> int:
+    """Dispatches issued by one `sum(a @ b)` backward, in lazy mode."""
+    out = subprocess.run([sys.executable, "-c", _BACKWARD_DISPATCHES, str(k)],
+                         cwd=REPO, env=_env({}), capture_output=True,
+                         text=True, timeout=600)
+    assert out.returncode == 0, out.stderr[-2000:]
+    return int(out.stdout.strip().splitlines()[-1])
+
+
+@requires_vulkan
+def test_backward_emits_no_degenerate_reductions():
+    """A backward pass must not spend a dispatch on a no-op reduction.
+
+    Budget for `sum(a @ b)` with 2-D operands, verified against the trace:
+
+        1  fill        the seed gradient
+        1  contiguous  materialising the broadcast seed
+        1  matmul      db = a.T @ g
+        1  matmul      da = g @ b.T
+
+    Four, and no reduction at all -- nothing here was broadcast along an axis
+    that carries more than one value. The bug added a fifth dispatch that
+    computed an identity over 16.7 M elements.
+
+    An upper BOUND rather than an equality, so a future change that fuses or
+    elides work does not fail here; one that reintroduces a no-op will.
+    """
+    used = _backward_dispatches(256)
+    assert used <= 4, (
+        f"{used} dispatches for a matmul-sum backward, expected at most 4. A "
+        f"reduction over an axis of extent 1 is the known cause -- re-run with "
+        f"VKML_VULKAN_DEBUG=1 and look for 'reduce ... n_red=1'."
+    )
+
+

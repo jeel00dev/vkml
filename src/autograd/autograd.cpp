@@ -89,11 +89,24 @@ Tensor reduce_to_shape(const Tensor& g, const std::vector<int64_t>& target_dims)
     const size_t lead = gd.size() - target_dims.size();
     std::vector<int> axes;
 
+    // An axis is only worth reducing if something was actually broadcast along
+    // it. `gd[i] != 1` guards BOTH cases: an axis of extent 1 holds a single
+    // value, so summing it is the identity, and the reshape below removes it
+    // just as well. Skipping those is not merely an optimisation -- the
+    // reduce kernel launches one workgroup per OUTPUT element, so a no-op
+    // reduction over a leading axis of a (1, 1, 4096, 4096) gradient became
+    // 16.7 M workgroups and 167 ms. Matmul promotes its operands to batched
+    // 4-D, so every gradient flowing back through one arrives with leading
+    // axes of extent 1 and used to pay this. See
+    // docs/BACKWARD-PERF-INVESTIGATION.md.
     for (size_t i = 0; i < gd.size(); ++i) {
-        if (i < lead) {
-            axes.push_back(static_cast<int>(i));  // axis did not exist in the source
-        } else if (target_dims[i - lead] == 1 && gd[i] != 1) {
-            axes.push_back(static_cast<int>(i));  // axis was stretched from 1
+        if (gd[i] == 1) {
+            continue;
+        }
+        const bool absent_from_source = i < lead;
+        const bool stretched_from_one = !absent_from_source && target_dims[i - lead] == 1;
+        if (absent_from_source || stretched_from_one) {
+            axes.push_back(static_cast<int>(i));
         }
     }
 

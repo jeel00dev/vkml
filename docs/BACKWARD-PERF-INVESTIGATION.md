@@ -1,7 +1,8 @@
 # Backward-pass performance investigation
 
-**Status:** ROOT CAUSE FOUND (H11). Ten hypotheses were eliminated first; the
-reason it took eleven is itself recorded, in 5.
+**Status:** CLOSED. Root cause found (H11) and fixed; CIFAR-100 compute is
+**5.6x** faster, 92.0 -> 16.5 ms/step. Ten hypotheses were eliminated first, and
+the reason it took eleven is itself recorded, in 5.
 **Date:** 2026-07-29
 **Hardware:** AMD RX 5600M (RDNA1), RADV, Vulkan 1.4.354. All figures from this machine.
 
@@ -277,6 +278,39 @@ irrelevant because H9 compared GEMM pipelines; it allocates nothing (H8); it
 scales with tensor size, matching H1's `9.0 ms + 1.18 ms/sample`; and it exists
 only inside an autograd-produced graph, which is exactly the boundary 4 drew.
 
+### The fix, and what it was worth
+
+Guarding both branches of the axis selection with `gd[i] != 1`. An axis of
+extent 1 holds one value, so summing it is the identity and the trailing
+`reshape(target_dims)` removes it just as well; when every axis drops out,
+`axes.empty()` already returns a pure reshape and no dispatch is issued at all.
+
+Numerically identical by construction -- a one-element sum has nothing to
+reassociate -- so the numerical contract needed no re-derivation.
+
+Microbenchmark, Linear 4096->4096 backward, same process and method:
+
+```
+             before      after
+submit    169.9037 ms   1.6959 ms
+  sum     167.4477 ms   (no dispatch)
+  matmul    2.3930 ms   1.6556 ms
+```
+
+Whole workload, CIFAR-100 CNN, 20 steps at batch 64, fix reverted and rebuilt
+for the control arm:
+
+```
+            compute   per step
+before       1.84 s    92.0 ms
+after        0.33 s    16.5 ms     5.6x
+```
+
+75.5 ms/step recovered, against **74 ms predicted** before the fix was written
+from the degenerate workgroup count and a rate of 9.98 ns/workgroup. Both runs
+report identical accuracy and a test loss of 4.6066, which is the end-to-end
+check that nothing numerical moved.
+
 ---
 
 ## 5. Method notes, for whoever picks this up
@@ -337,13 +371,13 @@ one place rather than being copied between `bench/gpu_bench.py` and ad-hoc scrip
 * **A new item is implied but not yet filed:** the gradient-accumulation add running at
   ~0.6 GB/s. It only bites callers who accumulate across micro-batches, which nothing
   in the repository does yet, so it is recorded here rather than raised as a task.
-* **The fix itself is not yet made.** Guarding the leading branch of
-  `reduce_to_shape()` with `gd[i] != 1` is a one-line change, and when every axis
-  drops out `axes.empty()` already returns a pure reshape -- no dispatch at all.
-  It is numerically identical: summing a single element is that element, so no
-  reassociation occurs and the numerical contract is untouched. It needs a test
-  asserting the DISPATCH COUNT, not the values -- the values were always correct,
-  which is precisely why no existing test caught this.
+* **The fix is made**, pinned by `test_backward_emits_no_degenerate_reductions`
+  in `tests/python/test_invariants.py` 10, which asserts a dispatch BUDGET.
+  Red-verified: it fails with the fix reverted. Recorded there, because it cost
+  an attempt: a test that the dispatch count is independent of tensor size does
+  NOT catch this and passed against the bug -- the degenerate reduction adds one
+  dispatch at any size, and what scaled was its cost, not the count.
 * **The 339.9 ms gradient-accumulation add is the only anomaly left open here.**
-  It appears on the same shapes, so re-check it after the fix before opening a
-  separate investigation.
+  It appears on the same shapes, so re-measure it before opening a separate
+  investigation -- H8's arm (c) was measured with the degenerate reduction still
+  present, so that figure is no longer trustworthy.
