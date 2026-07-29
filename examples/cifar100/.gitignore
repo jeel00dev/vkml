@@ -1,0 +1,5 @@
+# Dataset archive and trained artifacts. The archive is ~168 MB and is not
+# reproducible from this repository, so it stays out of it entirely.
+cache/
+*.vkml
+*_summary.json
