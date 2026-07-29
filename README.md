@@ -182,23 +182,31 @@ counter-based RNG that is a pure function of seed and index.
 
 ## Project status
 
-**Alpha.** It trains real models and I test it hard, but everything below I have
-only verified on my own machine — two GPUs and two Vulkan drivers, one OS — and
-it does not cover everything a mature framework does.
+**Alpha.** It trains real models and I test it hard, but the GPU evidence comes
+from two cards I own plus what CI can reach, and it does not cover everything a
+mature framework does.
 
 **What works** — the MNIST MLP and CNN train end to end on the GPU and agree
-with PyTorch to well inside tolerance; 65 operators across both backends;
-1,177 tests, passing under two Vulkan drivers.
+with PyTorch to well inside tolerance; 65 operators across both backends; 1,182
+Python tests and 96 C++ cases, across three Vulkan drivers, with CI on Linux,
+Windows and macOS.
 
 **What does not, stated plainly, because I would rather you found out here:**
 
-- **I have tested two drivers on one OS.** A discrete RX 5600M (RDNA1) and an
-  integrated Renoir iGPU under RADV, plus lavapipe — Mesa's software rasteriser,
-  a genuinely different driver with a subgroup size of 8 against RADV's 64 and
-  half the shared memory. The full suite passes on all three, and MNIST trains
-  to the same accuracy and the same maximum divergence from PyTorch on both
-  GPUs. CI runs the lavapipe leg on every push. I still have no evidence about
-  NVIDIA, Intel, Windows or macOS.
+- **Three drivers, and one of them is software.** A discrete RX 5600M (RDNA1)
+  and an integrated Renoir iGPU under RADV; lavapipe, Mesa's software
+  rasteriser, with a subgroup size of 8 against RADV's 64 and half the shared
+  memory; and MoltenVK on Apple Silicon. The full suite passes on both RADV GPUs
+  and on lavapipe, and everything but one profiler test passes on MoltenVK — see
+  the next point. MNIST trains to the same accuracy and the same maximum
+  divergence from PyTorch on both GPUs. **No evidence at all about NVIDIA,
+  Intel, Qualcomm or ARM** — those are the reports I most want.
+- **What each platform actually proves.** Linux is the real test: every job
+  above runs there. Windows compiles under MSVC and passes the C++ suite, but
+  the runner has no GPU, so nothing Vulkan is exercised. macOS runs the whole
+  Python suite against MoltenVK — but on an *Apple Paravirtual device* in a VM,
+  not physical Apple hardware, and GPU timestamps do not advance there, so the
+  profiler is unusable on that runner. Validation layers are clean on it.
 - **Vulkan is all-or-nothing.** An operator the GPU cannot run raises rather than
   falling back to the CPU. Two cases exist: `prod`, and `max_pool2d` given a
   non-contiguous input.
