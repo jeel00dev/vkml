@@ -1,6 +1,6 @@
 # Backward-pass performance investigation
 
-**Status:** open. Root cause NOT found. Nine hypotheses eliminated with measurements.
+**Status:** open. Root cause NOT found. Ten hypotheses eliminated with measurements.
 **Date:** 2026-07-29
 **Hardware:** AMD RX 5600M (RDNA1), RADV, Vulkan 1.4.354. All figures from this machine.
 
@@ -204,23 +204,42 @@ Since H9, the question is sharper still: **the two paths compile the same pipeli
 and run it 120x apart.** The cause is not in the shader, and it is not in the
 barrier code, which does not touch `dispatch()` at all.
 
-Candidates not yet tested, now that code generation and barrier emission are both
-ruled out:
+### H10 — the backward path launches more work (dispatch geometry). REJECTED.
 
-1. **Dispatch geometry.** `dispatch()` derives the workgroup count from
-   `element_count / workgroup_size`. If the backward path passes a different
-   `element_count` for the same logical GEMM -- counting output elements where the
-   standalone path counts tiles, say -- it would launch orders of magnitude more
-   workgroups running the same code. This fits the evidence better than anything
-   eliminated so far: identical pipeline, identical registers, wildly different
-   time. **Test it by logging `groups` per dispatch in both paths and comparing.**
-2. **Operand aliasing.** Gradient tensors may alias forward activations in ways
-   fresh test tensors never do. This would not change the pipeline key.
-3. **Storage offsets / non-zero `storage_offset` views** taking a slower indexing
-   path inside the shader at runtime, which the spec constants would not reveal.
+`VKML_VULKAN_DEBUG=1` already logs `M/N/K`, `grid` and `ktiles` per GEMM, so this
+needed no rebuild:
 
-**The cheapest next experiment is (1)**, and it is a print statement, not a
-benchmark. Everything cheaper has already been tried.
+```
+standalone  gemm M=4096 N=4096 K=64   grid=128x128  ktiles=2
+backward    gemm M=64   N=4096 K=4096 grid=2x128    ktiles=128
+            gemm M=4096 N=4096 K=64   grid=128x128  ktiles=2
+```
+
+Backward's two GEMMs carry exactly the geometries measured standalone at 1.34 ms
+and 1.67 ms. Same grid, same tiles, same ktiles, same workgroup count. Nothing is
+launching more work.
+
+**This reframes the symptom, and the reframing is the most useful thing in this
+section.** The 167 ms figure was assumed to be a GEMM. It cannot be: both GEMMs
+have normal geometry AND a pipeline key that runs in ~1.5 ms standalone. The
+Linear backward issues eight dispatches, so **the 167 ms belongs to one of the
+other six** -- an elementwise operation, not a matrix multiply. Every hypothesis
+from H4 onwards was aimed at the wrong dispatch.
+
+Candidates not yet tested, now that code generation, barrier emission and dispatch
+geometry are all ruled out:
+
+1. **Identify which dispatch is slow, before theorising about why.** The
+   per-dispatch profile is trustworthy here (the guard passes), and
+   `VKML_VULKAN_DEBUG=1` logs `op=` per dispatch. Correlating the two names the
+   operation in one run. Do this FIRST -- the reframing above shows how expensive
+   it is to theorise about the wrong dispatch.
+2. **Broadcast / stride-0 elementwise.** The backward of `sum` broadcasts a scalar
+   across the output. If a stride-0 operand makes the elementwise kernel read the
+   same address from every invocation, or take a slow generic-indexing path, that
+   is an elementwise cost invisible to every GEMM-focused test above.
+3. **Operand aliasing**, and **non-zero `storage_offset` views** taking a slower
+   runtime indexing path that spec constants would not reveal.
 
 ---
 
