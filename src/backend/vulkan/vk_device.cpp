@@ -602,11 +602,35 @@ void Context::create_logical_device() {
 
     std::vector<const char*> device_exts;
     const std::vector<VkExtensionProperties> available = device_extensions(physical_);
-    if (has_device_extension(available, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)) {
+
+    // Tracked explicitly rather than inferred from device_exts being non-empty.
+    // That proxy was already wrong -- a device with pipeline statistics but no
+    // atomic-float support would chain the atomic-float feature struct without
+    // its extension -- and adding a third extension below would have made it
+    // wrong on every portability device.
+    const bool atomic_float_enabled =
+        has_device_extension(available, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+    if (atomic_float_enabled) {
         device_exts.push_back(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
     }
     if (info_.pipeline_executable_properties) {
         device_exts.push_back(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+    }
+
+    // The spec REQUIRES enabling this whenever the device advertises it: a
+    // portability implementation is not a conformant Vulkan device, and this is
+    // how an application acknowledges the subset it is getting. Omitting it is
+    // what validation reported on MoltenVK -- "VK_KHR_portability_subset must
+    // be enabled because physical device supports it" -- and vkCreateDevice is
+    // permitted to fail over it.
+    //
+    // Spelled as a literal because the macro lives in vulkan_beta.h, which is
+    // only visible under VK_ENABLE_BETA_EXTENSIONS; defining that across the
+    // build to obtain one stable string would drag in every other provisional
+    // declaration with it.
+    static constexpr const char* kPortabilitySubset = "VK_KHR_portability_subset";
+    if (has_device_extension(available, kPortabilitySubset)) {
+        device_exts.push_back(kPortabilitySubset);
     }
 
     // Enable exactly what is used. Requesting a feature the device lacks fails
@@ -620,7 +644,7 @@ void Context::create_logical_device() {
     exec_props.sType =
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR;
     exec_props.pipelineExecutableInfo = info_.pipeline_executable_properties ? VK_TRUE : VK_FALSE;
-    exec_props.pNext = device_exts.empty() ? nullptr : static_cast<void*>(&atomic_float);
+    exec_props.pNext = atomic_float_enabled ? static_cast<void*>(&atomic_float) : nullptr;
 
     VkPhysicalDeviceVulkan13Features feats13{};
     feats13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -630,7 +654,7 @@ void Context::create_logical_device() {
     feats13.maintenance4 = VK_TRUE;
     feats13.pNext = info_.pipeline_executable_properties
                         ? static_cast<void*>(&exec_props)
-                        : (device_exts.empty() ? nullptr : static_cast<void*>(&atomic_float));
+                        : (atomic_float_enabled ? static_cast<void*>(&atomic_float) : nullptr);
 
     VkPhysicalDeviceVulkan12Features feats12{};
     feats12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
