@@ -540,8 +540,8 @@ mature framework does.
 
 **What works.** The MNIST MLP and CNN train end to end on the GPU and agree with
 PyTorch well inside tolerance. 65 operators across both backends. 1,219 Python
-tests and 96 C++ cases, run against three Vulkan drivers, with CI on Linux,
-Windows and macOS.
+tests and 96 C++ cases, run against three Vulkan drivers, with CI on Linux and
+Windows. macOS is not in the push pipeline — see below.
 
 **What does not.** Listed plainly, because you should find out here rather than
 half an hour in:
@@ -554,12 +554,19 @@ half an hour in:
   MoltenVK. MNIST trains to the same accuracy and the same maximum divergence
   from PyTorch on both GPUs. There is **no evidence at all about NVIDIA, Intel,
   Qualcomm or ARM** — those are the reports we would most like to see.
+- **macOS is not a supported platform yet.** It has been *probed*, not adopted:
+  the job reached 1,233 passing tests on a GitHub runner, and one test cannot
+  pass there because that runner's virtualised GPU reports working timestamps
+  and never advances them. Rather than leave a permanently red job on every
+  push, it now lives in `.github/workflows/macos-moltenvk.yml` and runs only on
+  request (`gh workflow run macos-moltenvk.yml`). Treat macOS as untested until
+  it comes back into the main pipeline.
 - **What each platform actually proves.** Linux is the real test; every job runs
   there. Windows compiles under MSVC and passes the C++ suite, but the runner has
-  no GPU, so nothing Vulkan is exercised. macOS runs the whole Python suite
-  against MoltenVK, but on an *Apple Paravirtual device* in a VM rather than
-  physical Apple hardware, and GPU timestamps do not advance there, so the
-  profiler cannot be used on that runner. Validation layers are clean on it.
+  no GPU, so nothing Vulkan is exercised there. The macOS job, when run by hand,
+  exercises MoltenVK on an *Apple Paravirtual device* in a VM rather than
+  physical Apple hardware; GPU timestamps do not advance there, so the profiler
+  cannot be used on that runner. Validation layers are clean on it.
 - **Vulkan is all-or-nothing**, by design rather than by omission — see
   [Choosing a device](#choosing-a-device). If the GPU cannot run an operator,
   vkML raises instead of silently moving that work to the CPU. Two cases exist

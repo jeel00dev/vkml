@@ -1,0 +1,255 @@
+# macOS / MoltenVK — manual only, not part of the push pipeline.
+#
+# Split out of ci.yml on 2026-07-29. It is not broken: it reaches 1233 passing
+# tests on the GitHub runner. One test cannot pass there and cannot honestly be
+# skipped -- test_profiler_reports_nonzero_for_a_real_dispatch, on an "Apple
+# Paravirtual device" that reports valid timestamp bits and then never advances
+# them. Skipping it would blind it to the resolve_timestamps() regression it
+# exists to catch, so the job could only ever be red on every push, and a
+# permanently red job trains everyone to ignore the board.
+#
+# Everything below is the original job, verbatim. That includes the ICD and
+# validation-layer discovery that took three attempts to get right -- read those
+# comments before changing any path here.
+#
+# Run it from the Actions tab, or:
+#     gh workflow run macos-moltenvk.yml
+#
+# Bring it back into ci.yml when macOS becomes a platform vkML supports rather
+# than one it probes.
+
+name: macOS (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macOS / MoltenVK
+    runs-on: macos-15
+    # ANSWERED, and the answer is why this file exists. MoltenVK does provide
+    # bufferDeviceAddress, scalarBlockLayout and timelineSemaphore, so vkML runs
+    # on it: 1233 tests pass here. The single failure is the profiler timestamp
+    # test, on a virtualised GPU that cannot count -- a property of the runner,
+    # not of MoltenVK or of Apple hardware.
+    #
+    # continue-on-error is GONE deliberately. It existed to keep a red job from
+    # gating the push pipeline; this job is no longer in that pipeline, and a
+    # manual run should show its real result rather than a green tick over a
+    # known failure.
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install MoltenVK and a shader compiler
+        # molten-vk is the ICD -- the driver itself. vulkan-loader provides the
+        # libvulkan the build links against, and glslang supplies
+        # glslangValidator, since Homebrew has no glslc outside shaderc.
+        # vulkan-validationlayers is here to answer one open question: whether
+        # vkml's timestamp-query usage is valid on this driver. Every other job
+        # has run with validation available; this one never had, so the timestamp
+        # calls have never been checked against the spec on MoltenVK.
+        run: |
+          brew install molten-vk vulkan-loader vulkan-headers vulkan-tools glslang \
+                       vulkan-validationlayers
+
+      - name: Point the loader at the ICD
+        # The loader searches /usr/local/share/vulkan/icd.d, and Homebrew on
+        # Apple Silicon installs under /opt/homebrew, so it would otherwise find
+        # nothing. The first run of this job proved the point: it looked only in
+        # share/, Homebrew puts MoltenVK's manifest in etc/, and the job then
+        # reported success having found no device at all.
+        #
+        # Both are searched now, and the variable is exported ONLY when a file is
+        # found -- an empty VK_ICD_FILENAMES suppresses the loader's own defaults
+        # rather than falling back to them.
+        run: |
+          prefix=$(brew --prefix)
+          icd=$(find "$prefix/etc/vulkan/icd.d" "$prefix/share/vulkan/icd.d" \
+                     -name 'MoltenVK_icd.json' 2>/dev/null | head -1)
+          if [ -n "$icd" ]; then
+            echo "using ICD: $icd"
+            echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          else
+            echo "no MoltenVK ICD found; leaving the loader's defaults in place"
+            find "$prefix" -name '*icd*.json' 2>/dev/null | head
+          fi
+
+      - name: Point the loader at the validation layers
+        # Same discovery problem as the ICD, and the same fix: the loader
+        # searches /usr/local/share/vulkan, Homebrew installs under
+        # /opt/homebrew, and the ICD turned out to live in etc/ rather than
+        # share/ -- so both are searched and everything found is printed.
+        #
+        # Exported only when a manifest is found. An empty VK_LAYER_PATH
+        # suppresses the loader's own search instead of falling back to it,
+        # which would silently disable the very thing this step is for.
+        # `brew --prefix <formula>` is asked directly rather than guessed at.
+        # The first attempt searched $(brew --prefix)/share and /etc, missed it --
+        # Homebrew keeps these under opt/vulkan-validationlayers rather than
+        # linking them into the top-level share -- and the layer then enumerated
+        # without being loadable, so every real vkCreateInstance failed with
+        # VK_ERROR_LAYER_NOT_PRESENT while the layer-free probe still saw a
+        # usable device. The job passed having skipped all 441 Vulkan tests.
+        run: |
+          # `brew list` is the package's own inventory of what it installed.
+          # Every previous attempt here reconstructed a path and got it wrong:
+          # share/ instead of etc/ for the ICD, then $(brew --prefix)/share
+          # instead of opt/<formula>/share, then a find(1) that could not
+          # descend because opt/<formula> is a SYMLINK into the Cellar and find
+          # does not follow those in its starting path. Asking costs nothing.
+          files=$(brew list vulkan-validationlayers)
+          manifest=$(echo "$files" | grep -m1 'VkLayer_khronos_validation\.json$')
+          lib=$(echo "$files" | grep -m1 'libVkLayer_khronos_validation\.dylib$')
+
+          if [ -z "$manifest" ] || [ -z "$lib" ]; then
+            echo "$files"
+            echo "::error::the formula ships no usable validation layer (manifest='$manifest' lib='$lib')"
+            exit 1
+          fi
+
+          # The manifest names its library as a bare filename, so the loader
+          # dlopen()s it against dyld's search path -- which is why the layer
+          # loaded its manifest and then failed with
+          # "libVkLayer_khronos_validation.dylib (no such file)", turning every
+          # vkCreateInstance into VK_ERROR_LAYER_NOT_PRESENT.
+          echo "using layer manifest: $manifest"
+          echo "using layer library:  $lib"
+          echo "VK_LAYER_PATH=$(dirname "$manifest")" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$(dirname "$lib")" >> "$GITHUB_ENV"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pytest nanobind torch
+
+      - name: Build with the Vulkan backend
+        # New compiler coverage regardless of what MoltenVK turns out to
+        # support: nothing has built this with Apple Clang.
+        run: |
+          cmake --preset release -DVKML_VULKAN=ON -DVKML_BUILD_PYTHON=ON
+          cmake --build build/release -j$(sysctl -n hw.ncpu)
+
+      - name: Does anything at all see a device here?
+        # An INDEPENDENT oracle, and the discriminator for the previous run's
+        # result: vkML saw zero devices with the ICD correctly pointed at
+        # MoltenVK, and two very different causes produce that.
+        #
+        #   vulkaninfo lists a device -> the runner has a GPU and vkML cannot
+        #   see it. MoltenVK is a portability driver, and since loader 1.3.216
+        #   those are hidden unless the instance opts in with
+        #   VK_KHR_portability_enumeration -- which vkml's does not. That would
+        #   be a real vkML defect, and the reason the README's MoltenVK claim
+        #   is currently unsupportable.
+        #
+        #   vulkaninfo lists nothing -> the runner VM exposes no Metal device,
+        #   this job can never answer the question, and it should be cut back
+        #   to a build-only check rather than left failing.
+        #
+        # Never fails the job: it is here to produce evidence, not a verdict.
+        run: vulkaninfo --summary || echo "vulkaninfo failed or found nothing"
+
+      - name: What does MoltenVK actually offer?
+        # The question this job exists to answer, and the reason the report
+        # queries physical devices only: it prints a verdict even for a device
+        # the backend would refuse, which is the outcome worth knowing.
+        #
+        # --require-device is what makes the answer legible. Without it the first
+        # run of this job went green having seen no device at all: the suite
+        # passes either way, because every Vulkan test skips itself when nothing
+        # is present, and 441 silent skips look exactly like success.
+        run: python scripts/hardware_report.py --require-device
+
+      - name: Are our timestamp queries valid on this driver?
+        # The discriminator for the one remaining macOS failure. This device
+        # reports timestampValidBits != 0 AND timestampPeriod = 1.0 ns, so both
+        # capability checks pass, and every dispatch still profiles as 0.000 ms
+        # -- which leaves end <= start, i.e. timestamps that never advance.
+        #
+        # Two explanations remain and they need opposite responses. vkml enables
+        # validation by default, so if our use of vkCmdWriteTimestamp,
+        # vkCmdResetQueryPool or vkGetQueryPoolResults is wrong, the layer says
+        # so here and the fix is ours. If the layer is silent, the timestamps
+        # simply do not advance on this GPU -- and note it is an "Apple
+        # Paravirtual device", a virtualised GPU, where counter sampling is
+        # commonly unavailable. That is a property of this runner, which a
+        # single virtualised device cannot generalise into a claim about
+        # MoltenVK or Apple hardware at large.
+        #
+        # ANSWERED, 2026-07-29. With the layer loaded and the portability-subset
+        # violation fixed, validation emits NOTHING -- not one message, and none
+        # ever about vkCmdWriteTimestamp, the query pool or
+        # vkGetQueryPoolResults. The profile comes back with both entries, so the
+        # resolve path works; the tick values simply do not advance:
+        #
+        #     timestamps_supported: True
+        #     profile entries: 2
+        #       submit: 0.000000 ms
+        #       dispatch: 0.000000 ms
+        #
+        # So vkml's timestamp usage is spec-valid on MoltenVK, and this is a
+        # property of an "Apple Paravirtual device" -- a virtualised GPU, where
+        # counter sampling is commonly unavailable. It is NOT a statement about
+        # MoltenVK or Apple hardware generally; one virtualised device cannot
+        # support that claim.
+        #
+        # The step stays because it is the only thing that would notice if a
+        # future runner image, or real hardware, started reporting real numbers.
+        # Revisit trigger: any run where the two lines above are non-zero.
+        #
+        # Never fails the job: it produces evidence, not a verdict.
+        run: |
+          python - <<'PY' || true
+          import sys
+          sys.path.insert(0, "python")
+          import numpy as np
+          import vkml as V
+
+          V.init_vulkan(0)
+          print("timestamps_supported:", V.vulkan_timestamps_supported(0))
+
+          V.vulkan_set_profiling(True, 0)
+          dev = V.device("vulkan:0")
+          rng = np.random.default_rng(0)
+          a = V.tensor(rng.random((512, 512), dtype=np.float32), device=dev)
+          b = V.tensor(rng.random((512, 512), dtype=np.float32), device=dev)
+          V.matmul(a, b).numpy()
+
+          profile = V.vulkan_last_profile(0)
+          print("profile entries:", len(profile))
+          for label, ms in profile:
+              print(f"  {label}: {ms:.6f} ms")
+          PY
+
+      - name: Run the suite
+        run: python -m pytest tests/python -q
+
+      - name: pip install, then use it from outside the source tree
+        # Runs even when the suite above fails. It always will, for now: the
+        # profiler timestamp test cannot pass on this virtualised device, and
+        # that documented limitation was silently skipping this step -- so an
+        # accepted failure was preventing an unrelated check from ever running.
+        if: ${{ !cancelled() }}
+        # The step above proves the CMake build works here; this proves the
+        # command a user actually types does. They are not the same path --
+        # scikit-build-core, the install() rule and the version read out of
+        # CMakeLists.txt are exercised by pip and by nothing else -- and none of
+        # that had ever run on macOS.
+        #
+        # Full Vulkan, unlike the Windows job: the toolchain installed above
+        # already has MoltenVK and a shader compiler, so there is no reason to
+        # settle for the CPU-only build here.
+        run: |
+          pip install --verbose .
+          cd "$RUNNER_TEMP"
+          python -c "
+          import vkml, numpy as np
+          assert 'site-packages' in vkml.__file__, vkml.__file__
+          print('vkml', vkml.__version__, 'from', vkml.__file__)
+          print('vulkan built in:', vkml.has_vulkan)
+          assert vkml.has_vulkan, 'the macOS install should carry the Vulkan backend'
+          a = vkml.tensor(np.ones((8, 8), dtype=np.float32))
+          print('cpu matmul sum:', float(vkml.matmul(a, a).numpy().sum()))
+          "

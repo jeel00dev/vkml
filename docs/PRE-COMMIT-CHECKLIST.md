@@ -112,11 +112,11 @@ gh run list --limit 1
 gh run view <id> --log-failed
 ```
 
-Two macOS failures are **expected and pre-existing**, and the job is
-`continue-on-error` for that reason: the runner's "Apple Paravirtual device"
-reports valid timestamp bits and then never advances them. See the comment on
-`test_profiler_reports_nonzero_for_a_real_dispatch`, which deliberately does not
-skip, because a skip would blind it to the regression it was written for.
+**Every job in `ci.yml` is expected to pass.** There are no known-red jobs to
+read past — macOS was the last one and it now lives in
+`.github/workflows/macos-moltenvk.yml`, off the push pipeline and run by hand
+(`gh workflow run macos-moltenvk.yml`). If something in `ci.yml` is red, it is
+telling you something.
 
 ---
 
