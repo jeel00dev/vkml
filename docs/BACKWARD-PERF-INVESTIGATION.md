@@ -123,6 +123,48 @@ Controlled, with `optimiser.zero_grad()` each iteration:
 **There is no leak.** With gradients cleared, allocation behaviour is identical to
 the standalone path.
 
+### H9 — a different pipeline variant is compiled (spec constants, spilling, vectorisation). REJECTED, and it kills the whole class.
+
+`vulkan_pipeline_stats()` from two separate processes -- separate, because the
+pipeline cache accumulates and one process would blur the sets together:
+
+```
+standalone (contiguous)  gemm_reg:wg256_sg0_lv4_..._2_2_4_1_1_0_0   vgpr=33 spill=0 lds=8192 waves=20
+backward                 gemm_reg:wg256_sg0_lv1_..._2_2_4_0_1_0_0   vgpr=33 spill=0 lds=8192 waves=20
+```
+
+`lv` is `load_vector_width` (`vk_pipeline.cpp:14`), so backward does compile
+SCALAR tile loads where the contiguous path gets vec4 -- the same mechanism as
+task #32. That looked like the answer. It is not:
+
+```
+standalone, TRANSPOSED view   gemm_reg:wg256_sg0_lv1_..._2_2_4_0_1_0_0    1.40 ms
+backward                      gemm_reg:wg256_sg0_lv1_..._2_2_4_0_1_0_0   167    ms
+```
+
+**Byte-identical pipeline key, 120x apart.** Same variant, same scalar loads, same
+registers, no spilling, same LDS, same occupancy. Whatever is wrong is not in the
+compiled code, which eliminates shader compilation, specialisation constants,
+register allocation and vectorisation together.
+
+### Synchronisation: what the code actually does (read, not measured)
+
+`Recorder::dispatch()` emits **no barrier**. It binds the pipeline, pushes
+constants, brackets the dispatch in timestamps, and returns. Barriers come from a
+separate `Recorder::barrier()`, called from exactly two sites in
+`vulkan_backend.cpp` (lines 2074 and 2123 at the time of writing).
+
+That barrier is one GLOBAL memory barrier -- `srcStageMask` and `dstStageMask`
+both `COMPUTE_SHADER | TRANSFER` -- and `vk_command.h` records the reason: a
+per-buffer hazard tracker costs more CPU than the barrier costs GPU, for a graph
+where almost every node depends on its predecessor. It is deliberate, documented,
+and marked as the thing an M5 planner would make selective.
+
+**This does not explain the symptom.** Barriers serialise dispatches; they do not
+make a single dispatch 120x slower, and the measurement in question is one
+dispatch's own window. Recorded so the next investigator does not re-read the same
+code hoping for a different answer.
+
 ---
 
 ## 3. What the evidence positively establishes
@@ -158,24 +200,27 @@ Roughly 55x, unexplained. Whatever it is, it is present when an operation runs i
 an autograd-produced graph and absent when the same operation runs on freshly created
 tensors.
 
-Candidates not yet tested:
+Since H9, the question is sharper still: **the two paths compile the same pipeline
+and run it 120x apart.** The cause is not in the shader, and it is not in the
+barrier code, which does not touch `dispatch()` at all.
 
-1. **Barriers.** The dispatches provably do not overlap (the guard passes). If the
-   backward graph inserts a full pipeline barrier between every dispatch where the
-   standalone path does not, that serialises work that could overlap and could stall
-   deeply. `Recorder` writes end timestamps at `ALL_COMMANDS`; whether the *barriers*
-   are equally coarse has not been checked.
-2. **Specialisation-constant / pipeline variant selection.** `vulkan_pipeline_stats()`
-   reports VGPR, scratch and LDS per compiled pipeline. If the backward path selects a
-   different variant -- one that spills -- that is visible there and has not been looked at.
-   `docs/PERFORMANCE-MODEL.md` records a spill threshold of 64 floats per private array.
-3. **Operand aliasing.** Gradient tensors may alias forward activations in ways fresh
-   test tensors never do, forcing hazards the standalone path avoids.
+Candidates not yet tested, now that code generation and barrier emission are both
+ruled out:
 
-**The cheapest next experiment** is (2): dump `vulkan_pipeline_stats()` after a
-standalone GEMM and after a backward pass and diff the pipeline keys. If the backward
-path is compiling a different variant, that is a one-line answer; if the keys match,
-attention moves to barriers.
+1. **Dispatch geometry.** `dispatch()` derives the workgroup count from
+   `element_count / workgroup_size`. If the backward path passes a different
+   `element_count` for the same logical GEMM -- counting output elements where the
+   standalone path counts tiles, say -- it would launch orders of magnitude more
+   workgroups running the same code. This fits the evidence better than anything
+   eliminated so far: identical pipeline, identical registers, wildly different
+   time. **Test it by logging `groups` per dispatch in both paths and comparing.**
+2. **Operand aliasing.** Gradient tensors may alias forward activations in ways
+   fresh test tensors never do. This would not change the pipeline key.
+3. **Storage offsets / non-zero `storage_offset` views** taking a slower indexing
+   path inside the shader at runtime, which the spec constants would not reveal.
+
+**The cheapest next experiment is (1)**, and it is a print statement, not a
+benchmark. Everything cheaper has already been tried.
 
 ---
 
