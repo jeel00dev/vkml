@@ -113,9 +113,14 @@ std::vector<Node*> topological_order(std::span<const NodePtr> roots) {
                 continue;
             }
 
-            // A realised node is a leaf for scheduling purposes: its value
+            // A COMPUTED node is a leaf for scheduling purposes: its value
             // already exists, so nothing behind it needs recomputing.
-            if (node->is_realized()) {
+            //
+            // Computed, not bound. A node can hold storage it has not yet
+            // written -- an Assign bound to its destination is the case that
+            // forced the distinction -- and keying this on binding would skip
+            // such a node as though it had already run.
+            if (node->is_computed()) {
                 done.insert(node);
                 stack.pop_back();
                 continue;
@@ -200,9 +205,10 @@ std::string to_dot(std::span<const NodePtr> roots) {
     std::string out = "digraph vkml {\n  rankdir=BT;\n  node [shape=box, fontname=monospace];\n";
 
     for (const Node* node : all) {
-        // Realised nodes are shaded: they are inputs to this evaluation rather
-        // than work to be done.
-        const char* style = node->is_realized() ? ", style=filled, fillcolor=lightgrey" : "";
+        // Computed nodes are shaded: they are inputs to this evaluation rather
+        // than work to be done. Matches what the scheduler treats as a leaf, so
+        // the picture and the plan agree.
+        const char* style = node->is_computed() ? ", style=filled, fillcolor=lightgrey" : "";
         out += std::format("  n{} [label=\"{}\\n{} {}\"{}];\n", id.at(node), op_name(node->op),
                            node->shape.str(), dtype_name(node->dtype), style);
     }

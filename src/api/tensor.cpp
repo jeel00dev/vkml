@@ -13,10 +13,16 @@
 namespace vkml {
 namespace {
 
-/// Creates a realised leaf holding freshly allocated storage.
+/// Creates a leaf holding freshly allocated storage, ready to be filled.
+///
+/// Bound AND computed: an Input leaf has no rule to evaluate, so once it has
+/// memory there is nothing left for the scheduler to do with it. The caller
+/// copies host bytes in immediately (`from_host`), which is the only reason
+/// marking it here rather than after the copy is honest.
 NodePtr make_leaf(std::span<const int64_t> dims, DType dtype, Device device) {
     auto n = make_node(OpKind::Input, Shape::contiguous(dims, dtype_size(dtype)), dtype, device);
     n->storage = backend_for(device).allocator().allocate(n->shape.nbytes());
+    n->flags |= kFlagComputed;
     return n;
 }
 

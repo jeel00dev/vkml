@@ -21,9 +21,15 @@ NodePtr leaf(std::vector<int64_t> dims = {2, 3}) {
     return n;
 }
 
-NodePtr realized_leaf(std::vector<int64_t> dims = {2, 3}) {
+/// A leaf that already holds a value: bound AND computed.
+///
+/// Both, deliberately. Storage alone no longer means "already evaluated" --
+/// a node can be bound to memory it has not yet written -- and the scheduler
+/// keys on computedness. See docs/adr/0007-bound-versus-computed.md.
+NodePtr computed_leaf(std::vector<int64_t> dims = {2, 3}) {
     auto n = leaf(dims);
     n->storage = vkml::make_cpu_storage(n->shape.nbytes());
+    n->flags |= vkml::kFlagComputed;
     return n;
 }
 
@@ -133,12 +139,13 @@ TEST_CASE("a diamond visits the shared node exactly once") {
     CHECK(seen_x == 1);
 }
 
-TEST_CASE("realised nodes terminate the traversal") {
+TEST_CASE("computed nodes terminate the traversal") {
     // This is what makes repeated realize() cheap: an already-computed tensor
     // does not drag its construction history back into the schedule.
     auto a = leaf();
     auto b = unary(OpKind::Relu, a);
     b->storage = vkml::make_cpu_storage(b->shape.nbytes());
+    b->flags |= vkml::kFlagComputed;
 
     auto c = unary(OpKind::Neg, b);
 
@@ -146,14 +153,29 @@ TEST_CASE("realised nodes terminate the traversal") {
     REQUIRE(order.size() == 1);
     CHECK(order[0] == c.get());
 
-    SUBCASE("a fully realised root schedules no work") {
+    SUBCASE("a fully computed root schedules no work") {
         const auto none = vkml::topological_order(b);
         CHECK(none.empty());
+    }
+
+    SUBCASE("storage ALONE does not terminate it") {
+        // The distinction this whole design rests on. A node bound to memory it
+        // has not yet written -- which is what an Assign node is -- must still
+        // be scheduled. Before the split it would have been skipped here, and
+        // silently never run.
+        auto d = unary(OpKind::Relu, b);  // b IS computed, so it stops there
+        d->storage = vkml::make_cpu_storage(d->shape.nbytes());
+        REQUIRE(d->is_bound());
+        REQUIRE_FALSE(d->is_computed());
+
+        const auto with_storage = vkml::topological_order(d);
+        REQUIRE(with_storage.size() == 1);
+        CHECK(with_storage[0] == d.get());
     }
 }
 
 TEST_CASE("view_src collapses to the root but src[0] keeps the real chain") {
-    auto base = realized_leaf({4, 5});
+    auto base = computed_leaf({4, 5});
 
     const std::vector<int64_t> flat{20};
     auto v1 = make_view(OpKind::Reshape, base, *base->shape.reshaped(flat), 0);
@@ -217,7 +239,7 @@ TEST_CASE("deep chains do not overflow the stack") {
 }
 
 TEST_CASE("to_dot emits every node and edge") {
-    auto a = realized_leaf();
+    auto a = computed_leaf();
     auto b = leaf();
     auto c = binary(OpKind::Add, a, b);
 

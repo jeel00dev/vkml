@@ -14,9 +14,10 @@ namespace vkml {
 
 enum NodeFlags : uint32_t {
     kFlagNone = 0,
-    kFlagParam = 1U << 0,   ///< trainable parameter; a leaf that accumulates .grad
-    kFlagOutput = 1U << 1,  ///< graph output; the memory planner must not reuse it
-    kFlagLoss = 1U << 2,    ///< scalar the backward pass is seeded from
+    kFlagParam = 1U << 0,     ///< trainable parameter; a leaf that accumulates .grad
+    kFlagOutput = 1U << 1,    ///< graph output; the memory planner must not reuse it
+    kFlagLoss = 1U << 2,      ///< scalar the backward pass is seeded from
+    kFlagComputed = 1U << 3,  ///< holds a valid value; see is_computed()
 };
 
 /// One vertex of the computation DAG.
@@ -50,9 +51,11 @@ enum NodeFlags : uint32_t {
 ///
 /// IMMUTABILITY
 /// ------------
-/// A Node is immutable once constructed, with exactly one exception: the
-/// realisation fields `storage` and `storage_offset`, which are filled in when
-/// the node is evaluated.
+/// A Node is immutable once constructed, with one exception: the realisation
+/// state. That is `storage` and `storage_offset`, filled in when the node is
+/// bound, and the `kFlagComputed` bit of `flags`, set when it has been
+/// evaluated. Those are two separate events and deliberately two separate
+/// fields -- see is_computed() and docs/adr/0007-bound-versus-computed.md.
 ///
 /// This is not a stylistic preference, it is what makes three things sound:
 ///   - two Tensors may share a node, so a mutation would be action at a distance;
@@ -115,13 +118,29 @@ struct Node {
     Node(Node&&) = delete;
     Node& operator=(Node&&) = delete;
 
-    [[nodiscard]] bool is_realized() const noexcept { return storage != nullptr; }
+    /// Whether this node has memory to write into.
+    ///
+    /// Says nothing about what is IN that memory. Set by the executor's
+    /// binding pass, or at construction for a leaf that arrives with data.
+    [[nodiscard]] bool is_bound() const noexcept { return storage != nullptr; }
+
+    /// Whether this node holds a valid value.
+    ///
+    /// Distinct from is_bound(), and the distinction is load-bearing. For every
+    /// node vkML has today the two coincide, because binding storage is
+    /// immediately followed by computing into it -- which is why they were one
+    /// predicate, `is_realized()`, until an Assign node made them differ. Assign
+    /// is bound to its DESTINATION's storage, so it is bound before it runs, and
+    /// a scheduler keying on binding would skip it as already done. See
+    /// docs/adr/0007-bound-versus-computed.md.
+    [[nodiscard]] bool is_computed() const noexcept { return (flags & kFlagComputed) != 0; }
 
     [[nodiscard]] bool is_leaf() const noexcept { return is_leaf_op(op); }
 
     [[nodiscard]] bool is_view() const noexcept { return view_src != nullptr; }
 
-    /// Address of element zero. Only valid once realised.
+    /// Address of element zero. Valid once BOUND; whether the bytes there mean
+    /// anything is is_computed()'s question.
     [[nodiscard]] void* data() noexcept {
         if (storage == nullptr) {
             return nullptr;

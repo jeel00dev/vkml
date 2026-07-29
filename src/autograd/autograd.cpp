@@ -516,12 +516,18 @@ Tensor detach(const Tensor& t) {
     n->storage = src->storage;
     n->storage_offset = src->storage_offset;
     n->requires_grad = false;
-    if (!src->is_realized()) {
+    // is_computed, not is_bound: a detached tensor shares the buffer as a VALUE,
+    // so a node bound to memory it has not yet written must be evaluated first.
+    if (!src->is_computed()) {
         // Nothing to share yet -- evaluate first so the detached view is real.
         t.realize();
         n->storage = src->storage;
         n->storage_offset = src->storage_offset;
     }
+    // The value is now shared, so the detached leaf holds one. Without this it
+    // would be bound but not computed, and the scheduler would try to evaluate
+    // an Input node that has no rule.
+    n->flags |= kFlagComputed;
     return Tensor{n};
 }
 

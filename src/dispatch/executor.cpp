@@ -23,8 +23,8 @@ std::atomic<bool>& eager_flag() noexcept {
 
 /// Gives one scheduled node its storage.
 void bind_storage(Node& node) {
-    if (node.is_realized()) {
-        return;
+    if (node.is_bound()) {
+        return;  // already has memory; whether it holds a value is not this pass's question
     }
 
     if (node.is_view()) {
@@ -33,7 +33,7 @@ void bind_storage(Node& node) {
         // Storage is what keeps the base alive even if the base Tensor is
         // dropped -- the reason ggml tracks view_src at all.
         Node& base = *node.view_src;
-        VKML_ASSERT(base.is_realized(), "view bound before its base '{}'", op_name(base.op));
+        VKML_ASSERT(base.is_bound(), "view bound before its base '{}'", op_name(base.op));
         node.storage = base.storage;
         node.storage_offset = base.storage_offset + node.view_offset;
         return;
@@ -119,6 +119,15 @@ void realize(std::span<const NodePtr> roots) {
 
     VKML_LOG_DEBUG("realize: {} nodes on {}", order.size(), device.str());
     backend.compute(order);
+
+    // Every scheduled node now holds its value. This is the ONLY place a
+    // computed graph node is marked, and it happens after compute() returns
+    // rather than during binding -- which is the whole point of the split: a
+    // node is bound when it has memory and computed when that memory has been
+    // written. See docs/adr/0007-bound-versus-computed.md.
+    for (Node* n : order) {
+        n->flags |= kFlagComputed;
+    }
 }
 
 void realize(const NodePtr& root) {

@@ -63,7 +63,7 @@ Tensor from(std::vector<int64_t> dims, std::vector<float> values, Device dev = D
 std::vector<Node*> bind_all(const Tensor& root, Backend& backend) {
     std::vector<Node*> order = vkml::topological_order(root.node());
     for (Node* n : order) {
-        if (n->is_realized()) {
+        if (n->is_bound()) {
             continue;
         }
         if (n->is_view()) {
@@ -105,28 +105,37 @@ std::vector<Device> devices() {
 // The question was whether that can be expressed.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("a node with storage is treated as already computed") {
-    // `is_realized()` is DEFINED as `storage != nullptr` (node.h), and
-    // topological_order() treats a realised node as a leaf. So binding an
-    // Assign node to its destination's storage up front would make the
-    // scheduler skip it: it would look computed before it had run.
+TEST_CASE("binding storage does not make a node look computed") {
+    // The B0 finding, and now its fix. `is_realized()` used to be DEFINED as
+    // `storage != nullptr`, and topological_order() treated such a node as a
+    // leaf -- so binding an Assign node to its destination's storage made the
+    // scheduler skip it: it looked computed before it had run. Measured at the
+    // time: order size 3 while unbound, 0 once bound.
     //
-    // This is the blocker stage B has to design around, pinned here so the
-    // finding survives as an executable fact rather than a paragraph.
+    // Splitting the predicate is what removed the blocker
+    // (docs/adr/0007-bound-versus-computed.md). This asserts the property stage
+    // B depends on, so a regression to one predicate fails here rather than in
+    // a silently skipped update.
     const Tensor a = from({4}, {1.0F, 2.0F, 3.0F, 4.0F});
     const Tensor doubled = vkml::mul(a, 2.0);
 
     const NodePtr node = doubled.node();
-    REQUIRE_FALSE(node->is_realized());
-    // Scheduled while unbound. Three nodes, not one: the scalar becomes a Full
-    // plus a Broadcast view, which is the ordinary shape of `mul(t, 2.0)`.
+    REQUIRE_FALSE(node->is_bound());
+    // Three nodes, not one: the scalar becomes a Full plus a Broadcast view,
+    // which is the ordinary shape of `mul(t, 2.0)`.
     CHECK(vkml::topological_order(node).size() == 3);
 
     // Give it storage, as an Assign node bound to its destination would have.
     node->storage = vkml::backend_for(node->device).allocator().allocate(node->shape.nbytes());
 
-    CHECK(node->is_realized());
-    CHECK(vkml::topological_order(node).empty());  // and now it never runs
+    CHECK(node->is_bound());
+    CHECK_FALSE(node->is_computed());
+    CHECK(vkml::topological_order(node).size() == 3);  // and it STILL runs
+
+    SUBCASE("marking it computed is what removes it from the schedule") {
+        node->flags |= vkml::kFlagComputed;
+        CHECK(vkml::topological_order(node).empty());
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -74,11 +74,16 @@ void CpuBackend::compute(std::span<Node* const> nodes) {
                 std::format("cpu backend: no kernel for op '{}'", op_name(node->op)));
         }
 
-        VKML_ASSERT(node->is_realized(), "node '{}' has no storage before compute",
-                    op_name(node->op));
+        // Binding, not computedness, on both counts -- including the sources.
+        // A source's value is usually produced by an EARLIER NODE IN THIS SAME
+        // batch, and kFlagComputed is only set once the whole batch returns, so
+        // asserting is_computed() here would fire on every ordinary chain. What
+        // is assertable at this point is that the memory exists; that it holds
+        // the right value is the executor's ordering guarantee, not a local one.
+        VKML_ASSERT(node->is_bound(), "node '{}' has no storage before compute", op_name(node->op));
         for (int i = 0; i < node->n_src; ++i) {
-            VKML_ASSERT(node->src[static_cast<size_t>(i)]->is_realized(),
-                        "source {} of '{}' is not realised", i, op_name(node->op));
+            VKML_ASSERT(node->src[static_cast<size_t>(i)]->is_bound(),
+                        "source {} of '{}' has no storage", i, op_name(node->op));
         }
 
         fn(*node);

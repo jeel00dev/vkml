@@ -948,7 +948,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
         if (node == nullptr || is_view_op(node->op) || node->is_leaf()) {
             continue;
         }
-        VKML_ASSERT(node->is_realized(), "node '{}' has no storage", op_name(node->op));
+        VKML_ASSERT(node->is_bound(), "node '{}' has no storage", op_name(node->op));
 
         const auto address_of = [](const Node& n) {
             return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(n.data()));
