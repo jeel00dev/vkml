@@ -479,7 +479,7 @@ jobs:
         # only difference is the interpreter. A release run drops the override.
         env:
           CIBW_BUILD: cp312-*
-        run: pipx run cibuildwheel==2.21.3 --output-dir wheelhouse
+        run: pipx run cibuildwheel==4.1.1 --output-dir wheelhouse
 
       - name: Check the tag, and that no Vulkan loader was bundled
         # Two things make this wheel correct rather than merely present: a

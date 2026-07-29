@@ -107,6 +107,12 @@ build-frontend = "build"
 test-command = "python -c \"import vkml, numpy as np; print(vkml.__version__, vkml.matmul(vkml.tensor(np.ones((8,8),dtype=np.float32)), vkml.tensor(np.ones((8,8),dtype=np.float32))).numpy().sum())\""
 
 [tool.cibuildwheel.linux]
+# Pinned, not defaulted. The recipe below was verified in this exact image, and
+# cibuildwheel's default has been manylinux2014 -- CentOS 7, which has yum and
+# no dnf, so the first CI run failed on `dnf: command not found` while the same
+# steps worked locally. The image is part of the recipe, not a detail.
+manylinux-x86_64-image = "manylinux_2_28"
+
 before-all = """
 dnf -y install epel-release
 dnf -y install vulkan-headers vulkan-loader-devel vulkan-loader
