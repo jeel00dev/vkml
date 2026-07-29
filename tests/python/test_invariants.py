@@ -501,13 +501,27 @@ def test_profiler_reports_nonzero_for_a_real_dispatch():
     # The device index matters: profiling is per backend instance and these
     # default to 0, so asking device 0 for a profile of work that ran on device 1
     # returns an empty list. Found by running the suite on a second GPU.
-    # A queue family may legitimately report no timestamp bits at all, and then
-    # every dispatch reads 0.000 ms no matter how much work ran. Skipping is the
-    # honest outcome: the regression this guards against is unobservable there,
-    # not absent. Checked rather than assumed -- vkml never queried the bit
-    # until a driver that reports zero turned up in CI.
+    # A queue family may legitimately report no timestamp bits, or a zero
+    # period, and then every dispatch reads 0.000 ms no matter how much work
+    # ran. Skipping is the honest outcome: the regression this guards is
+    # unobservable there, not absent. Checked rather than assumed -- vkml never
+    # queried either until a driver that fails them turned up in CI.
     if not V.vulkan_timestamps_supported(VULKAN_DEVICE):
-        pytest.skip("device's compute queue reports timestampValidBits = 0")
+        pytest.skip("device cannot produce timestamps (no valid bits, or a zero period)")
+
+    # KNOWN TO FAIL on the GitHub macOS runner, and deliberately not skipped
+    # there. That device passes both checks above and still returns 0.000 ms
+    # because its timestamps never advance -- an "Apple Paravirtual device",
+    # where counter sampling is commonly unavailable. Validation, once actually
+    # loaded, had nothing to say about vkCmdWriteTimestamp, the query pool or
+    # vkGetQueryPoolResults, so the usage is spec-valid and the device simply
+    # cannot measure.
+    #
+    # No automatic skip exists for that, and adding one would blind this test to
+    # its own regression: resolve_timestamps() clearing the profile early
+    # produced 0.000 ms too, which is indistinguishable from a device that
+    # cannot count. Losing the distinction to gain a green tick is the wrong
+    # trade, so macOS stays continue-on-error until someone decides otherwise.
 
     V.vulkan_set_profiling(True, VULKAN_DEVICE)
     try:

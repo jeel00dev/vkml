@@ -411,6 +411,27 @@ jobs:
         # single virtualised device cannot generalise into a claim about
         # MoltenVK or Apple hardware at large.
         #
+        # ANSWERED, 2026-07-29. With the layer loaded and the portability-subset
+        # violation fixed, validation emits NOTHING -- not one message, and none
+        # ever about vkCmdWriteTimestamp, the query pool or
+        # vkGetQueryPoolResults. The profile comes back with both entries, so the
+        # resolve path works; the tick values simply do not advance:
+        #
+        #     timestamps_supported: True
+        #     profile entries: 2
+        #       submit: 0.000000 ms
+        #       dispatch: 0.000000 ms
+        #
+        # So vkml's timestamp usage is spec-valid on MoltenVK, and this is a
+        # property of an "Apple Paravirtual device" -- a virtualised GPU, where
+        # counter sampling is commonly unavailable. It is NOT a statement about
+        # MoltenVK or Apple hardware generally; one virtualised device cannot
+        # support that claim.
+        #
+        # The step stays because it is the only thing that would notice if a
+        # future runner image, or real hardware, started reporting real numbers.
+        # Revisit trigger: any run where the two lines above are non-zero.
+        #
         # Never fails the job: it produces evidence, not a verdict.
         run: |
           python - <<'PY' || true
