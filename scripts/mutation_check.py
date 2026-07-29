@@ -32,6 +32,7 @@ Exit:   0 if every mutation was killed, 1 otherwise.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -44,8 +45,19 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # The project virtualenv if there is one, otherwise whatever interpreter is on
 # the path. A contributor without a .venv should still be able to run this.
-_VENV = ROOT / ".venv/bin/python"
-PY = _VENV if _VENV.is_file() else Path(sys.executable)
+#
+# Windows puts the interpreter in Scripts/ and names it python.exe, so a single
+# POSIX path silently fell through to sys.executable there -- which is usually
+# the right interpreter anyway, so the bug was invisible until it was not.
+_VENV_CANDIDATES = (ROOT / ".venv/bin/python", ROOT / ".venv/Scripts/python.exe")
+PY = next((p for p in _VENV_CANDIDATES if p.is_file()), Path(sys.executable))
+
+# Where cmake --build should point. Overridable because the campaign has no way
+# to guess a contributor's layout, and because a multi-config generator needs
+# --config as well: Visual Studio and Ninja Multi-Config put binaries under a
+# per-configuration subdirectory and build Debug by default.
+BUILD_DIR = os.environ.get("VKML_BUILD_DIR", "build/release")
+BUILD_CONFIG = os.environ.get("VKML_BUILD_CONFIG", "Release")
 
 # (label, file, find, replace, test selector)
 # Each mutation changes MEANING, not syntax -- a compile error would prove
@@ -212,7 +224,7 @@ def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 
 def build() -> bool:
-    r = run(["cmake", "--build", "build/release", "-j8"])
+    r = run(["cmake", "--build", BUILD_DIR, "--config", BUILD_CONFIG, "-j8"])
     return r.returncode == 0
 
 
@@ -251,11 +263,28 @@ def main() -> int:
     build()  # leave the tree as we found it
 
     print()
-    survived = [r for r in results if r[1] != "KILLED"]
-    print(f"{len(results) - len(survived)}/{len(results)} mutations killed")
-    for label, status in survived:
-        print(f"  SURVIVING: {label} [{status}]")
-    return 1 if survived else 0
+    # Three outcomes, not two, and collapsing them was a real defect: a mutation
+    # that failed to build or whose pattern no longer matches was NEVER TESTED,
+    # so calling it "SURVIVING" reports a weak test suite when the truth is a
+    # broken campaign. The two need opposite responses -- one means write a test,
+    # the other means fix this script -- and the reader cannot tell them apart
+    # from a label that lies. Both still fail the run.
+    killed = [r for r in results if r[1] == "KILLED"]
+    survived = [r for r in results if r[1] == "SURVIVED"]
+    invalid = [r for r in results if r[1] not in ("KILLED", "SURVIVED")]
+
+    tested = len(killed) + len(survived)
+    print(f"{len(killed)}/{tested} mutations killed"
+          f"{f' ({len(invalid)} never ran)' if invalid else ''}")
+
+    for label, _ in survived:
+        print(f"  SURVIVING: {label} -- the suite does not catch this defect")
+    if invalid:
+        print("\nThese mutations were not tested at all. The campaign is incomplete,")
+        print("and its pass rate above says nothing about them:")
+        for label, status in invalid:
+            print(f"  NOT-TESTED: {label} [{status}]")
+    return 1 if survived or invalid else 0
 
 
 if __name__ == "__main__":

@@ -143,6 +143,24 @@ def installed_extension() -> Path | None:
 
 
 def main() -> int:
+    # POSIX only, and deliberately so rather than by oversight. The whole design
+    # rests on LD_PRELOAD putting the ASan runtime in front of an uninstrumented
+    # CPython, and Windows has no equivalent: MSVC's /fsanitize=address links a
+    # runtime DLL that must be resolved at load time, which is a different
+    # mechanism needing a different script, not a path fix.
+    #
+    # Fail here, saying that, rather than three steps later on a clang probe
+    # that reports something unrelated (issue #8). NOT SUPPORTED, NOT BROKEN:
+    # ctest --preset asan still sanitises the C++ suite on Windows.
+    if os.name != "posix":
+        print(f"scripts/asan_python.py does not support {sys.platform}: it needs "
+              "LD_PRELOAD to\ninsert the sanitiser runtime ahead of an "
+              "uninstrumented CPython, which Windows has\nno equivalent for.\n\n"
+              "  C++ suite under ASan, all platforms:  ctest --preset asan\n"
+              "  Python suite under ASan:              Linux, or WSL",
+              file=sys.stderr)
+        return 2
+
     # Preserve whatever is installed, so a developer's fast extension survives a
     # sanitiser run. Restored in `finally`: an ASan run that ends in a report is
     # exactly when the tree must not be left holding a 20x slower build.
