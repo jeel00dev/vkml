@@ -45,9 +45,22 @@ target_link_libraries(_vkml_core PRIVATE vkml)
 #
 # PREDICTED, NOT YET OBSERVED: no Visual Studio build of this target has ever
 # run. The Windows job added alongside this is what confirms it.
-set_target_properties(_vkml_core PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_SOURCE_DIR}/python/vkml>"
-    RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_SOURCE_DIR}/python/vkml>")
+# ...but ONLY for an in-tree build. scikit-build-core sets SKBUILD, and a wheel
+# build has no business writing into the source tree: it assembles from what
+# CMake INSTALLS (below), so the copy here was pure side effect.
+#
+# On Windows that side effect was fatal. The OS will not overwrite a DLL a
+# process has mapped, so `pip install .` failed with LNK1104 whenever anything
+# held the in-tree extension open -- and tests/python/conftest.py puts python/
+# on sys.path, so a pytest run in another terminal is enough. An editor with a
+# language server or a stray REPL does it too (issue #10).
+#
+# Left alone for the ordinary build, which is what the comment above is about.
+if(NOT DEFINED SKBUILD)
+    set_target_properties(_vkml_core PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_SOURCE_DIR}/python/vkml>"
+        RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_SOURCE_DIR}/python/vkml>")
+endif()
 
 # ...and install it beside the package for a wheel build. Both are needed and
 # they are not the same thing: the line above serves the in-tree loop, while
