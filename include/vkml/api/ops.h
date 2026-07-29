@@ -99,6 +99,56 @@ enum class Reduction {
 [[nodiscard]] Tensor cross_entropy(const Tensor& logits, const Tensor& target,
                                    Reduction reduction = Reduction::Mean);
 
+/// Binary cross-entropy from raw logits, following
+/// torch.nn.functional.binary_cross_entropy_with_logits. `target` holds
+/// probabilities in [0, 1] -- usually 0 or 1, but soft labels are allowed.
+///
+/// TAKES LOGITS, NOT PROBABILITIES, for the same reason cross_entropy does.
+/// There is deliberately no variant taking probabilities: computing
+/// `log(p)` for a confident model underflows, and torch's version of that
+/// function exists only with a clamp bolted on to hide it. Apply this to the
+/// value you would have passed to sigmoid.
+///
+/// Evaluated as `max(x, 0) - x*y + log(1 + exp(-|x|))`, which is the standard
+/// rearrangement that never evaluates exp on a positive argument: exp(-|x|)
+/// lies in (0, 1], so the logarithm's argument stays in (1, 2] whatever the
+/// logit magnitude. The naive `-[y log s(x) + (1-y) log(1-s(x))]` loses the
+/// losing term to underflow well before x reaches 100.
+[[nodiscard]] Tensor binary_cross_entropy_with_logits(const Tensor& logits, const Tensor& target,
+                                                      Reduction reduction = Reduction::Mean);
+
+/// Kullback-Leibler divergence, following torch.nn.functional.kl_div.
+///
+/// `input` HOLDS LOG-PROBABILITIES and `target` holds probabilities, which is
+/// torch's convention and trips people every time. Pass log_softmax output, not
+/// softmax output. With `log_target` true, `target` is log-probabilities too.
+///
+/// Pointwise value is `target * (log(target) - input)`, defined as 0 wherever
+/// `target` is 0 -- the limit of `t log t` as t goes to 0, which the arithmetic
+/// would otherwise produce as 0 * -inf = NaN.
+///
+/// NOTE ON REDUCTION: Mean averages over every element, matching torch's
+/// default, which is not the mathematical definition. The KL divergence of a
+/// batch is the SUM over classes averaged over samples, so use Sum and divide
+/// by the batch size. Reduction has no BatchMean member because it is shared
+/// with every other loss here, and a value only one of them honours would be a
+/// trap in the other three.
+[[nodiscard]] Tensor kl_div(const Tensor& input, const Tensor& target,
+                            Reduction reduction = Reduction::Mean, bool log_target = false);
+
+/// Huber loss, following torch.nn.functional.huber_loss.
+///
+/// Quadratic within `delta` of the target and linear beyond it, so a single
+/// outlier contributes a bounded gradient instead of dominating the batch the
+/// way squared error lets it. The two pieces meet with matching value and slope
+/// at |error| = delta, which is what makes it usable as a training objective.
+///
+/// Not torch's smooth_l1_loss: that is this divided by delta (`beta` there).
+/// Both exist in torch and differ by exactly that factor, which is worth
+/// knowing before comparing numbers against a reference implementation.
+[[nodiscard]] Tensor huber_loss(const Tensor& input, const Tensor& target,
+                                Reduction reduction = Reduction::Mean, double delta = 1.0);
+
 /// Extracts sliding local blocks, following torch.nn.functional.unfold.
 ///
 /// `(N, C, H, W)` becomes `(N, C * kernel_h * kernel_w, L)`, where `L` is the

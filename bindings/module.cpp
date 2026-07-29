@@ -565,6 +565,12 @@ NB_MODULE(_vkml_core, m) {
           "reduction"_a = vkml::Reduction::Mean);
     m.def("cross_entropy", &vkml::cross_entropy, "logits"_a, "target"_a,
           "reduction"_a = vkml::Reduction::Mean);
+    m.def("binary_cross_entropy_with_logits", &vkml::binary_cross_entropy_with_logits, "logits"_a,
+          "target"_a, "reduction"_a = vkml::Reduction::Mean);
+    m.def("kl_div", &vkml::kl_div, "input"_a, "target"_a, "reduction"_a = vkml::Reduction::Mean,
+          "log_target"_a = false);
+    m.def("huber_loss", &vkml::huber_loss, "input"_a, "target"_a,
+          "reduction"_a = vkml::Reduction::Mean, "delta"_a = 1.0);
     m.def(
         "rand",
         [](const std::vector<int64_t>& dims, uint64_t seed, uint64_t offset, vkml::Device device) {

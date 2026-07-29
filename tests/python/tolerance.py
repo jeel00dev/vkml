@@ -213,6 +213,36 @@ POLICY: dict[str, Tolerance] = {
     # error is log_softmax's, and the batch mean contributes gamma_N on top.
     "cross_entropy": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
                                note="log_softmax error plus the batch mean's gamma_N"),
+    # bce_with_logits: max(x,0), |x| and -x are exact, and x*y is one rounding.
+    # The transcendental pair is well conditioned by construction: exp is only
+    # ever called at -|x| so its result is in (0, 1], the addition of 1 cannot
+    # cancel because both terms are positive, and log is evaluated on (1, 2]
+    # where |d/dt log t| <= 1 and so cannot amplify. That leaves a few ULP from
+    # exp and log plus gamma_N from the mean -- the same class as
+    # cross_entropy. Measured 6.0e-8 GPU against CPU, ~170x inside this.
+    # atol is load-bearing: the per-element loss goes to zero for a confident
+    # correct prediction (x = 500, y = 1), where a relative check means nothing.
+    "binary_cross_entropy_with_logits": Tolerance(
+        Kind.RELATIVE, rtol=1e-5, atol=1e-5,
+        note="exp on (0,1] then log on (1,2], neither amplifying; plus the mean's gamma_N"),
+    # kl_div is the one loss here where CANCELLATION is expected rather than
+    # avoided: the pointwise value is t * (log t - input), and log t - input
+    # goes to zero exactly when the distributions agree -- which is the minimum
+    # the objective is driving towards. Near it the relative error of the
+    # difference is unbounded while its absolute error stays at the logarithm's
+    # few ULP, so atol is doing the real work and rtol only covers the tail.
+    # Measured 3.0e-8 GPU against CPU.
+    "kl_div": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
+                        note="difference of logs, cancelling at the minimum; atol carries it"),
+    # huber: sub, abs, square and the scalar multiplies are each one rounding,
+    # and neither branch cancels -- the linear branch evaluates |d| - delta/2
+    # only where |d| >= delta, so the operands never approach each other. Every
+    # term is non-negative, so sum|terms| == N*result and the mean's backward
+    # bound collapses to a RELATIVE gamma_N exactly as mse_loss's does.
+    # Measured bit-identical GPU against CPU, which is what a chain of exact
+    # operations and a selection should give.
+    "huber_loss": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,
+                            note="non-cancelling branches, non-negative terms; gamma_N relative"),
     # Same shape as layer_norm, one step shorter: the statistics arrive
     # already computed, so the only error here is the rsqrt and the affine.
     "batch_norm": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-5,

@@ -1155,6 +1155,58 @@ def test_mse_loss_on_gpu(shape):
     compare(ctx, run(gpu_device()), run(V.cpu))
 
 
+@pytest.mark.parametrize("shape", [(8,), (4, 5), (2, 3, 4)])
+def test_binary_cross_entropy_with_logits_on_gpu(shape):
+    """maximum, abs, neg, exp, add-scalar, log, sub, mul and a mean, composed."""
+    rng = np.random.default_rng(SEED)
+    logits = make_data(rng, shape, "any")
+    target = rng.random(shape).astype(np.float32)
+
+    def run(dev):
+        return V.binary_cross_entropy_with_logits(V.tensor(logits, device=dev),
+                                                  V.tensor(target, device=dev)).numpy()
+
+    ctx = Context(op="binary_cross_entropy_with_logits", layout=Layout(shape), dtype="f32",
+                  seed=SEED, inputs=[logits, target])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+@pytest.mark.parametrize("shape", [(8,), (4, 5)])
+def test_kl_div_on_gpu(shape):
+    """Exercises the `where` that keeps 0 * log(0) out of the result.
+
+    The target deliberately contains exact zeros: on the device both branches
+    of the selection are evaluated, so log(0) really does produce -inf here and
+    the test is that it gets discarded rather than multiplied.
+    """
+    rng = np.random.default_rng(SEED)
+    log_input = np.log(rng.random(shape).astype(np.float32) + 1e-3)
+    target = rng.random(shape).astype(np.float32)
+    target.reshape(-1)[::3] = 0.0
+
+    def run(dev):
+        return V.kl_div(V.tensor(log_input, device=dev),
+                        V.tensor(target, device=dev)).numpy()
+
+    ctx = Context(op="kl_div", layout=Layout(shape), dtype="f32", seed=SEED,
+                  inputs=[log_input, target])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
+@pytest.mark.parametrize("shape", [(8,), (4, 5), (2, 3, 4)])
+def test_huber_loss_on_gpu(shape):
+    """Inputs are scaled so both sides of the delta join occur in every shape."""
+    rng = np.random.default_rng(SEED)
+    a = make_data(rng, shape, "any") * 3.0
+    b = make_data(rng, shape, "any") * 3.0
+
+    def run(dev):
+        return V.huber_loss(V.tensor(a, device=dev), V.tensor(b, device=dev)).numpy()
+
+    ctx = Context(op="huber_loss", layout=Layout(shape), dtype="f32", seed=SEED, inputs=[a, b])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
 def test_arange_on_gpu():
     """fill and arange share a kernel -- a fill is an arange with slope 0 --
     so this covers the slope path that fill never exercises."""

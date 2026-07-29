@@ -134,6 +134,141 @@ def test_cross_entropy_extreme_logits():
     assert_close("cross_entropy(extreme)", vl, tl, TOLERANCES["transcendental"])
 
 
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+def test_binary_cross_entropy_with_logits(reduction):
+    logits = make_input((6, 4), seed=2400, low=-4.0, high=4.0)
+    # Soft targets, not just 0/1: torch allows them and the formula must not
+    # quietly assume a Bernoulli label.
+    target = make_input((6, 4), seed=2401, low=0.0, high=1.0)
+
+    vx = V.tensor(logits, requires_grad=True)
+    tx = torch.from_numpy(logits.copy()).requires_grad_(True)
+
+    vl = V.nn.binary_cross_entropy_with_logits(vx, V.tensor(target), reduction=reduction)
+    tl = torch.nn.functional.binary_cross_entropy_with_logits(
+        tx, torch.from_numpy(target.copy()), reduction=reduction)
+
+    assert_shape("bce_with_logits", vl, tl)
+    assert_close("bce_with_logits", vl, tl, TOLERANCES["transcendental"],
+                 inputs=[logits, target])
+
+    vl.sum().backward()
+    tl.sum().backward()
+    assert_close("bce_with_logits grad", vx.grad, tx.grad, GRAD_TOL, inputs=[logits, target])
+
+
+def test_bce_with_logits_survives_extreme_logits():
+    """The whole reason this takes logits rather than probabilities.
+
+    At |x| = 500 the naive -[y log s(x) + (1-y) log(1-s(x))] has already lost
+    the losing term to underflow and returns inf. The rearranged form evaluates
+    exp only at -|x|, so it stays finite and matches torch.
+    """
+    logits = np.array([[500.0, -500.0, 0.0]], dtype=np.float32)
+    target = np.array([[1.0, 0.0, 1.0]], dtype=np.float32)
+
+    vl = V.nn.binary_cross_entropy_with_logits(V.tensor(logits), V.tensor(target))
+    tl = torch.nn.functional.binary_cross_entropy_with_logits(
+        torch.from_numpy(logits.copy()), torch.from_numpy(target.copy()))
+
+    assert np.isfinite(vl.item()), "extreme logits produced a non-finite loss"
+    assert_close("bce_with_logits(extreme)", vl, tl, TOLERANCES["transcendental"])
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+@pytest.mark.parametrize("log_target", [False, True])
+def test_kl_div(reduction, log_target):
+    logits = make_input((5, 6), seed=2500, low=-2.0, high=2.0)
+    other = make_input((5, 6), seed=2501, low=-2.0, high=2.0)
+
+    vx = V.tensor(logits, requires_grad=True)
+    tx = torch.from_numpy(logits.copy()).requires_grad_(True)
+
+    # input is ALWAYS log-probabilities; target follows log_target.
+    v_in = V.log_softmax(vx, -1)
+    t_in = torch.log_softmax(tx, -1)
+    t_tgt = torch.log_softmax(torch.from_numpy(other.copy()), -1)
+    if not log_target:
+        t_tgt = t_tgt.exp()
+    target = t_tgt.numpy()
+
+    vl = V.nn.kl_div(v_in, V.tensor(target), reduction=reduction, log_target=log_target)
+    tl = torch.nn.functional.kl_div(t_in, t_tgt, reduction=reduction, log_target=log_target)
+
+    assert_shape("kl_div", vl, tl)
+    assert_close("kl_div", vl, tl, TOLERANCES["transcendental"], inputs=[logits, target])
+
+    vl.sum().backward()
+    tl.sum().backward()
+    assert_close("kl_div grad", vx.grad, tx.grad, GRAD_TOL, inputs=[logits, target])
+
+
+def test_kl_div_zero_target_is_zero_not_nan():
+    """t log t is 0 at t = 0, but the arithmetic gets there via 0 * -inf.
+
+    A target with exact zeros is ordinary -- any one-hot distribution has them --
+    so this is the common case, not a corner.
+    """
+    log_input = np.log(np.array([[0.25, 0.25, 0.5]], dtype=np.float32))
+    target = np.array([[0.0, 0.0, 1.0]], dtype=np.float32)
+
+    vl = V.nn.kl_div(V.tensor(log_input), V.tensor(target), reduction="sum")
+    tl = torch.nn.functional.kl_div(torch.from_numpy(log_input.copy()),
+                                    torch.from_numpy(target.copy()), reduction="sum")
+
+    assert np.isfinite(vl.item()), "a zero in the target produced NaN or inf"
+    assert_close("kl_div(zero target)", vl, tl, TOLERANCES["transcendental"])
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+@pytest.mark.parametrize("delta", [0.5, 1.0, 2.0])
+def test_huber_loss(reduction, delta):
+    pred = make_input((5, 4), seed=2600)
+    targ = make_input((5, 4), seed=2601)
+
+    vp = V.tensor(pred, requires_grad=True)
+    tp = torch.from_numpy(pred.copy()).requires_grad_(True)
+
+    vl = V.nn.huber_loss(vp, V.tensor(targ), reduction=reduction, delta=delta)
+    tl = torch.nn.functional.huber_loss(tp, torch.from_numpy(targ.copy()),
+                                        reduction=reduction, delta=delta)
+
+    assert_shape("huber_loss", vl, tl)
+    assert_close("huber_loss", vl, tl, TOLERANCES["reduction"], inputs=[pred, targ])
+
+    vl.sum().backward()
+    tl.sum().backward()
+    assert_close("huber_loss grad", vp.grad, tp.grad, GRAD_TOL, inputs=[pred, targ])
+
+
+def test_huber_loss_covers_both_branches():
+    """Errors deliberately placed either side of delta, and exactly on it.
+
+    A version that took only one branch would still pass a random-input test if
+    the sample happened to land there, so the errors are chosen rather than
+    drawn: 0.5 and -0.5 are quadratic, 5 and -5 linear, 1.0 is the join.
+    """
+    delta = 1.0
+    pred = np.array([[0.5, -0.5, 5.0, -5.0, 1.0]], dtype=np.float32)
+    targ = np.zeros_like(pred)
+
+    vl = V.nn.huber_loss(V.tensor(pred), V.tensor(targ), reduction="none", delta=delta)
+    tl = torch.nn.functional.huber_loss(torch.from_numpy(pred.copy()),
+                                        torch.from_numpy(targ.copy()),
+                                        reduction="none", delta=delta)
+    assert_close("huber_loss(branches)", vl, tl, TOLERANCES["reduction"])
+
+    # At the join the two pieces must agree, which is what makes the loss C1.
+    at_join = vl.numpy()[0][4]
+    assert abs(at_join - 0.5 * delta * delta) < 1e-6, f"discontinuous at delta: {at_join}"
+
+
+def test_huber_loss_rejects_non_positive_delta():
+    a = V.tensor(np.zeros((2, 2), dtype=np.float32))
+    with pytest.raises(ValueError, match="delta must be positive"):
+        V.nn.huber_loss(a, a, delta=0.0)
+
+
 @pytest.mark.parametrize("momentum", [0.0, 0.9])
 def test_sgd_parameter_trajectory(momentum):
     """Compare the whole trajectory, not just the endpoint.

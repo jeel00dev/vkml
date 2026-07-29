@@ -13,9 +13,9 @@ namespace vkml {
 namespace {
 
 /// Overloads taking a name exist for operators that are *compositions* and so
-/// have no OpKind of their own -- cross_entropy, mse_loss. Without them such an
-/// operator would have to borrow an unrelated enumerator purely to phrase its
-/// error, and the message would name the wrong thing.
+/// have no OpKind of their own -- every loss in this file is one. Without them
+/// such an operator would have to borrow an unrelated enumerator purely to
+/// phrase its error, and the message would name the wrong thing.
 void check_same_device(const Tensor& a, const Tensor& b, std::string_view op) {
     VKML_CHECK(a.device() == b.device(), DeviceError,
                "'{}' operands are on different devices: {} and {}", op, a.device().str(),
@@ -328,6 +328,59 @@ Tensor mse_loss(const Tensor& input, const Tensor& target, Reduction reduction) 
     check_same_dtype(input, target, "mse_loss");
     check_same_device(input, target, "mse_loss");
     return apply_reduction(square(sub(input, target)), reduction);
+}
+
+Tensor binary_cross_entropy_with_logits(const Tensor& logits, const Tensor& target,
+                                        Reduction reduction) {
+    check_same_dtype(logits, target, "binary_cross_entropy_with_logits");
+    check_same_device(logits, target, "binary_cross_entropy_with_logits");
+
+    // max(x, 0) - x*y + log(1 + exp(-|x|)). Every term is finite for any finite
+    // logit: the first two are linear, and exp is only ever called on a
+    // non-positive argument, so its result lands in (0, 1] and cannot overflow.
+    const Tensor hinge = maximum(logits, zeros_like(logits));
+    const Tensor softplus = log(add(exp(neg(abs(logits))), 1.0));
+    return apply_reduction(add(sub(hinge, mul(logits, target)), softplus), reduction);
+}
+
+Tensor kl_div(const Tensor& input, const Tensor& target, Reduction reduction, bool log_target) {
+    check_same_dtype(input, target, "kl_div");
+    check_same_device(input, target, "kl_div");
+
+    if (log_target) {
+        // Both sides are already logs, so there is no log(0) to guard: a
+        // zero-probability class arrives as -inf and exp(-inf) = 0 zeroes the
+        // term without the arithmetic ever forming 0 * -inf.
+        return apply_reduction(mul(exp(target), sub(target, input)), reduction);
+    }
+
+    // t * (log t - input), which is 0 at t = 0 by the limit of t log t. The
+    // arithmetic gets there as 0 * -inf = NaN instead, so the zero is selected
+    // rather than computed. Both branches of `where` are evaluated -- that is
+    // what elementwise selection means -- so log(0) still occurs and produces
+    // -inf; it is the multiply that would poison the result, and that product
+    // is discarded.
+    const Tensor pointwise = mul(target, sub(log(target), input));
+    return apply_reduction(
+        where(greater(target, zeros_like(target)), pointwise, zeros_like(pointwise)), reduction);
+}
+
+Tensor huber_loss(const Tensor& input, const Tensor& target, Reduction reduction, double delta) {
+    check_same_dtype(input, target, "huber_loss");
+    check_same_device(input, target, "huber_loss");
+    // ShapeError, following dropout()'s probability check: it is the type that
+    // maps to Python's ValueError, which is what a bad scalar argument is.
+    VKML_CHECK(delta > 0.0, ShapeError, "huber_loss() delta must be positive, got {}", delta);
+
+    const Tensor error = sub(input, target);
+    const Tensor magnitude = abs(error);
+
+    // Quadratic inside delta, linear outside. The two agree in value and slope
+    // at the join, which is the whole point of the loss.
+    const Tensor quadratic = mul(square(error), 0.5);
+    const Tensor linear = mul(sub(magnitude, 0.5 * delta), delta);
+    return apply_reduction(where(less(magnitude, full_like(magnitude, delta)), quadratic, linear),
+                           reduction);
 }
 
 Tensor cross_entropy(const Tensor& logits, const Tensor& target, Reduction reduction) {

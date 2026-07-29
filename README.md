@@ -123,7 +123,7 @@ pip install . -C cmake.define.VKML_VULKAN=OFF
 | Component | What it provides |
 |---|---|
 | `vkml` | Tensors, 65 operators, dtypes, devices, lazy evaluation |
-| `vkml.nn` | `Module`, Linear, Conv2d, MaxPool2d, AvgPool2d, BatchNorm2d, LayerNorm, Dropout, Embedding, MultiheadAttention, TransformerEncoderLayer, activations, losses |
+| `vkml.nn` | `Module`, Linear, Conv2d, MaxPool2d, AvgPool2d, BatchNorm2d, LayerNorm, Dropout, Embedding, MultiheadAttention, TransformerEncoderLayer, activations, and the MSE, cross-entropy, BCE-with-logits, KL-divergence and Huber losses |
 | `vkml.optim` | SGD (with momentum), Adam, AdamW, RMSProp |
 | `vkml.data` | `Dataset`, `ArrayDataset`, `DataLoader`, reproducible shuffling, `split` |
 | `vkml.serialize` | Checkpoints as a zip of `.npy` arrays plus JSON metadata |
@@ -210,7 +210,7 @@ Windows and macOS.
 - **Vulkan is all-or-nothing.** An operator the GPU cannot run raises rather than
   falling back to the CPU. Two cases exist: `prod`, and `max_pool2d` given a
   non-contiguous input.
-- **Missing layers:** Conv1d/Conv3d, BCE/KL/Huber losses, gradient checkpointing.
+- **Missing layers:** Conv1d/Conv3d, gradient checkpointing.
 - **Rank ≤ 4.** A push-constant budget decision I made deliberately, not an
   oversight.
 - **f16 matmul is correct but slower than f32**, because the vectorised tile load

@@ -372,6 +372,45 @@ def cross_entropy(logits: V.Tensor, target: V.Tensor, reduction: str = "mean") -
     return V.cross_entropy(logits, target, _reduction(reduction))
 
 
+def binary_cross_entropy_with_logits(
+    logits: V.Tensor, target: V.Tensor, reduction: str = "mean"
+) -> V.Tensor:
+    """Binary cross-entropy from logits, as torch's function of the same name.
+
+    TAKES LOGITS, like `cross_entropy`. There is no variant taking
+    probabilities: `log(p)` underflows once the model is confident, and torch's
+    probability form only survives that by clamping the logarithm. Pass whatever
+    you would have handed to sigmoid.
+    """
+    return V.binary_cross_entropy_with_logits(logits, target, _reduction(reduction))
+
+
+def kl_div(
+    input: V.Tensor, target: V.Tensor, reduction: str = "mean", log_target: bool = False
+) -> V.Tensor:
+    """Kullback-Leibler divergence, following torch.nn.functional.kl_div.
+
+    `input` HOLDS LOG-PROBABILITIES -- log_softmax output, not softmax output --
+    and `target` holds probabilities unless `log_target` is set. That asymmetry
+    is torch's and catches everyone once.
+
+    "mean" averages over every element, as torch's does, which is not the
+    mathematical definition. For that, use "sum" and divide by the batch size.
+    """
+    return V.kl_div(input, target, _reduction(reduction), log_target)
+
+
+def huber_loss(
+    pred: V.Tensor, target: V.Tensor, reduction: str = "mean", delta: float = 1.0
+) -> V.Tensor:
+    """Huber loss: quadratic within `delta` of the target, linear beyond it.
+
+    Bounds what a single outlier can contribute to the gradient. Note this is
+    not torch's smooth_l1_loss, which is this divided by delta.
+    """
+    return V.huber_loss(pred, target, _reduction(reduction), delta)
+
+
 # ---------------------------------------------------------------------------
 # Layers with state that is not a parameter
 #
