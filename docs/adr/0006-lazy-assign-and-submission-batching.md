@@ -451,3 +451,85 @@ next person reaches for the validation layer expecting an answer.
 * The tests are worth keeping as value-regression guards. They are labelled in
   the file with what they do and do not detect, so nobody later mistakes a green
   run for proof.
+
+---
+
+## 9. Stage B, part way: three findings that reshape the rest
+
+Multi-root realize is built and measured (4 tensors: 4 submissions -> 1). Before
+adding the Assign node, three assumptions surfaced. Two were validated by
+experiment, one by reading the type system. None of them was anticipated in 4.
+
+### Finding 1 -- `detach()` forces realization, so it CUTS the graph. Measured.
+
+```
+building a*2.0 lazily              0 submissions
+calling .detach() on it            1 submission
+building then realizing explicitly 1 submission
+```
+
+`autograd.cpp` `detach()` realizes its source when that source is not yet
+computed -- it has to, because it shares the source's *buffer*, and an unbound
+node has none to share.
+
+**Every optimiser calls `.detach()` on its intermediates** (`_velocity`, `_m`,
+`_v`), so each parameter's update is cut at that point no matter how the realize
+calls are arranged. A prototype SGD that builds all updates lazily and calls
+`V.realize()` once still measured:
+
+```
+SGD today              16 submissions   1.307 ms
+SGD batched realize    13 submissions   1.174 ms
+```
+
+13, not the 1 + N = 9 predicted. Parameters agree to 1e-6 over 30 steps, so this
+is a cost finding, not a correctness one. (An earlier run of this prototype
+reported the parameters DISAGREEING; that was an unseeded numpy RNG in the
+harness giving the two arms different training data, not a library defect.)
+
+**This caps what any batching can achieve until `detach()` stops forcing
+evaluation**, and that is a change to autograd, not to the optimiser.
+
+### Finding 2 -- nothing would hold the Assign node. Verified.
+
+If `assign_` builds an Assign node and returns, no live reference points at it,
+so it is never scheduled and the assignment silently never happens.
+
+The fix is the one tinygrad uses: re-point the tensor at the Assign node in
+place. That works here -- verified that `Module.parameters()` returns the same
+Python object every call, and the same object as the module attribute, so a node
+swap is visible to the model. But it leads directly to:
+
+### Finding 3 -- an Assign chain would accumulate across steps. Read, not run.
+
+`Node::src` is `std::array<std::shared_ptr<Node>, kMaxSrc>`. If step N's Assign
+holds step N-1's Assign as a source, each step's nodes keep the previous step's
+alive, transitively, for the whole run.
+
+`kFlagComputed` stops the SCHEDULER walking back, but it does not drop the
+ownership edge, and nothing else does either: there is no site in `dispatch/`,
+`graph/` or `tensor.cpp` that clears `src` after realization. So the chain is an
+ownership leak, growing by one graph per step. Note `~Node` already tears down
+iteratively *because* long chains occur -- the machinery for deep chains exists,
+which is not the same as preventing this one.
+
+tinygrad handles exactly this in `Tensor.assign`, with a branch on the uop's
+`base` and `has_buffer_identity()`. Whatever vkML does needs an equivalent, and
+it is not a detail of the Assign node -- it is most of the work.
+
+**I have not run this one.** It follows from the ownership type and the absence
+of any cleanup site; confirming it needs the Assign node to exist.
+
+### What this makes the remaining task
+
+The Assign node is still the right destination, but it is no longer the next
+step, and it is bigger than 4 estimated. Two things now sit in front of it:
+
+1. **`detach()` must stop forcing evaluation** for batching to be worth anything.
+   That is an autograd change with its own correctness surface.
+2. **A collapse rule** so an assigned tensor does not retain its history.
+
+Both are ADR-sized. Recorded here rather than absorbed into an implementation
+commit, because the estimate in 4 -- "the largest change here" -- understated it
+in a specific way worth naming: the cost is not in the Assign node, it is in the
+two invariants around it.
