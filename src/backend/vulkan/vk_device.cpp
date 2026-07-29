@@ -177,10 +177,19 @@ void check(VkResult r, const char* what) {
 }
 
 std::string DeviceInfo::describe() const {
+    // "controllable N..M" would be a lie on a device that reports a range but
+    // permits no stage to pin a width -- RADV RENOIR reports 64..64 and an
+    // empty requiredSubgroupSizeStages. Say which it is.
+    const bool pinnable =
+        subgroup_size_control && (required_subgroup_size_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+    const std::string subgroup_control =
+        pinnable ? std::format("controllable {}..{}", min_subgroup_size, max_subgroup_size)
+                 : std::format("fixed; not pinnable for compute, reports {}..{}", min_subgroup_size,
+                               max_subgroup_size);
     return std::format(
         "{} (vendor 0x{:04x} device 0x{:04x}, driver {}, Vulkan {}.{}.{})\n"
         "  VRAM ................ {:.2f} GiB device-local, {:.0f} MiB host-visible+device-local\n"
-        "  subgroup ............ size {} (controllable {}..{})\n"
+        "  subgroup ............ size {} ({})\n"
         "  workgroup ........... max {} invocations, {} KiB shared memory\n"
         "  compute units ....... {}\n"
         "  push constants ...... {} bytes\n"
@@ -192,7 +201,7 @@ std::string DeviceInfo::describe() const {
         VK_API_VERSION_MINOR(api_version), VK_API_VERSION_PATCH(api_version),
         static_cast<double>(device_local_bytes) / (1024.0 * 1024.0 * 1024.0),
         static_cast<double>(host_visible_device_local_bytes) / (1024.0 * 1024.0), subgroup_size,
-        min_subgroup_size, max_subgroup_size, max_workgroup_invocations, max_shared_memory / 1024,
+        subgroup_control, max_workgroup_invocations, max_shared_memory / 1024,
         shader_core_count, max_push_constants,
         static_cast<double>(max_allocation_size) / (1024.0 * 1024.0 * 1024.0),
         buffer_device_address, scalar_block_layout, timeline_semaphore, shader_float16, shader_int8,
@@ -431,6 +440,7 @@ DeviceInfo query_device_info(VkPhysicalDevice physical) {
     info.subgroup_size = props11.subgroupSize;
     info.min_subgroup_size = subgroup_size_props.minSubgroupSize;
     info.max_subgroup_size = subgroup_size_props.maxSubgroupSize;
+    info.required_subgroup_size_stages = subgroup_size_props.requiredSubgroupSizeStages;
     info.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
     for (int i = 0; i < 3; ++i) {
         info.max_workgroup_count[i] = limits.maxComputeWorkGroupCount[i];
@@ -730,6 +740,9 @@ DeviceCapabilities Context::capabilities() const {
 
     c.subgroup_ops = true;
     c.subgroup_size = info_.subgroup_size;
+    c.can_pin_subgroup_size =
+        info_.subgroup_size_control &&
+        (info_.required_subgroup_size_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
     c.min_subgroup_size = info_.min_subgroup_size;
     c.max_subgroup_size = info_.max_subgroup_size;
 

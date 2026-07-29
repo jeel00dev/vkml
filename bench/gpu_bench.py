@@ -203,8 +203,21 @@ def run_all(device) -> list[Sample]:
                            lambda a=a, b=b: V.matmul(a, b).numpy(), reps=12))
 
     # -- subgroup scaling ---------------------------------------------------
+    # A width the device cannot pin is not a slow arm, it is an absent one. The
+    # backend rejects an out-of-range size, and a device may refuse pinning for
+    # compute outright (RADV RENOIR advertises subgroupSizeControl with an empty
+    # requiredSubgroupSizeStages). Both used to be reported as ordinary results:
+    # before the backend gained that second check the driver ignored the request
+    # and the arm silently measured an UNPINNED run under a "wave32" label, which
+    # is worse than a missing row. Skip what cannot be honoured, and say so.
     x = V.tensor(rng.random((1024, 1024), dtype=np.float32), device=device)
+    caps = V.vulkan_capabilities(device.index)
     for sg, tag in ((0, "driver"), (32, "wave32"), (64, "wave64")):
+        pinnable = caps["can_pin_subgroup_size"] and (
+            caps["min_subgroup_size"] <= sg <= caps["max_subgroup_size"])
+        if sg != 0 and not pinnable:
+            print(f"  skipping [{tag}]: this device cannot pin a compute subgroup size of {sg}")
+            continue
         V.vulkan_set_subgroup_override(sg)
         out.append(measure(f"sum 1024x1024 [{tag}]", "subgroup",
                            lambda x=x: V.sum(x, [1]).numpy()))

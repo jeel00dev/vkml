@@ -819,6 +819,7 @@ NB_MODULE(_vkml_core, m) {
             nb::dict d;
             d["fp16_compute"] = c.fp16_compute;
             d["subgroup_size"] = c.subgroup_size;
+            d["can_pin_subgroup_size"] = c.can_pin_subgroup_size;
             d["min_subgroup_size"] = c.min_subgroup_size;
             d["max_subgroup_size"] = c.max_subgroup_size;
             d["global_float_atomics"] = c.global_float_atomics;

@@ -30,6 +30,11 @@ struct DeviceInfo {
     bool timeline_semaphore = false;
     bool synchronization2 = false;
     bool subgroup_size_control = false;
+    /// Which shader stages accept a pinned subgroup size. The FEATURE being
+    /// present does not imply compute is in this mask: RADV RENOIR reports
+    /// subgroupSizeControl but a stage mask of 0, and pinning a size there is
+    /// a validation error. Both must be checked (see vk_pipeline.cpp).
+    VkShaderStageFlags required_subgroup_size_stages = 0;
     bool shader_float16 = false;
     bool shader_int8 = false;
     bool shader_int16 = false;

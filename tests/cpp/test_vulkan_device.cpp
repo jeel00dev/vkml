@@ -24,6 +24,18 @@ bool have_device() {
     return present;
 }
 
+/// Whether this device permits pinning a compute subgroup size at all.
+///
+/// Two independent capabilities are involved and checking only the first is a
+/// bug: subgroupSizeControl says the feature exists, requiredSubgroupSizeStages
+/// says which stages may use it. RADV RENOIR advertises the feature with an
+/// empty stage mask, so a size that is comfortably inside [min, max] is still
+/// rejected. Tests that pin a width must skip entirely on such a device.
+bool compute_size_pinnable(const vkml::vk::Context& ctx) {
+    return ctx.info().subgroup_size_control &&
+           (ctx.info().required_subgroup_size_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+}
+
 }  // namespace
 
 TEST_CASE("vulkan device enumeration") {
@@ -71,6 +83,15 @@ TEST_CASE("vulkan context creation and capability reporting") {
         CHECK(caps.global_float_atomics == info.global_float_atomic_add);
         CHECK(caps.cooperative_matrix == info.cooperative_matrix);
         CHECK(caps.max_shared_memory_bytes == info.max_shared_memory);
+        // Pinning needs BOTH the feature and compute in the stage mask, so the
+        // capability must never be broader than the feature it derives from.
+        // A device reporting the feature with an empty mask (RADV RENOIR) must
+        // come out false here, and the range must stay readable either way.
+        CHECK(caps.can_pin_subgroup_size == compute_size_pinnable(ctx));
+        if (caps.can_pin_subgroup_size) {
+            CHECK(info.subgroup_size_control);
+        }
+        CHECK(caps.min_subgroup_size <= caps.max_subgroup_size);
         CHECK(caps.total_memory_bytes == info.device_local_bytes);
         CHECK(caps.asynchronous);
         // Device-local memory is not host-mappable, which is what forces every
@@ -215,6 +236,27 @@ TEST_CASE("private array spill threshold is a property of the allocator") {
             .stats;
     };
 
+    // Does this driver report SCRATCH at all?
+    //
+    // `available` only says the driver answered the executable-properties query;
+    // it does not promise any particular statistic within it. vk_pipeline.cpp
+    // normalises vendor statistic names, and a driver that spells scratch
+    // differently -- or omits it -- leaves the field at 0, which is
+    // indistinguishable from "did not spill".
+    //
+    // A positive control settles it. A 128-float private array is far past the
+    // documented threshold and MUST spill on any allocator; if that reports zero
+    // scratch, the number is missing rather than true, and every assertion below
+    // that reads it would be testing the driver's vocabulary. AMD's Windows
+    // driver is such a driver -- 4 of these failed there (issue #6).
+    const bool reports_scratch = [&] {
+        const auto spilled = probe(128);
+        return spilled.available && spilled.scratch_bytes > 0;
+    }();
+    if (!reports_scratch) {
+        MESSAGE("this driver reports no scratch statistic; skipping the spill-size checks");
+    }
+
     SUBCASE("arrays at or below the threshold stay in registers") {
         for (const uint32_t n : {16U, 32U, 60U, 63U, 64U}) {
             const auto s = probe(n);
@@ -235,6 +277,9 @@ TEST_CASE("private array spill threshold is a property of the allocator") {
             const auto s = probe(n);
             if (!s.available) {
                 return;
+            }
+            if (!reports_scratch) {
+                continue;
             }
             CHECK(s.scratch_bytes > 0);
             // Law 3, derived rather than fitted. Two refinements over the
@@ -259,7 +304,9 @@ TEST_CASE("private array spill threshold is a property of the allocator") {
             return;
         }
         CHECK(at.scratch_bytes == 0);
-        CHECK(past.scratch_bytes > 0);
+        if (reports_scratch) {
+            CHECK(past.scratch_bytes > 0);
+        }
     }
 }
 
@@ -359,6 +406,19 @@ TEST_CASE("M3-R5: scope boundaries of the private-array budget") {
 
     MESSAGE("S3 -- subgroup 32 vs 64 (threshold and scratch scaling):");
     for (const uint32_t sg : {32U, 64U}) {
+        // Skip a width this device cannot provide. The backend rejects a
+        // required_subgroup_size outside [min, max] -- correctly -- and the
+        // rejection is an exception, so an unguarded 32 here throws out of the
+        // test case rather than failing an assertion. An integrated Renoir
+        // reports 64..64 and hit exactly that (issue #6).
+        //
+        // The stage mask is a second, independent gate: a device may support
+        // subgroupSizeControl yet not permit a required size for compute, in
+        // which case NO width is pinnable and every iteration is skipped.
+        if (!compute_size_pinnable(ctx) || sg < ctx.info().min_subgroup_size ||
+            sg > ctx.info().max_subgroup_size) {
+            continue;
+        }
         for (const uint32_t n : {64U, 65U, 80U}) {
             const auto s = probe(n, 0, 1, sg);
             if (!s.available)
@@ -418,6 +478,15 @@ TEST_CASE("M3-R5: the scope boundaries of A1 and A2 are permanent") {
 
     SUBCASE("S3 -- the threshold is per LANE; scratch is per WAVE") {
         for (const uint32_t sg : {32U, 64U}) {
+            // Skip a width this device cannot provide. The backend rejects a
+            // required_subgroup_size outside [min, max] -- correctly -- and the
+            // rejection is an exception, so an unguarded 32 here throws out of the
+            // test case rather than failing an assertion. An integrated Renoir
+            // reports 64..64 and hit exactly that (issue #6).
+            if (!compute_size_pinnable(ctx) || sg < ctx.info().min_subgroup_size ||
+                sg > ctx.info().max_subgroup_size) {
+                continue;
+            }
             const auto at = probe(64, 0, 1, sg);
             const auto past = probe(65, 0, 1, sg);
             if (!at.available)

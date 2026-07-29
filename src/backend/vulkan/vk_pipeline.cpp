@@ -127,6 +127,17 @@ const PipelineCache::Pipeline& PipelineCache::get(const std::string& name, const
         VKML_CHECK(ctx_.info().subgroup_size_control, DeviceError,
                    "kernel '{}' pins subgroup size {} but the device lacks subgroupSizeControl",
                    name, config.required_subgroup_size);
+        // The feature alone is not permission. requiredSubgroupSizeStages is a
+        // separate property naming the stages that accept a pinned size, and a
+        // device may advertise the feature with compute absent from the mask --
+        // RADV RENOIR reports exactly that. Pinning anyway is a validation
+        // error, silently ignored by the driver in a release build.
+        VKML_CHECK((ctx_.info().required_subgroup_size_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0,
+                   DeviceError,
+                   "kernel '{}' pins subgroup size {} but the device does not allow a required "
+                   "subgroup size for compute (requiredSubgroupSizeStages = {:#x})",
+                   name, config.required_subgroup_size,
+                   ctx_.info().required_subgroup_size_stages);
         VKML_CHECK(config.required_subgroup_size >= ctx_.info().min_subgroup_size &&
                        config.required_subgroup_size <= ctx_.info().max_subgroup_size,
                    DeviceError,

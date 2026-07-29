@@ -43,9 +43,19 @@ struct DeviceCapabilities {
     /// Native subgroup width, 0 when not applicable. 32 on the target GPU.
     uint32_t subgroup_size = 0;
 
-    /// Minimum and maximum selectable subgroup width, when the backend allows
-    /// pinning it per pipeline (VK_EXT_subgroup_size_control). RDNA1 wants
-    /// wave64 for reductions and wave32 elsewhere, so this is load-bearing.
+    /// Whether a compute pipeline may pin its subgroup width at all. The range
+    /// below is only selectable when this is true.
+    ///
+    /// Two separate things on Vulkan, and conflating them is a bug: the device
+    /// may expose VK_EXT_subgroup_size_control yet name no shader stage in
+    /// requiredSubgroupSizeStages, in which case the range is reported but no
+    /// width is pinnable. Observed on RADV RENOIR, which reports 64..64 and an
+    /// empty stage mask.
+    bool can_pin_subgroup_size = false;
+
+    /// Minimum and maximum selectable subgroup width, when
+    /// `can_pin_subgroup_size`. RDNA1 wants wave64 for reductions and wave32
+    /// elsewhere, so this is load-bearing.
     uint32_t min_subgroup_size = 0;
     uint32_t max_subgroup_size = 0;
 
