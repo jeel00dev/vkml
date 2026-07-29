@@ -66,26 +66,12 @@ def _stats(values):
             statistics.pstdev(values) if len(values) > 1 else 0.0)
 
 
-def _gpu_time(profile) -> float:
-    """GPU time for one submission.
-
-    Prefers the whole-submit window over the sum of per-dispatch entries.
-    Per-dispatch timestamps end at ALL_COMMANDS, a GLOBAL drain point, so when a
-    submission contains INDEPENDENT dispatches each entry's window stretches to
-    the end of the whole group and summing them counts the same elapsed time
-    once per dispatch. Split-K's eight partitions each report ~0.84 ms and sum
-    to 7.2 ms against a true 0.93 ms.
-
-    The submit window is correct in both cases: for a single dispatch it equals
-    the sum exactly (measured 2.720 == 2.720). Falling back to the sum keeps
-    this working against an older core that does not emit the entry.
-
-    See docs/MEASUREMENT-AUDIT.md 3.
-    """
-    for label, ms in profile:
-        if label == "submit":
-            return ms
-    return sum(ms for _, ms in profile)
+# One home for the rule, not two. This lived here first; it moved into the
+# library when examples/cifar100/train.py needed it as well, because the whole
+# hazard is that a second copy drifts and starts silently reporting
+# multiply-counted numbers. See vkml.vulkan_submit_ms and
+# docs/MEASUREMENT-AUDIT.md 3.
+_gpu_time = V.vulkan_submit_ms
 
 
 def measure(name, category, fn, reps=25, bytes_moved=0.0) -> Sample:

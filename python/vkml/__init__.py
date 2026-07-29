@@ -8,6 +8,8 @@ per docs/ARCHITECTURE.md 4.1.
 
 from __future__ import annotations
 
+import builtins as _builtins
+
 import numpy as _np
 
 from . import _vkml_core as _C
@@ -142,6 +144,33 @@ if has_vulkan:
     vulkan_timestamps_supported = _C.vulkan_timestamps_supported
     vulkan_set_profiling = _C.vulkan_set_profiling
     vulkan_last_profile = _C.vulkan_last_profile
+
+    def vulkan_submit_ms(profile) -> float:
+        """GPU milliseconds for one submission, read the only correct way.
+
+        `vulkan_last_profile()` is a footgun without this. Its per-dispatch
+        entries end at ALL_COMMANDS, a GLOBAL drain point, so when a submission
+        holds INDEPENDENT dispatches every entry's window stretches to the end
+        of the whole group and adding them counts the same elapsed time once per
+        dispatch. Measured here: split-K's eight partitions each report ~0.84 ms
+        and sum to 7.2 ms against a true 0.93 ms.
+
+        The `submit` entry brackets the whole command buffer and is right in
+        both cases -- for a single dispatch it equals the sum exactly, measured
+        2.720 == 2.720, which is what calibrates it. Falling back to the sum
+        keeps this working against a core too old to emit the entry.
+
+        Summing this across SEPARATE submissions is fine and is not what the
+        rule forbids; they are serial. See docs/MEASUREMENT-AUDIT.md 3, rule 3.
+        """
+        for label, ms in profile:
+            if label == "submit":
+                return ms
+        # _builtins.sum, not sum: this module exports vkml's own tensor `sum`,
+        # which shadows the builtin here and raises on a generator. Only the
+        # fallback branch touches it, so a plain sum() would have looked fine
+        # until it ran on a core too old to emit the submit entry.
+        return _builtins.sum(ms for _, ms in profile)
     vulkan_set_subgroup_override = _C.vulkan_set_subgroup_override
     vulkan_pipeline_stats = _C.vulkan_pipeline_stats
 
