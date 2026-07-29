@@ -257,25 +257,47 @@ def test_best_device_returns_a_device_and_a_reason():
 
 
 def test_best_device_falls_back_to_cpu_with_an_actionable_reason():
-    """No driver: the CPU, and a reason a user can act on.
+    """No usable GPU: the CPU, and a reason a user can act on.
 
     This is the case the whole ADR is about. It must not raise, must not be
     silent, and must say something better than a bare Vulkan enum.
+
+    THERE ARE TWO WAYS TO HAVE NO GPU and they need different advice, which is
+    why this branches instead of asserting one sentence. A Vulkan-enabled build
+    with no driver should talk about drivers; a build compiled without the
+    backend at all should talk about the build flag, because telling that user
+    to check their driver would send them after the wrong thing.
+
+    The first version asserted only the driver wording and passed here while
+    failing on three CI jobs, which build CPU-only -- the presets do not set
+    VKML_VULKAN. Reproduced locally afterwards by doing the same.
     """
     lines = _run(_BEST_DEVICE, _NO_DRIVER).strip().splitlines()
     name, why = eval(lines[-2]), eval(lines[-1])  # noqa: S307
-    assert name == "cpu", f"expected the CPU with no driver, got {name}"
+    assert name == "cpu", f"expected the CPU with no usable GPU, got {name}"
     assert "running on the CPU" in why, why
-    # Actionable: names a cause AND a next step, not just a result code.
-    assert "driver" in why.lower(), why
-    assert "vulkan_device_reports" in why, why
+
+    if V.has_vulkan:
+        # Vulkan compiled in, but the loader was pointed at nothing.
+        assert "driver" in why.lower(), why
+        assert "vulkan_device_reports" in why, why
+    else:
+        # No backend in this build at all. The remedy is a rebuild, not a driver.
+        assert "VKML_VULKAN" in why, why
+        assert "reinstall" in why.lower(), why
 
 
+@pytest.mark.skipif(not V.has_vulkan,
+                    reason="init_vulkan does not exist in a build without the Vulkan backend")
 def test_a_named_device_is_never_silently_downgraded():
     """`init_vulkan` must RAISE when the device asked for is unusable.
 
     The rule best_device() exists to preserve: someone who names a device wants
     that device, and quietly handing back the CPU hides what they asked about.
+
+    Skipped, not adapted, when the backend is absent: `init_vulkan` is only
+    bound when `has_vulkan` (see vkml/__init__.py), so there is no named device
+    to downgrade and the property is vacuous rather than violated.
     """
     snippet = (
         "import sys;sys.path.insert(0,'python');import vkml as V;"
