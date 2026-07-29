@@ -254,8 +254,78 @@ need to install it:
 | Windows | included with the Vulkan SDK and with most GPU drivers |
 
 The loader is not the same thing as the driver. If you have the loader but no
-driver, vkML will import and run on the CPU backend, and
-`vulkan_device_count()` returns `0`.
+driver, vkML imports fine and `vulkan_device_count()` returns `0` — you can
+still use the CPU backend, but you have to ask for it.
+
+---
+
+## Choosing a device
+
+**Using the GPU is an explicit choice.** vkML never transparently falls back to
+the CPU, and this is deliberate rather than unfinished — a hidden fallback makes
+performance impossible to reason about, because the same code silently runs at
+very different speeds depending on the machine.
+
+There are two ways to pick a device, and they behave differently on purpose.
+
+### Ask vkML to choose
+
+```python
+device, why = vkml.best_device()
+print(why)
+# using Vulkan device 0: AMD Radeon RX 5600M (RADV NAVI10) (discrete, Vulkan
+# 1.4.354, driver radv)
+```
+
+`best_device()` never raises. If no GPU is usable it returns the CPU **and tells
+you why**:
+
+```
+running on the CPU: the Vulkan loader could not create an instance
+(VK_ERROR_INCOMPATIBLE_DRIVER); either no driver is installed, or none of the
+installed drivers supports Vulkan 1.3. Call vkml.vulkan_device_reports() to see
+every device the loader can find and what each one is missing. README.md's
+Troubleshooting section covers installing a driver and the Vulkan loader.
+```
+
+It returns the reason rather than printing it, so you can log it, show it in a
+UI, or ignore it. It prefers a discrete GPU over an integrated one when both
+work, and names the one it picked.
+
+**This is the only path that falls back.**
+
+### Name a device yourself
+
+```python
+vkml.init_vulkan(0)
+device = vkml.device("vulkan:0")
+```
+
+Naming a device is a request, and it is **never quietly downgraded**. If that
+GPU is not usable, `init_vulkan` raises with the reason — because someone who
+typed `vulkan:1` wants *that* GPU, and handing back the CPU would hide the very
+thing they were asking about behind a number that merely looks slow.
+
+### If an operator has no GPU kernel
+
+vkML raises rather than moving that one operator to the CPU behind your back:
+
+```
+NotImplementedError: backend 'vulkan:0' cannot evaluate op 'prod'. vkML does not
+fall back to another device automatically -- doing so would move data through
+host memory on every use and be far slower without saying so. Move this part of
+the computation to the CPU explicitly, or open an issue if you need 'prod' on
+this backend.
+```
+
+Splitting a graph across devices means copying intermediates through host memory
+at every split, which we measured at roughly **three times the cost of the
+arithmetic being carried**. Doing that silently would turn a working model into
+a mysteriously slow one. Two operators are affected today: `prod`, and
+`max_pool2d` given a non-contiguous input.
+
+The reasoning is written up in
+[`docs/adr/0008-backend-selection-and-cpu-fallback.md`](docs/adr/0008-backend-selection-and-cpu-fallback.md).
 
 ---
 
@@ -469,9 +539,12 @@ half an hour in:
   against MoltenVK, but on an *Apple Paravirtual device* in a VM rather than
   physical Apple hardware, and GPU timestamps do not advance there, so the
   profiler cannot be used on that runner. Validation layers are clean on it.
-- **Vulkan is all-or-nothing.** If the GPU cannot run an operator, vkML raises an
-  error instead of falling back to the CPU. Two cases exist today: `prod`, and
-  `max_pool2d` with a non-contiguous input.
+- **Vulkan is all-or-nothing**, by design rather than by omission — see
+  [Choosing a device](#choosing-a-device). If the GPU cannot run an operator,
+  vkML raises instead of silently moving that work to the CPU. Two cases exist
+  today: `prod`, and `max_pool2d` with a non-contiguous input. It is listed here
+  as well as there because it is a real limit on what vkML can run, whatever the
+  reasoning behind it.
 - **Missing layers:** Conv1d, Conv3d, gradient checkpointing.
 - **Tensors are limited to rank 4.** This is a deliberate push-constant budget
   decision, not an oversight.

@@ -1,6 +1,6 @@
 # ADR 0008 — Backend selection, and why there is no automatic CPU fallback
 
-**Status:** proposed
+**Status:** accepted; both decisions implemented (7 below)
 **Date:** 2026-07-29
 **Covers:** task #16 ("implement CPU fallback via graph splitting, or state that
 Vulkan is all-or-nothing"), and the backend-selection experience around it.
@@ -167,3 +167,70 @@ on Vulkan, or a real model blocked by one.
   arrives at first use with a message this ADR improves.
 * No existing call gains a fallback. `init_vulkan()` still throws when the
   device it was asked for is unusable, which is decision 2's first rule.
+
+---
+
+## 7. As built
+
+### Decision 1 -- accepted. Vulkan stays all-or-nothing, and now says so.
+
+No graph splitting. The unsupported-operator error states the absence of a
+fallback and the reason for it, rather than leaving a reader to infer either:
+
+```
+NotImplementedError: backend 'vulkan:0' cannot evaluate op 'prod'. vkML does not
+fall back to another device automatically -- doing so would move data through
+host memory on every use and be far slower without saying so. Move this part of
+the computation to the CPU explicitly, or open an issue if you need 'prod' on
+this backend.
+```
+
+README.md gains a **Choosing a device** section stating the design directly:
+using the GPU is an explicit choice, and the reasoning is a hidden fallback
+makes performance impossible to reason about. The limitation stays listed under
+"What does not" as well -- it is a real limit on what vkML can run whatever the
+reasoning behind it, and a reader scanning limitations should not have to find
+the rationale first.
+
+### Decision 2 -- accepted. `best_device()`.
+
+```python
+device, why = vkml.best_device()
+```
+
+Never raises. Returns the reason rather than printing it. Prefers a discrete GPU
+over an integrated one when both qualify, and names the one it picked.
+
+Verified on this machine and on a simulated driver-less one
+(`VK_ICD_FILENAMES` pointing at a file that does not exist):
+
+```
+using Vulkan device 0: AMD Radeon RX 5600M (RADV NAVI10) (discrete,
+Vulkan 1.4.354, driver radv)
+
+running on the CPU: the Vulkan loader could not create an instance
+(VK_ERROR_INCOMPATIBLE_DRIVER); either no driver is installed, or none of the
+installed drivers supports Vulkan 1.3. Call vkml.vulkan_device_reports() ...
+```
+
+Both examples now call it for `--device auto`, replacing a block copied into
+each that said only "no Vulkan device found" -- so they report *which* GPU.
+
+### The layering constraint held
+
+4 predicted that `backend_for()` could not reach the Vulkan reason, and that is
+how it was built: its message says only that a device must be initialised, which
+is all layer 3 legitimately knows. The Vulkan-specific explanation is added by
+`init_vulkan`'s own error (layer 4, where `unavailable_reason()` lives) and by
+`best_device()` in Python. No registration-hint mechanism was added.
+
+One thing 4 did not anticipate: `init_vulkan`'s message would have quoted the
+result code TWICE, once directly and once inside `unavailable_reason()`. It now
+reports whichever actually explains the failure. An empty probe reason is
+reported distinctly, because it means a minimal instance works and the real one
+failed on something vkML asked for -- validation layers being the usual cause.
+
+### What is still true from 6
+
+`V.device("vulkan:0")` still constructs without validating; the failure arrives
+at first use, with the improved message. No existing call gained a fallback.
