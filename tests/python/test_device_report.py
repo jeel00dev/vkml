@@ -313,4 +313,7 @@ def test_unsupported_op_error_states_there_is_no_fallback():
     assert out != "NO_ERROR", "prod unexpectedly ran on Vulkan"
     message = eval(out)  # noqa: S307
     assert "does not fall back" in message, message
-    assert "CPU" in message, message
+    # Names a REMEDY the reader can run, not just a direction to go in. The
+    # first version of this message said "move it to the CPU" and gave no API --
+    # and the ADR's draft suggested `t.to(vkml.cpu)`, which does not exist.
+    assert "vkml.tensor(" in message, message
