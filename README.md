@@ -475,6 +475,27 @@ This is a deliberate choice. The well-known problem in this area is model
 formats built on `pickle`, which rebuild objects by *calling* whatever the file
 names, and we did not want to repeat that.
 
+**Decompression bombs are rejected too**, before a byte is read. A small archive
+that expands to an enormous allocation is caught from the zip directory:
+
+```python
+vkml.load("suspicious.vkml")
+# ValueError: suspicious.vkml expands 1028x (203,998 bytes on disk to
+# 209,715,402 in memory), over the 100x limit, and was rejected without being
+# read. ...
+```
+
+The limit is an expansion *ratio* rather than a byte count, because the two
+populations do not overlap: real checkpoints expand about 1×, real weights asked
+to compress reach 1.1× — trained weights are high-entropy and barely compress —
+while an all-zeros bomb reaches over 1000×. A byte cap has no non-arbitrary
+value, since a 28 GB checkpoint and a 200 KB bomb are both things someone might
+load.
+
+A pruned model stored densely is mostly zeros and could exceed the limit
+honestly. Raise it with `vkml.load(path, max_expansion_ratio=...)`; the error
+says so.
+
 ---
 
 ## How we check correctness

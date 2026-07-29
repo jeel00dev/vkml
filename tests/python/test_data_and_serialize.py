@@ -499,3 +499,102 @@ def _rewrite_header(path, transform):
     with zipfile.ZipFile(path, "w") as archive:
         for name, payload in members.items():
             archive.writestr(name, payload)
+
+
+# ---------------------------------------------------------------------------
+# Decompression bombs
+#
+# A small archive that expands enormously. `load` rejects it from the zip
+# DIRECTORY, before reading a byte, so the allocation never happens. Bounded by
+# expansion RATIO rather than absolute size -- see serialize.py's module
+# docstring for the measurements behind that choice.
+# ---------------------------------------------------------------------------
+
+
+def _bomb(path, uncompressed_bytes: int = 64 * 1024 * 1024):
+    """A valid vkml checkpoint whose tensor member is highly compressible."""
+    payload = io.BytesIO()
+    zeros = np.zeros((uncompressed_bytes // 4,), dtype=np.float32)
+    np.lib.format.write_array(payload, zeros, allow_pickle=False)
+
+    header = json.dumps({
+        "format": "vkml-checkpoint", "version": 1, "keys": ["w"], "metadata": {},
+    }).encode()
+
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("vkml.json", header)
+        archive.writestr("tensors/w.npy", payload.getvalue())
+    return path
+
+
+def test_a_decompression_bomb_is_rejected(tmp_path):
+    """The core case: tiny on disk, enormous in memory."""
+    path = _bomb(tmp_path / "bomb.vkml")
+    assert path.stat().st_size < 1_000_000, "test bomb should be small on disk"
+
+    with pytest.raises(ValueError) as excinfo:
+        V.load(path)
+    message = str(excinfo.value)
+    assert "expands" in message, message
+    # Actionable: names the limit AND how to raise it.
+    assert "max_expansion_ratio" in message, message
+
+
+def test_the_bomb_is_rejected_without_being_read(tmp_path):
+    """Rejection must cost nothing -- the point is that the allocation this
+    guards against never happens.
+
+    Asserted by making every member unreadable after the directory is written:
+    the archive's compressed payload is overwritten with garbage, so any attempt
+    to actually decompress raises BadZipFile instead. A guard that reads first
+    and checks afterwards would surface that error instead of the size one.
+    """
+    path = _bomb(tmp_path / "bomb.vkml")
+    raw = bytearray(path.read_bytes())
+    # Corrupt the deflate stream of the first member, leaving the directory
+    # intact so the declared sizes still parse.
+    start = raw.find(b"PK\x03\x04")
+    raw[start + 200:start + 400] = b"\x00" * 200
+    path.write_bytes(raw)
+
+    with pytest.raises(ValueError, match="expands"):
+        V.load(path)
+
+
+def test_raising_the_limit_lets_a_genuine_file_through(tmp_path):
+    """The escape hatch the error message promises must actually work -- a
+    pruned model stored densely can compress this well and is not an attack."""
+    path = _bomb(tmp_path / "sparse.vkml")
+    checkpoint = V.load(path, max_expansion_ratio=float("inf"))
+    assert "w" in checkpoint.tensors
+    assert not checkpoint.tensors["w"].any(), "the payload is zeros"
+
+
+def test_ordinary_checkpoints_are_nowhere_near_the_limit(tmp_path):
+    """The guard must not fire on real data, compressed or not.
+
+    This is the measurement the threshold was chosen from, kept executable: real
+    weights are high-entropy and barely compress, so they sit ~100x below the
+    limit rather than near it.
+    """
+    rng = np.random.default_rng(0)
+    state = {"w": rng.standard_normal((256, 256)).astype(np.float32),
+             "b": rng.standard_normal((256,)).astype(np.float32)}
+
+    for compress in (False, True):
+        path = tmp_path / f"real-{compress}.vkml"
+        V.save(path, state, compress=compress)
+        with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            ratio = sum(e.file_size for e in entries) / sum(e.compress_size for e in entries)
+        assert ratio < 2.0, f"real weights expanded {ratio:.1f}x with compress={compress}"
+        V.load(path)  # and it loads
+
+
+def test_a_stored_uncompressed_archive_is_never_rejected(tmp_path):
+    """compress=False is the default, and cannot expand at all. The ratio is
+    exactly 1, which must not trip a boundary bug in the comparison."""
+    state = {"w": np.zeros((1024,), dtype=np.float32)}   # zeros, but STORED
+    path = tmp_path / "stored.vkml"
+    V.save(path, state, compress=False)
+    V.load(path)

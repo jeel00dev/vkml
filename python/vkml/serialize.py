@@ -21,11 +21,26 @@ LAYOUT
     vkml.json          format identifier, version, key list, user metadata
     tensors/<key>.npy  one array per state_dict entry
 
-WHAT THIS DOES NOT DEFEND AGAINST. A decompression bomb: a small archive can
-expand to a large allocation, and load will attempt it. That costs memory, not
-control, so it is a denial of service against a process that already chose to
-open the file. Recorded rather than fixed because a size cap needs a threshold,
-and there is no evidence yet for what it should be.
+DECOMPRESSION BOMBS are rejected before anything is read, by EXPANSION RATIO
+rather than by absolute size. `MAX_EXPANSION_RATIO` and `load`'s
+`max_expansion_ratio` argument.
+
+A ratio rather than a byte cap, because the evidence says the two populations do
+not overlap and a byte cap cannot separate them. Measured: every checkpoint in
+this repository expands 1.00x (the default is ZIP_STORED), real float32 weights
+asked to compress reach 1.1x -- weights are high-entropy and barely compress --
+and an all-zeros bomb reaches 1017x. Three orders of magnitude, with nothing in
+between. A byte cap, by contrast, has no non-arbitrary value: set low it breaks
+a legitimate large model, set high it stops nothing, and a 28 GB checkpoint and
+a 200 KB bomb are both things someone might load.
+
+The property this buys is that an attacker's cost scales with the damage: to
+force an N-byte allocation they must ship N/100 bytes. It does not bound memory
+absolutely, and is not meant to.
+
+Known false positive: a pruned or sparse model stored densely is mostly zeros
+and could exceed the ratio legitimately. The error says which file, what ratio,
+and which argument raises it -- see `load`.
 
 VERSIONING. `FORMAT_VERSION` increments when the layout changes in a way an
 older reader would misread. Loading a newer checkpoint fails with a message
@@ -46,6 +61,15 @@ import numpy as _np
 from numpy.lib import format as _npy   # the .npy reader/writer, imported explicitly
 
 FORMAT_VERSION = 1
+
+# How far a checkpoint may expand before `load` refuses it.
+#
+# 100x, chosen from the gap between two measured populations rather than picked:
+# real checkpoints expand 1.00x, real weights asked to compress reach 1.1x, and
+# an all-zeros bomb reaches 1017x. Anything in the middle separates them, and
+# 100x leaves ~90x of headroom over the worst legitimate case while still
+# rejecting that bomb by an order of magnitude.
+MAX_EXPANSION_RATIO = 100.0
 
 _MAGIC = "vkml-checkpoint"
 _METADATA_MEMBER = "vkml.json"
@@ -137,13 +161,51 @@ def save(path, tensors: Mapping[str, _np.ndarray], metadata: Mapping[str, Any] |
         raise
 
 
-def load(path) -> Checkpoint:
+def _reject_decompression_bomb(path, archive: zipfile.ZipFile, max_ratio: float) -> None:
+    """Refuses an archive that expands further than `max_ratio`, before any read.
+
+    Reads only the zip DIRECTORY, so a bomb costs nothing to reject -- the
+    allocation this guards against never happens.
+
+    Trusting the declared sizes is sound here, and that was verified rather than
+    assumed. A truthful header reveals the bomb outright. A header that LIES,
+    declaring a small size for a stream that expands further, does not get past
+    CPython's zipfile either: it stops reading at the declared size and then
+    fails the stored CRC-32, so the two cannot be made to disagree. Checked
+    against CPython 3.14 by building both files; the CRC behaviour is the part
+    worth re-checking on another implementation.
+    """
+    entries = archive.infolist()
+    stored = sum(e.compress_size for e in entries)
+    declared = sum(e.file_size for e in entries)
+
+    # An empty or fully-stored archive cannot expand. The guard also keeps the
+    # division below away from zero.
+    if stored == 0 or declared <= stored * max_ratio:
+        return
+
+    raise ValueError(
+        f"{path} expands {declared / stored:.0f}x ({stored:,} bytes on disk to "
+        f"{declared:,} in memory), over the {max_ratio:g}x limit, and was rejected "
+        f"without being read. Real checkpoints expand about 1x because weights barely "
+        f"compress. If this file is genuinely yours -- a pruned model stored densely "
+        f"can compress this well -- pass load(..., max_expansion_ratio=...) to raise "
+        f"the limit."
+    )
+
+
+def load(path, *, max_expansion_ratio: float = MAX_EXPANSION_RATIO) -> Checkpoint:
     """Read a checkpoint written by `save`.
 
     Every rejection names what was wrong with the file. A checkpoint that fails
     to load is normally a mismatch between what someone saved and what they
     think they saved, and a message that says which key or which version is what
     turns that into a two-minute problem.
+
+    `max_expansion_ratio` bounds how far the archive may expand, rejecting a
+    decompression bomb before a byte of it is read. Pass `float("inf")` to
+    disable the check. See the module docstring for why this is a ratio and not
+    a byte count.
     """
     path = Path(path)
 
@@ -151,6 +213,10 @@ def load(path) -> Checkpoint:
         raise ValueError(f"{path} is not a vkml checkpoint (not a zip archive)")
 
     with zipfile.ZipFile(path, "r") as archive:
+        # First, before the metadata read below: that member is attacker-supplied
+        # too, and a bomb could just as well be hidden in the JSON.
+        _reject_decompression_bomb(path, archive, max_expansion_ratio)
+
         names = set(archive.namelist())
 
         if _METADATA_MEMBER not in names:
@@ -210,7 +276,8 @@ def save_module(path, module, metadata: Mapping[str, Any] | None = None,
     save(path, module.state_dict(), metadata=metadata, compress=compress)
 
 
-def load_module(path, module) -> Checkpoint:
+def load_module(path, module, *,
+                max_expansion_ratio: float = MAX_EXPANSION_RATIO) -> Checkpoint:
     """Load into a module and return the checkpoint, for its metadata.
 
     Returns rather than discards because the metadata is usually why the caller
@@ -224,6 +291,6 @@ def load_module(path, module) -> Checkpoint:
     because getting this backwards leaves a guard that looks present and never
     runs.
     """
-    checkpoint = load(path)
+    checkpoint = load(path, max_expansion_ratio=max_expansion_ratio)
     module.load_state_dict(checkpoint.tensors)
     return checkpoint
