@@ -111,10 +111,19 @@ MUTATIONS = [
      "    return F32Buf(buf).v[idx];",
      "test_vulkan_agrees_with_the_cpu_oracle_bit_for_bit"),
 
-    ("shader store_f: narrow to f16 twice", "shaders/common.glsl",
-     "        F16Buf(buf).v[idx] = float16_t(value);",
-     "        F16Buf(buf).v[idx] = float16_t(float(float16_t(value * 1.0009765625)));",
-     "test_vulkan_agrees_with_the_cpu_oracle_bit_for_bit"),
+    # The narrowing rounding mode. `float16_t(value)` used to be here; it was
+    # replaced because SPIR-V leaves OpFConvert's rounding implementation-defined
+    # (issue #3), so these mutate the explicit rounding instead. Ties-to-even and
+    # subnormal handling are the two halves a naive implementation gets wrong.
+    ("shader store_f: round ties away from zero instead of to even",
+     "shaders/common.glsl",
+     "        if (rem > 0x1000u || (rem == 0x1000u && (h & 1u) != 0u)) {",
+     "        if (rem >= 0x1000u) {",
+     "test_narrowing_rounds_to_nearest_even"),
+
+    ("shader store_f: flush f16 subnormals to zero", "shaders/common.glsl",
+     "    if (mag < 0x2f800000u) {", "    if (mag < 0x38800000u) {",
+     "test_narrowing_rounds_to_nearest_even"),
 
     # --- CPU oracle --------------------------------------------------------
     ("philox(cpu): nine rounds instead of ten", "src/backend/cpu/philox.h",

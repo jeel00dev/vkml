@@ -781,6 +781,16 @@ derived up front from the reduction length (see §3, Fork 5):
 Any failure is investigated as a bug first. If a tolerance genuinely needs to change, the
 change must come with the error analysis that justifies it, recorded in the test.
 
+**f32 → f16 narrowing rounds to nearest, ties to even, on every backend and every driver.**
+This was implicit and therefore untrue for a while. SPIR-V leaves `OpFConvert`'s rounding mode
+implementation-defined, so `float16_t(x)` in a shader meant whatever the driver chose: RADV
+rounds to nearest even, AMD's Windows compiler rounds toward zero, and the same program
+produced different f16 values on the two. A tolerance cannot paper over that — the two answers
+are both "correct" to 1 ulp, and the determinism guarantee in §7.4 tier 7 is exact-match. The
+shaders therefore narrow in the integer domain (`f32_to_f16_bits` in `shaders/common.glsl`),
+where nothing is implementation-defined, and `tests/python/test_f16.py` checks it on the tie
+midpoints, which is where the rounding modes disagree and nowhere else.
+
 ### 7.4 Test tiers
 
 1. **Op unit tests** — every op, every dtype, contiguous + strided + broadcast + edge shapes

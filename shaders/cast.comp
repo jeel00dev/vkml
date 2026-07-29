@@ -44,7 +44,11 @@ void main() {
     }
 
     switch (DST_TYPE) {
-        case T_F16:  F16Buf(p.dst).v[i] = float16_t(value); break;
+        // Same reason store_f does not use float16_t(): OpFConvert's rounding
+        // mode is implementation-defined, and a cast is exactly where a user
+        // notices (issue #3).
+        case T_F16:  F16Buf(p.dst).v[i] =
+                         uint16BitsToFloat16(uint16_t(f32_to_f16_bits(value))); break;
         case T_I32:  I32Buf(p.dst).v[i] = int(value); break;
         case T_I64:  I64Buf(p.dst).v[i] = int64_t(value); break;
         case T_BOOL: U8Buf(p.dst).v[i]  = value != 0.0 ? uint8_t(1) : uint8_t(0); break;

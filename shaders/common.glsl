@@ -37,9 +37,10 @@ layout(buffer_reference, scalar, buffer_reference_align = 4) buffer F32Vec4Buf {
 layout(buffer_reference, scalar, buffer_reference_align = 4) buffer I32Buf { int   v[]; };
 layout(buffer_reference, scalar, buffer_reference_align = 8) buffer I64Buf { int64_t v[]; };
 layout(buffer_reference, scalar, buffer_reference_align = 2) buffer U16Buf { uint16_t v[]; };
-// Native f16 access. Using float16_t rather than manipulating bits means the
-// hardware does the IEEE-754 binary16 conversion, including subnormals -- which
-// is exactly what the CPU implementation goes to some length to preserve.
+// Native f16 access. The buffer is typed float16_t so a LOAD is a hardware
+// widening, which is exact and needs no help. A STORE goes through
+// f32_to_f16_bits below rather than the hardware narrowing, because that one
+// has an implementation-defined rounding mode -- see the comment there.
 layout(buffer_reference, scalar, buffer_reference_align = 2) buffer F16Buf { float16_t v[]; };
 layout(buffer_reference, scalar, buffer_reference_align = 1) buffer U8Buf  { uint8_t v[]; };
 
@@ -70,9 +71,71 @@ float load_f(uint64_t buf, uint idx, uint dtype) {
     return F32Buf(buf).v[idx];
 }
 
+/// f32 -> f16 with round-to-nearest-even, done in the integer domain.
+///
+/// WHY NOT `float16_t(value)`. SPIR-V leaves OpFConvert's rounding mode
+/// IMPLEMENTATION-DEFINED. RADV rounds to nearest even; AMD's Windows compiler
+/// rounds toward zero, so the same program produced different f16 results on
+/// the two, and the cross-backend oracle -- which compares bit for bit against
+/// the CPU's fp32_to_fp16, an RTE routine -- failed on Windows (issue #3).
+///
+/// Determinism across drivers is a project invariant (docs/ARCHITECTURE.md), so
+/// the fix cannot be a tolerance. It could have been the RoundingModeRTE
+/// execution mode from VK_KHR_shader_float_controls, but that needs a device
+/// capability, a fallback for devices without it, and trust that the driver
+/// honours it -- three things that are not verifiable from here. Nothing below
+/// is implementation-defined: integer shifts and comparisons only, no
+/// floating-point operation whose rounding a driver could choose.
+///
+/// This is bit-for-bit the same function as vkml::fp32_to_fp16 in
+/// src/core/dtype.cpp, which reaches the same result by a different route. The
+/// two are checked against each other over the whole f32 exponent range.
+uint f32_to_f16_bits(float value) {
+    const uint w = floatBitsToUint(value);
+    const uint sign = (w >> 16) & 0x8000u;
+    const uint mag = w & 0x7fffffffu;
+
+    // NaN must stay NaN. Truncating a payload can clear every mantissa bit and
+    // silently turn it into an infinity.
+    if (mag >= 0x7f800000u) {
+        return sign | (mag > 0x7f800000u ? 0x7e00u : 0x7c00u);
+    }
+
+    // Normal f16, i.e. |value| >= 2^-14. Subtracting the bias difference
+    // (127 - 15) << 23 rebiases the exponent and leaves the mantissa in place,
+    // so one shift produces the exponent and mantissa fields together.
+    if (mag >= 0x38800000u) {
+        uint h = (mag - 0x38000000u) >> 13;
+        const uint rem = mag & 0x1fffu;  // the 13 bits being discarded
+        if (rem > 0x1000u || (rem == 0x1000u && (h & 1u) != 0u)) {
+            ++h;  // carries mantissa -> exponent, and 65520 -> infinity, both wanted
+        }
+        return sign | h;
+    }
+
+    // Below 2^-32 nothing can round up even to the smallest subnormal, and the
+    // shift below would exceed 31 and be undefined. Zero (either sign) lands
+    // here too.
+    if (mag < 0x2f800000u) {
+        return sign;
+    }
+
+    // Subnormal f16: shift the significand, implicit bit restored, down to the
+    // 2^-24 grid. `shift` is 14..31 over the range that reaches this point.
+    const uint sig = (mag & 0x007fffffu) | 0x00800000u;
+    const uint shift = 126u - (mag >> 23);
+    const uint h = sig >> shift;
+    const uint rem = sig & ((1u << shift) - 1u);
+    const uint tie = 1u << (shift - 1u);
+    if (rem > tie || (rem == tie && (h & 1u) != 0u)) {
+        return sign | (h + 1u);  // may carry to the smallest normal, correctly
+    }
+    return sign | h;
+}
+
 void store_f(uint64_t buf, uint idx, float value, uint dtype) {
     if (dtype == T_F16) {
-        F16Buf(buf).v[idx] = float16_t(value);
+        F16Buf(buf).v[idx] = uint16BitsToFloat16(uint16_t(f32_to_f16_bits(value)));
         return;
     }
     F32Buf(buf).v[idx] = value;

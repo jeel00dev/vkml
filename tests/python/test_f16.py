@@ -372,3 +372,73 @@ def test_split_k_partials_stay_f32():
     b = V.tensor(np.ones((k, 1), dtype=np.float16), device=gpu_device())
 
     assert V.matmul(a, b).numpy().item() == float(k)
+
+
+# ---------------------------------------------------------------------------
+# The narrowing rounding mode
+# ---------------------------------------------------------------------------
+
+
+def _rounding_probe_values() -> np.ndarray:
+    """f32 values chosen so that a wrong rounding mode cannot hide.
+
+    The midpoints are the whole point. Halfway between two representable f16
+    values is exactly where round-to-nearest-even and round-toward-zero
+    disagree, and they disagree on HALF of them -- so a driver that truncates
+    fails this set immediately, while an ordinary random sample would pass it
+    almost every time.
+    """
+    every_f16 = np.arange(0, 1 << 16, dtype=np.uint16).view(np.float16).astype(np.float32)
+    finite = np.sort(np.unique(every_f16[np.isfinite(every_f16)]))
+    midpoints = ((finite[:-1] + finite[1:]) / 2.0).astype(np.float32)
+
+    named = np.array(
+        [
+            0.0, -0.0,
+            65504.0,        # largest finite f16
+            65519.0,        # rounds down to it
+            65520.0,        # rounds up to infinity
+            2.0**-14,       # smallest normal
+            2.0**-24,       # smallest subnormal
+            2.0**-25,       # a tie against zero: to even means zero
+            2.0**-26,       # underflows
+            np.inf, -np.inf,
+        ],
+        dtype=np.float32,
+    )
+
+    rng = np.random.default_rng(20260730)
+    scales = rng.choice([1e-8, 1e-4, 1.0, 1e4], size=200_000)
+    random = (rng.standard_normal(200_000) * scales).astype(np.float32)
+
+    return np.concatenate([
+        every_f16,
+        midpoints,
+        np.nextafter(midpoints, -np.inf).astype(np.float32),
+        np.nextafter(midpoints, np.inf).astype(np.float32),
+        named,
+        random,
+    ]).astype(np.float32)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_narrowing_rounds_to_nearest_even(device):
+    """f32 -> f16 must round to nearest even, on every backend and driver.
+
+    SPIR-V leaves OpFConvert's rounding mode implementation-defined. RADV
+    rounds to nearest even and AMD's Windows compiler rounds toward zero, so
+    `float16_t(x)` in a shader produced different numbers on the two and the
+    cross-backend oracle failed on Windows (issue #3). The shaders now do the
+    narrowing in the integer domain, where nothing is implementation-defined.
+
+    numpy is the reference rather than vkml's own CPU routine: an independent
+    implementation cannot share a mistake with either backend.
+    """
+    x = _rounding_probe_values()
+    got = V.tensor(x, device=on(device)).to(V.float16).numpy()
+    expected = x.astype(np.float16)
+
+    finite = ~np.isnan(x)
+    assert np.array_equal(
+        got.view(np.uint16)[finite], expected.view(np.uint16)[finite]
+    ), "narrowing does not round to nearest even"
