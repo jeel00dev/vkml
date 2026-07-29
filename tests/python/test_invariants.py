@@ -565,8 +565,12 @@ def test_submit_window_bounds_concurrent_dispatches():
         "b=V.tensor(rng.random((16384,64),dtype=np.float32),device=d);"
         "V.matmul(a,b).numpy();V.matmul(a,b).numpy();"
         "p=V.vulkan_last_profile();"
+        # Everything that is not the submit entry is a dispatch. Selected by
+        # exclusion, not by matching a literal label: dispatches are named
+        # after their op when the backend labels them, so an allow-list here
+        # would silently select NOTHING and pass a sum of zero.
         "sub=[ms for nm,ms in p if nm=='submit'];"
-        "dis=[ms for nm,ms in p if nm=='dispatch'];"
+        "dis=[ms for nm,ms in p if nm!='submit'];"
         "print(sub[0], sum(dis), len(dis))"
     )
 

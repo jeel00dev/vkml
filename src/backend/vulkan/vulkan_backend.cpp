@@ -958,6 +958,12 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
             continue;
         }
 
+        // Name every dispatch this node issues, so the profile report reads
+        // back by operation without anyone having to re-pair it with `nodes`.
+        if (rec.profiling()) {
+            rec.set_label(op_name(node->op));
+        }
+
         switch (node->op) {
             case OpKind::Full:
             case OpKind::Arange: {
@@ -1498,6 +1504,11 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 push.reduced = to_gpu_operand(split.reduced, esz);
 
                 if (debug_dispatch_enabled()) {
+                    // n_red is the width of the reduction; one workgroup per
+                    // OUTPUT means n_red == 1 is a whole dispatch that reduces
+                    // nothing. Logged because that case is invisible otherwise.
+                    VKML_LOG_INFO("  reduce n_out={} n_red={} axes_mask={:#x} src={}", n_out, n_red,
+                                  mask, src.shape.str());
                     trace_dispatch(*node, "reduce", cfg, sizeof(ReducePush), n_out,
                                    impl_->caps.subgroup_size);
                 }
@@ -2131,9 +2142,15 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
     rec.wait(ticket);
 
     if (debug_dispatch_enabled()) {
-        const auto& profile = rec.profile();
-        for (size_t i = 0; i < profile.size() && i < traced.size(); ++i) {
-            VKML_LOG_INFO("  timing op={} gpu={:.4f}ms", op_name(traced[i]->op), profile[i].gpu_ms);
+        // Printed straight from the profile, which carries its own labels.
+        // This USED to pair profile[i] with nodes[i], which was off by one --
+        // slot 0 is the whole-submit window, not a dispatch -- so every op was
+        // reported with its predecessor's time, the last dispatch was dropped
+        // entirely, and the submit total masqueraded as the first op. That cost
+        // this project six wrong hypotheses; see
+        // docs/BACKWARD-PERF-INVESTIGATION.md.
+        for (const auto& entry : rec.profile()) {
+            VKML_LOG_INFO("  timing {} gpu={:.4f}ms", entry.label, entry.gpu_ms);
         }
     }
 

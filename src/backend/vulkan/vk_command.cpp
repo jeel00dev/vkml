@@ -75,8 +75,7 @@ void Recorder::begin_timestamp(const char* label) {
     if (!profiling_ || query_index_ + 2 > kMaxQueries) {
         return;
     }
-    pending_.emplace_back(next_label_.empty() ? label : next_label_, query_index_);
-    next_label_.clear();
+    pending_.emplace_back(label_.empty() ? label : label_, query_index_);
     // TOP_OF_PIPE for the start: the earliest point the dispatch can be said to
     // have begun.
     vkCmdWriteTimestamp2(cmd_, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool_, query_index_);
@@ -138,6 +137,7 @@ void Recorder::begin() {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(cmd_, &bi), "vkBeginCommandBuffer");
     recording_ = true;
+    label_.clear();  // a label must not leak from the previous submission
 
     if (profiling_) {
         query_index_ = 0;

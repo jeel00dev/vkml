@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace vkml::vk {
@@ -113,8 +114,12 @@ public:
     /// Intervals from the most recent submission. Valid after wait().
     [[nodiscard]] const std::vector<ProfileEntry>& profile() const noexcept { return profile_; }
 
-    /// Names the next dispatch, for the profile report.
-    void set_label(std::string label) { next_label_ = std::move(label); }
+    /// Names subsequent dispatches, for the profile report. Applies until
+    /// changed or until the next begin(), so an op that issues SEVERAL
+    /// dispatches -- split-K GEMM, a multi-level reduction -- names all of
+    /// them. Labelling here rather than pairing profile entries with nodes
+    /// afterwards is what keeps the report correct when the two are not 1:1.
+    void set_label(std::string_view label) { label_ = label; }
 
     [[nodiscard]] uint64_t submitted_count() const noexcept { return timeline_value_; }
 
@@ -138,7 +143,7 @@ private:
     bool profiling_ = false;
     VkQueryPool query_pool_ = VK_NULL_HANDLE;
     uint32_t query_index_ = 0;
-    std::string next_label_;
+    std::string label_;
     std::vector<std::pair<std::string, uint32_t>> pending_;  // label, first query slot
     std::vector<ProfileEntry> profile_;
 

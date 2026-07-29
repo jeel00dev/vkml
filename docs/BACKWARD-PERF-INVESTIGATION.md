@@ -1,6 +1,7 @@
 # Backward-pass performance investigation
 
-**Status:** open. Root cause NOT found. Ten hypotheses eliminated with measurements.
+**Status:** ROOT CAUSE FOUND (H11). Ten hypotheses were eliminated first; the
+reason it took eleven is itself recorded, in 5.
 **Date:** 2026-07-29
 **Hardware:** AMD RX 5600M (RDNA1), RADV, Vulkan 1.4.354. All figures from this machine.
 
@@ -190,7 +191,7 @@ Combined with the controlled table above, this decomposes exactly:
 
 ---
 
-## 4. The open question, stated precisely
+## 4. The question, stated precisely -- and answered in H11 below
 
 > With gradients cleared, no allocation growth, no device allocations, correct GEMM
 > shapes and healthy standalone throughput, a Linear 4096->4096 backward takes
@@ -226,24 +227,83 @@ Linear backward issues eight dispatches, so **the 167 ms belongs to one of the
 other six** -- an elementwise operation, not a matrix multiply. Every hypothesis
 from H4 onwards was aimed at the wrong dispatch.
 
-Candidates not yet tested, now that code generation, barrier emission and dispatch
-geometry are all ruled out:
+### H11 — a degenerate reduction: `sum` over axes of extent 1. CONFIRMED.
 
-1. **Identify which dispatch is slow, before theorising about why.** The
-   per-dispatch profile is trustworthy here (the guard passes), and
-   `VKML_VULKAN_DEBUG=1` logs `op=` per dispatch. Correlating the two names the
-   operation in one run. Do this FIRST -- the reframing above shows how expensive
-   it is to theorise about the wrong dispatch.
-2. **Broadcast / stride-0 elementwise.** The backward of `sum` broadcasts a scalar
-   across the output. If a stride-0 operand makes the elementwise kernel read the
-   same address from every invocation, or take a slow generic-indexing path, that
-   is an elementwise cost invisible to every GEMM-focused test above.
-3. **Operand aliasing**, and **non-zero `storage_offset` views** taking a slower
-   runtime indexing path that spec constants would not reveal.
+Acting on the reframing -- name the dispatch before theorising about it -- one
+run with profiling and `VKML_VULKAN_DEBUG=1` ends the investigation:
+
+```
+reduce n_out=16777216 n_red=1 axes_mask=0x3 src=(1, 1, 4096, 4096)
+dispatch op=sum kernel=reduce groups=16777216x1x1 wg=256 shape=(1, 1, 4096, 4096)
+
+  timing submit      169.9037 ms
+  timing full          0.0048 ms
+  timing contiguous    0.0512 ms
+  timing matmul        2.3930 ms
+  timing sum         167.4477 ms   <- the whole gap, in one dispatch
+```
+
+The parts sum to 169.897 against a 169.904 submit window, so this decomposition
+is exact (rule 3's guard).
+
+**`n_red=1`.** The reduce kernel launches **one workgroup of 256 threads per
+output element**, and each workgroup here reduces exactly one value. That is
+16,777,216 workgroups -- 4.29 billion invocations -- to copy 16.7 M floats.
+The reduction reduces nothing.
+
+The healthy `sum` in the very next submission is the control: `n_out=4096
+n_red=64`, a real reduction over the batch, **0.1625 ms**.
+
+**Cause, in `src/autograd/autograd.cpp`, `reduce_to_shape()`:**
+
+```cpp
+if (i < lead) {
+    axes.push_back(static_cast<int>(i));   // axis did not exist in the source
+} else if (target_dims[i - lead] == 1 && gd[i] != 1) {
+    axes.push_back(static_cast<int>(i));   // axis was stretched from 1
+}
+```
+
+The trailing branch correctly ignores an axis that was not actually stretched
+(`gd[i] != 1`). The leading branch has no such guard: it reduces every leading
+axis unconditionally, whatever its extent. Matmul promotes its operands to 4-D
+batched form, so gradients flowing back through it carry leading dims of extent
+1 (`axes_mask=0x3` -- axes 0 and 1, both extent 1), and each one becomes a
+full-size dispatch that computes an identity.
+
+This fits every earlier observation, which is what makes it the cause rather
+than another candidate: it is not a GEMM (H4-H6, H10); its pipeline is
+irrelevant because H9 compared GEMM pipelines; it allocates nothing (H8); it
+scales with tensor size, matching H1's `9.0 ms + 1.18 ms/sample`; and it exists
+only inside an autograd-produced graph, which is exactly the boundary 4 drew.
 
 ---
 
 ## 5. Method notes, for whoever picks this up
+
+**The instrument was broken, and that is why this took eleven hypotheses.**
+`compute()` already logged a per-dispatch timing correlation under
+`VKML_VULKAN_DEBUG=1`. It paired `profile[i]` with `nodes[i]` -- but
+`Recorder::submit()` inserts the whole-submit window at the FRONT of the
+profile, so slot 0 is not a dispatch. Every operation was therefore reported
+with its predecessor's time, the last dispatch was dropped entirely, and the
+submit total appeared as the first op's cost. Run before the fix, this workload
+reported `timing op=full gpu=169.8561ms` -- attributing the entire submission to
+a scalar fill.
+
+The correlation was deleted rather than corrected. `Recorder::set_label()`
+already existed for exactly this purpose and had never been called, so the
+backend now labels each node's dispatches and the profile is printed straight
+out, carrying its own names. That also fixes a second latent error: the pairing
+assumed one dispatch per node, which is false for split-K GEMM and multi-level
+reductions.
+
+**The lesson is not "check for off-by-one".** A diagnostic that is wrong in a
+plausible-looking way is worse than no diagnostic, because it is trusted. This
+one produced a self-consistent story for ten hypotheses. What would have caught
+it immediately: the reported per-dispatch numbers did not add up to the submit
+window, and 3's own guard was the tool to notice that -- it was applied to the
+aggregate profile but never to the labelled report.
 
 **One instrumentation attempt was invalid and was deleted.** A `profile_stages()`
 helper in the CIFAR-100 example measured forward/backward/optimiser by realising each
@@ -277,5 +337,13 @@ one place rather than being copied between `bench/gpu_bench.py` and ad-hoc scrip
 * **A new item is implied but not yet filed:** the gradient-accumulation add running at
   ~0.6 GB/s. It only bites callers who accumulate across micro-batches, which nothing
   in the repository does yet, so it is recorded here rather than raised as a task.
-* **No optimisation should be attempted on the backward path** until §4 is answered.
-  Nine hypotheses have already been wrong, including every one about the compiled code.
+* **The fix itself is not yet made.** Guarding the leading branch of
+  `reduce_to_shape()` with `gd[i] != 1` is a one-line change, and when every axis
+  drops out `axes.empty()` already returns a pure reshape -- no dispatch at all.
+  It is numerically identical: summing a single element is that element, so no
+  reassociation occurs and the numerical contract is untouched. It needs a test
+  asserting the DISPATCH COUNT, not the values -- the values were always correct,
+  which is precisely why no existing test caught this.
+* **The 339.9 ms gradient-accumulation add is the only anomaly left open here.**
+  It appears on the same shapes, so re-check it after the fix before opening a
+  separate investigation.
