@@ -225,6 +225,15 @@ deliberately.
 
 ## 8. Style
 
+**Use the pinned clang-format**, not whatever your distro ships — different
+major versions format the same code differently, and CI checks one of them:
+
+```sh
+pip install clang-format==18.1.8
+find include src tests/cpp bench/cpp bindings -name '*.h' -o -name '*.cpp' \
+  | xargs clang-format -i
+```
+
 `.clang-format` governs C++ layout and CI enforces it; run `clang-format -i` on
 what you touch. Beyond formatting, the standard the codebase is held to is that
 **good code does not make the reader think** — their attention should go on the

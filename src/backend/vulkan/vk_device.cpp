@@ -201,9 +201,8 @@ std::string DeviceInfo::describe() const {
         VK_API_VERSION_MINOR(api_version), VK_API_VERSION_PATCH(api_version),
         static_cast<double>(device_local_bytes) / (1024.0 * 1024.0 * 1024.0),
         static_cast<double>(host_visible_device_local_bytes) / (1024.0 * 1024.0), subgroup_size,
-        subgroup_control, max_workgroup_invocations, max_shared_memory / 1024,
-        shader_core_count, max_push_constants,
-        static_cast<double>(max_allocation_size) / (1024.0 * 1024.0 * 1024.0),
+        subgroup_control, max_workgroup_invocations, max_shared_memory / 1024, shader_core_count,
+        max_push_constants, static_cast<double>(max_allocation_size) / (1024.0 * 1024.0 * 1024.0),
         buffer_device_address, scalar_block_layout, timeline_semaphore, shader_float16, shader_int8,
         shader_int16, storage_buffer_16bit, global_float_atomic_add, shared_float_atomic_add,
         cooperative_matrix);
@@ -740,9 +739,8 @@ DeviceCapabilities Context::capabilities() const {
 
     c.subgroup_ops = true;
     c.subgroup_size = info_.subgroup_size;
-    c.can_pin_subgroup_size =
-        info_.subgroup_size_control &&
-        (info_.required_subgroup_size_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+    c.can_pin_subgroup_size = info_.subgroup_size_control && (info_.required_subgroup_size_stages &
+                                                              VK_SHADER_STAGE_COMPUTE_BIT) != 0;
     c.min_subgroup_size = info_.min_subgroup_size;
     c.max_subgroup_size = info_.max_subgroup_size;
 

@@ -27,9 +27,19 @@ jobs:
         # violation (autograd reaching into api), so it is not ceremonial.
         run: python scripts/check_layering.py
 
+      # PINNED, and not from apt. `apt-get install clang-format` gives whatever
+      # the runner image ships that week -- clang-format 18 on noble today --
+      # while a contributor has whatever their distro ships. The two disagree,
+      # so this gate failed on code that was correctly formatted locally, and it
+      # would equally have started failing on UNCHANGED code the day the runner
+      # image bumped. A gate whose verdict depends on the date is not a gate.
+      #
+      # The PyPI package is the same binary on every platform, so `pip install
+      # clang-format==18.1.8` reproduces this exactly on Linux, macOS and
+      # Windows. Keep the version here and in CONTRIBUTING.md in step.
       - name: clang-format
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y clang-format
+          python -m pip install --quiet clang-format==18.1.8
           find include src tests/cpp bench/cpp bindings -name '*.h' -o -name '*.cpp' \
             | xargs clang-format --dry-run --Werror
 

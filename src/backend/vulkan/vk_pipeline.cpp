@@ -136,8 +136,7 @@ const PipelineCache::Pipeline& PipelineCache::get(const std::string& name, const
                    DeviceError,
                    "kernel '{}' pins subgroup size {} but the device does not allow a required "
                    "subgroup size for compute (requiredSubgroupSizeStages = {:#x})",
-                   name, config.required_subgroup_size,
-                   ctx_.info().required_subgroup_size_stages);
+                   name, config.required_subgroup_size, ctx_.info().required_subgroup_size_stages);
         VKML_CHECK(config.required_subgroup_size >= ctx_.info().min_subgroup_size &&
                        config.required_subgroup_size <= ctx_.info().max_subgroup_size,
                    DeviceError,
