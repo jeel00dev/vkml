@@ -436,7 +436,12 @@ def test_narrowing_rounds_to_nearest_even(device):
     """
     x = _rounding_probe_values()
     got = V.tensor(x, device=on(device)).to(V.float16).numpy()
-    expected = x.astype(np.float16)
+    # The probe deliberately includes magnitudes above f16's range, so numpy
+    # narrates an overflow it was asked for. Silenced rather than avoided: the
+    # overflow-to-infinity case is part of what this pins, and a warning on every
+    # run trains the reader to skim the suite's output (issue #17).
+    with np.errstate(over="ignore"):
+        expected = x.astype(np.float16)
 
     finite = ~np.isnan(x)
     assert np.array_equal(
