@@ -137,6 +137,13 @@ sudo pacman -S base-devel cmake ninja vulkan-headers vulkan-icd-loader glslang
 <details>
 <summary><b>macOS</b></summary>
 
+> **macOS is not currently validated.** It used to build on every commit; that
+> job now runs only on request (`.github/workflows/macos-moltenvk.yml`), so
+> nothing here is checked automatically and it may have drifted. The
+> instructions are kept because they worked when they were written, not because
+> they are being verified. Treat macOS as unsupported until that job is back in
+> the pipeline.
+
 Vulkan is not native on macOS, so you also need MoltenVK, which translates
 Vulkan to Metal. Homebrew has everything:
 
@@ -189,9 +196,18 @@ Then run the install from a *Developer Command Prompt for VS 2022* — that is t
 shell that has the MSVC compiler on its PATH.
 
 > **Worth knowing:** Windows is built and tested on every commit, but only as a
-> CPU-only build, because the CI runners have no GPU. That means the Windows
-> build *with Vulkan enabled* has never run anywhere we can see. It should work,
-> and we would very much like to hear whether it does — see
+> CPU-only build, because the CI runners have no GPU.
+>
+> The Windows build *with Vulkan enabled* has now been run on an AMD GPU, and it
+> found real bugs — which is exactly what that kind of report is for. The build
+> and packaging problems are fixed, as is an `f32 → f16` rounding difference that
+> made results driver-dependent. **One is outstanding:** three kernels declare
+> more push constants than Vulkan's guaranteed 128-byte minimum, and on a device
+> that reports exactly 128 those pipelines cannot be created, so parts of the
+> suite fail and MNIST cannot train there. The cause and the chosen fix are in
+> [`docs/adr/0009`](docs/adr/0009-operand-metadata-out-of-push-constants.md).
+>
+> Reports from other Windows GPUs are still very welcome — see
 > [If you have hardware we do not](#if-you-have-hardware-we-do-not).
 
 </details>
