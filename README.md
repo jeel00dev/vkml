@@ -652,6 +652,13 @@ to run before pushing.
 If you are reporting a bug, `python scripts/hardware_report.py` produces the
 device details that make a report reproducible.
 
+**Working with an AI assistant?** [`CLAUDE.md`](CLAUDE.md) is a short orientation
+map — build commands, the layout, the layering rule, and the traps that have
+already cost somebody an afternoon. Claude Code loads it automatically; for any
+other tool, point it there first. The standards it routes to live in
+[`.claude/skills/cpp_spec/`](.claude/skills/cpp_spec), which is the engineering
+constitution this repository is held to, tracked in git so a clone is complete.
+
 ---
 
 ## License
