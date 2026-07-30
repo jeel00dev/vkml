@@ -743,3 +743,79 @@ TEST_CASE("no probe in this file provokes a validation error") {
                                    << errors
                                    << " error(s); search the output above for '[validation]'");
 }
+
+// ---------------------------------------------------------------------------
+// DeviceLocalMapped: memory the host writes and the device reads on the same
+// dispatch, which per-dispatch metadata needs and neither other kind serves
+// (docs/adr/0009 sec4.2).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("device-mapped memory is host-writable and device-addressable") {
+    if (!have_device()) {
+        return;
+    }
+    Context ctx(0, true);
+    vkml::vk::Allocator alloc(ctx);
+
+    const auto a = alloc.allocate(4096, vkml::vk::MemoryKind::DeviceLocalMapped);
+
+    // Both properties are the point of the kind: a device address so a shader
+    // can reach it, and a host pointer so writing needs no staging copy.
+    CHECK(a.address != 0);
+    REQUIRE(a.mapped != nullptr);
+
+    // Writable, and readable back through the same mapping. Coherent memory
+    // needs no explicit flush, which is why the kind demands HOST_COHERENT.
+    auto* words = static_cast<uint32_t*>(a.mapped);
+    for (uint32_t i = 0; i < 16; ++i) {
+        words[i] = 0xA5A50000u | i;
+    }
+    for (uint32_t i = 0; i < 16; ++i) {
+        CHECK(words[i] == (0xA5A50000u | i));
+    }
+
+    // Whatever it resolved to must be a mappable kind. A device with no
+    // host-visible device-local heap degrades to staging, which is slower but
+    // still satisfies everything asserted above.
+    CHECK((a.kind == vkml::vk::MemoryKind::DeviceLocalMapped ||
+           a.kind == vkml::vk::MemoryKind::HostStaging));
+
+    alloc.free(a);
+}
+
+TEST_CASE("device-mapped allocations reuse their block") {
+    if (!have_device()) {
+        return;
+    }
+    Context ctx(0, true);
+    vkml::vk::Allocator alloc(ctx);
+
+    // Repeated allocations of one kind must share a block.
+    //
+    // WHAT THIS DOES AND DOES NOT COVER, stated because the difference matters.
+    // The fallback is resolved once, in allocate(), so blocks carry the kind
+    // that lookups search for. Resolving it inside create_block instead tagged
+    // blocks with the EFFECTIVE kind while lookups asked for the REQUESTED one;
+    // they never matched, and every allocation created a block it could not
+    // reuse -- unbounded growth.
+    //
+    // That mismatch only ARISES on a device with no host-visible device-local
+    // heap, because elsewhere the two kinds are equal. Both development devices
+    // expose the heap (256 MiB), so this test pins the reuse invariant but
+    // cannot discriminate that specific regression here. It would on a device
+    // that falls back, which is the machine the fallback exists for.
+    const auto first = alloc.allocate(1024, vkml::vk::MemoryKind::DeviceLocalMapped);
+    const uint32_t blocks_after_first = alloc.stats().block_count;
+
+    std::vector<vkml::vk::Allocation> rest;
+    for (int i = 0; i < 8; ++i) {
+        rest.push_back(alloc.allocate(1024, vkml::vk::MemoryKind::DeviceLocalMapped));
+    }
+    CHECK(alloc.stats().block_count == blocks_after_first);
+
+    for (const auto& a : rest) {
+        alloc.free(a);
+    }
+    alloc.free(first);
+    CHECK(alloc.stats().live_allocations == 0);
+}

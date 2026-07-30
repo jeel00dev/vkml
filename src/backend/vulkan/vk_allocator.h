@@ -20,6 +20,20 @@ enum class MemoryKind : uint8_t {
     /// (measured, docs/ARCHITECTURE.md 1.1), so device memory cannot simply be
     /// mapped and every upload has to be staged through here.
     HostStaging,
+    /// Device-local AND host-visible: the GPU reads it at device speed and the
+    /// host writes it without a staging copy or a barrier.
+    ///
+    /// For data the host produces and the device consumes ON THE SAME DISPATCH,
+    /// which neither other kind serves. DeviceLocal would need a staged copy and
+    /// a barrier per dispatch, serialising exactly what ADR 0006's submission
+    /// batching keeps parallel; HostStaging would put every workgroup's read
+    /// across PCIe. See docs/adr/0009.
+    ///
+    /// NOT GUARANTEED TO EXIST. The heap is small where it exists at all (256
+    /// MiB on NAVI10) and some devices expose none, so allocation falls back to
+    /// HostStaging and says so -- correct everywhere, slower where it lands.
+    /// Ask `device_local_mapped_available()` before assuming the fast path.
+    DeviceLocalMapped,
 };
 
 [[nodiscard]] const char* memory_kind_name(MemoryKind kind) noexcept;
@@ -41,7 +55,11 @@ struct Allocation {
     uint64_t size = 0;            ///< usable bytes (the request, not the padded reservation)
     uint64_t padded_size = 0;     ///< bytes actually reserved, after alignment rounding
     VkDeviceAddress address = 0;  ///< block address + offset; what shaders receive
-    void* mapped = nullptr;       ///< host pointer, HostStaging only
+    void* mapped = nullptr;       ///< host pointer; null unless `kind` is mappable
+    /// What was actually allocated, which is not always what was asked for:
+    /// DeviceLocalMapped degrades to HostStaging where the device exposes no
+    /// host-visible device-local heap. Check this rather than the request when
+    /// the distinction matters.
     MemoryKind kind = MemoryKind::DeviceLocal;
 
     [[nodiscard]] bool valid() const noexcept { return size > 0 || padded_size > 0; }
@@ -135,6 +153,12 @@ private:
                                             VkMemoryPropertyFlags avoid,
                                             VkMemoryPropertyFlags prefer = 0) const;
     [[nodiscard]] uint32_t create_block(uint64_t min_size, MemoryKind kind);
+
+    /// The kind this device can actually serve for `requested`.
+    ///
+    /// Called once per allocation, before the block search, so that lookups and
+    /// newly created blocks are tagged with the same kind.
+    [[nodiscard]] MemoryKind effective_kind(MemoryKind requested) const noexcept;
     void destroy_block(Block& block);
     void insert_free_run(Block& block, uint64_t offset, uint64_t size);
 

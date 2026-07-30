@@ -27,6 +27,7 @@ const char* memory_kind_name(MemoryKind kind) noexcept {
     switch (kind) {
         case MemoryKind::DeviceLocal: return "device";
         case MemoryKind::HostStaging: return "staging";
+        case MemoryKind::DeviceLocalMapped: return "device-mapped";
     }
     return "?";
 }
@@ -147,6 +148,22 @@ uint32_t Allocator::find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags w
         std::format("no memory type satisfies flags 0x{:x} (typeBits 0x{:x})", want, type_bits));
 }
 
+MemoryKind Allocator::effective_kind(MemoryKind requested) const noexcept {
+    // DeviceLocalMapped is the only kind that can be unavailable. A device
+    // exposing no heap that is both device-local and host-visible cannot serve
+    // it, so the request degrades to staging: slower, because the device then
+    // reads across the bus, but correct everywhere.
+    //
+    // Decided from the reported heaps rather than by attempting an allocation
+    // and catching the failure -- availability is a device property, known
+    // before anything is allocated (docs/adr/0009 sec4.2).
+    if (requested == MemoryKind::DeviceLocalMapped &&
+        ctx_.info().host_visible_device_local_bytes == 0) {
+        return MemoryKind::HostStaging;
+    }
+    return requested;
+}
+
 uint32_t Allocator::create_block(uint64_t min_size, MemoryKind kind) {
     const uint64_t size = std::max(round_up(min_size, alignment_), default_block_size_);
     VKML_CHECK(size <= ctx_.info().max_allocation_size, OutOfMemoryError,
@@ -155,7 +172,7 @@ uint32_t Allocator::create_block(uint64_t min_size, MemoryKind kind) {
 
     Block block;
     block.size = size;
-    block.kind = kind;
+    // block.kind is assigned below, once the fallback has been resolved.
 
     // One buffer spanning the block. SHADER_DEVICE_ADDRESS is what makes the
     // descriptor-less model work; TRANSFER_SRC/DST cover staging copies.
@@ -170,19 +187,34 @@ uint32_t Allocator::create_block(uint64_t min_size, MemoryKind kind) {
     VkMemoryRequirements req{};
     vkGetBufferMemoryRequirements(ctx_.device(), block.buffer, &req);
 
-    const VkMemoryPropertyFlags want =
-        kind == MemoryKind::DeviceLocal
-            ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-            : (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    // For device-local, actively avoid the host-visible types: on this GPU that
-    // is the 256 MiB BAR window, and burning it on ordinary tensors would
-    // exhaust it immediately.
-    const VkMemoryPropertyFlags avoid =
-        kind == MemoryKind::DeviceLocal ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT : 0;
+    // Already resolved by the caller: allocate() maps a requested kind to the
+    // one this device can actually serve, so `kind` here is always effective.
+    block.kind = kind;
 
-    // Staging is read back by the host, so cached memory matters a great deal.
-    const VkMemoryPropertyFlags prefer =
-        kind == MemoryKind::HostStaging ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0;
+    VkMemoryPropertyFlags want = 0;
+    VkMemoryPropertyFlags avoid = 0;
+    VkMemoryPropertyFlags prefer = 0;
+    switch (kind) {
+        case MemoryKind::DeviceLocal:
+            want = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            // Actively avoid the host-visible types: on this GPU that is the
+            // 256 MiB BAR window, and burning it on ordinary tensors would
+            // exhaust it immediately.
+            avoid = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+            break;
+        case MemoryKind::HostStaging:
+            want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            // Staging is read back by the host, so cached memory matters a great
+            // deal -- see find_memory_type's note on write-combined reads.
+            prefer = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+            break;
+        case MemoryKind::DeviceLocalMapped:
+            // The BAR window the DeviceLocal case above is avoiding, wanted here
+            // deliberately. Small, so only per-dispatch metadata belongs in it.
+            want = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            break;
+    }
     block.memory_type = find_memory_type(req.memoryTypeBits, want, avoid, prefer);
 
     VkMemoryAllocateFlagsInfo flags{};
@@ -212,9 +244,13 @@ uint32_t Allocator::create_block(uint64_t min_size, MemoryKind kind) {
     block.address = vkGetBufferDeviceAddress(ctx_.device(), &addr_info);
     VKML_ASSERT(block.address != 0, "buffer device address query returned 0");
 
-    if (kind == MemoryKind::HostStaging) {
+    if (block.kind == MemoryKind::HostStaging || block.kind == MemoryKind::DeviceLocalMapped) {
         // Mapped once for the block's lifetime. Repeated map/unmap is pure
         // overhead, and coherent memory needs no explicit flush.
+        //
+        // DeviceLocalMapped is mapped for the same reason and tested on
+        // block.kind rather than the requested kind, so a request that fell back
+        // to staging is still mapped.
         check(vkMapMemory(ctx_.device(), block.memory, 0, VK_WHOLE_SIZE, 0, &block.mapped),
               "vkMapMemory");
     }
@@ -242,8 +278,16 @@ void Allocator::destroy_block(Block& block) {
     }
 }
 
-Allocation Allocator::allocate(uint64_t size, MemoryKind kind, std::string_view debug_name) {
+Allocation Allocator::allocate(uint64_t size, MemoryKind requested, std::string_view debug_name) {
     const std::lock_guard<std::mutex> lock(mutex_);
+
+    // Resolve the fallback ONCE, here, so the block search and block creation
+    // agree on which kind they are talking about. Resolving it inside
+    // create_block instead would leave blocks tagged with the effective kind
+    // while lookups asked for the requested one -- they would never match, and
+    // every allocation on a device without the heap would create a fresh block
+    // that the next allocation could not reuse.
+    const MemoryKind kind = effective_kind(requested);
 
     // A zero-size tensor is legal upstream. Reserve one aligned unit so the
     // allocation still has a distinct, valid device address.
