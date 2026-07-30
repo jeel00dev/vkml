@@ -30,17 +30,23 @@ coverage.tsv
 # third-party reference clones (read-only study material, not vendored)
 third_party/reference/
 
-# Assistant configuration. Local tooling, not part of the library.
-.claude/
+# Assistant configuration.
+#
+# The SKILLS are tracked. cpp_spec is the engineering constitution and handbook
+# this repository is actually held to -- the same standards CONTRIBUTING.md
+# describes in prose -- so it belongs with the code rather than on one laptop.
+# Tracking it also means a fresh clone is fully set up: Claude Code discovers
+# project-level .claude/skills automatically, with nothing to symlink or copy.
+#
+# Everything else under .claude/ is per-machine session state and settings, and
+# stays out. The pattern is deny-by-default so a new local file is ignored
+# unless it is deliberately added here.
+.claude/*
+!.claude/skills/
 
-# Process documents: milestone reviews, audits and roadmaps. They record how the
-# work was run rather than how the library works, and nothing in the tree cites
-# them. The engineering documentation the code DOES cite -- ARCHITECTURE.md,
-# THEORY.md, MEASUREMENT-AUDIT.md, PERFORMANCE-MODEL.md, BASELINE-CPU.md, the
-# ADRs -- stays tracked, as does coverage-baseline.json, which CI reads.
-docs/SKILLS-ARCHITECTURE.md
-docs/MILESTONE-*-REVIEW.md
-docs/VERIFICATION-AUDIT.md
-docs/COVERAGE.md
-docs/GAP_ANALYSIS.md
-docs/M3_ROADMAP.md
+# Process documents -- milestone reviews, audits, roadmaps -- used to be ignored
+# here, on the grounds that they record how the work was run rather than how the
+# library works. They are tracked now: they are the reasoning behind decisions
+# the code does not explain on its own, they are worth having on every machine
+# the project is developed from, and a document only one laptop holds is one
+# nobody can cite. Nothing in docs/ is ignored.
