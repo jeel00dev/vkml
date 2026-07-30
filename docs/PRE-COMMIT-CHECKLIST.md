@@ -11,12 +11,21 @@ The question this list is built around is not *"does my change work?"* but
 ## 1. Both build configurations, not just yours
 
 ```sh
+# Linux and macOS
 cmake --build build/release -j$(nproc)          # your usual build
-python -m pytest tests/python -q
 ./build/release/bin/vkml_tests
 
+# Windows
+cmake --build build/msvc --config Release --parallel
+.\build\msvc\bin\Release\vkml_tests.exe
+
+python -m pytest tests/python -q
 python scripts/check_cpu_only_build.py          # the one you never see
 ```
+
+The test binary sits under a per-configuration subdirectory on a multi-config
+generator, which is why the Windows path has `Release\` in it and the POSIX one
+does not.
 
 **Why.** `cmake --preset release` does **not** set `VKML_VULKAN` — the presets
 set only the build type and warning flags (`docs/adr/0007`, and the comment in
@@ -98,9 +107,24 @@ have caused one (`docs/adr/0006` §7).
 
 ```sh
 python scripts/check_layering.py
+
+# POSIX shells, including Git Bash on Windows. CONTRIBUTING.md sec8 has the
+# PowerShell equivalent -- `find` and `xargs` do not exist there.
 find include src tests/cpp bench/cpp bindings -name '*.h' -o -name '*.cpp' \
   | xargs clang-format --dry-run --Werror
 ```
+
+`mutation_check.py` needs to know where your build is when it rebuilds a mutated
+kernel. It defaults to `build/release`, so on Windows point it at the build the
+instructions above create:
+
+```powershell
+$env:VKML_BUILD_DIR = "build/msvc"; $env:VKML_BUILD_CONFIG = "Release"
+python scripts/mutation_check.py
+```
+
+Without that every compiled mutation reports NOT-TESTED, and the campaign covers
+only the Python half.
 
 ## 7. After pushing
 

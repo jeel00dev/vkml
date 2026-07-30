@@ -111,12 +111,26 @@ so up front than after you have written them:
 
 ```sh
 git clone <repo> && cd vkml
+
+# Linux and macOS
 cmake --preset release
 cmake --build build/release -j$(nproc)
+
+# Windows -- do NOT use the presets; see below
+cmake -B build/msvc -DVKML_VULKAN=ON -DVKML_BUILD_PYTHON=ON
+cmake --build build/msvc --config Release --parallel
+
 pip install -e .
 ```
 
 Presets are `debug`, `release`, `relwithdebinfo` and `asan`.
+
+**The presets are for single-config generators only.** They set
+`CMAKE_BUILD_TYPE`, which Visual Studio and Ninja Multi-Config ignore in favour
+of `--config` at build time. `cmake --preset release` therefore *succeeds* on
+Windows and prints `build type ....... Release`, and then `cmake --build` with no
+`--config` builds **Debug** — a wrong build that announced itself as the right
+one. Use the explicit form above there.
 
 **One thing that surprises everybody:** the presets set the build type and
 warning flags only — they do **not** enable Vulkan. `-DVKML_VULKAN=ON` is what
@@ -137,9 +151,16 @@ The three gates CI will run regardless:
 
 ```sh
 python scripts/check_layering.py      # layer dependencies
-ctest --preset release                # C++ suite
 python -m pytest tests/python -q      # Python + PyTorch validation
+
+ctest --preset release                # C++ suite -- Linux and macOS
+ctest --test-dir build/msvc -C Release            # C++ suite -- Windows
 ```
+
+The C++ line differs by platform for the same reason the build command does: the
+`release` preset points at `build/release`, which the Windows instructions never
+create, and a multi-config generator needs `-C` to know which configuration to
+run. See §3.
 
 If your change could affect numerics or performance, the checklist has more —
 including running the MNIST and CIFAR-100 examples end to end, which catch a
@@ -230,8 +251,19 @@ major versions format the same code differently, and CI checks one of them:
 
 ```sh
 pip install clang-format==18.1.8
+
+# Linux, macOS, and Git Bash on Windows
 find include src tests/cpp bench/cpp bindings -name '*.h' -o -name '*.cpp' \
   | xargs clang-format -i
+```
+
+`find` and `xargs` are POSIX tools. In PowerShell or a Developer Command Prompt
+neither is available — Windows' own `find` is a text search, not a file finder —
+so use Git Bash, or PowerShell's equivalent:
+
+```powershell
+Get-ChildItem include, src, tests/cpp, bench/cpp, bindings -Recurse -Include *.h, *.cpp `
+  | ForEach-Object { clang-format -i $_.FullName }
 ```
 
 `.clang-format` governs C++ layout and CI enforces it; run `clang-format -i` on

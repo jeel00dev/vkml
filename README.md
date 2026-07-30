@@ -464,12 +464,27 @@ python examples/mnist/gui.py            # draw a digit and watch it predict
 from does not like being scripted at:
 
 ```sh
+# Linux and macOS
 mkdir -p examples/cifar100/cache
 curl -L https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz \
      -o examples/cifar100/cache/cifar-100-python.tar.gz
+```
 
+```powershell
+# Windows. `mkdir -p` is not a thing in cmd.exe -- it fails outright rather than
+# creating anything -- and the line continuation is a backtick, not a backslash.
+New-Item -ItemType Directory -Force examples\cifar100\cache
+curl.exe -L https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz `
+     -o examples\cifar100\cache\cifar-100-python.tar.gz
+```
+
+```sh
 python examples/cifar100/train.py
 ```
+
+The download is slow and the host throttles hard, so expect it to take a while.
+If it is interrupted, delete the partial file before retrying — the loader tells
+you if you forget.
 
 If the archive is missing, the script tells you exactly where to put it.
 

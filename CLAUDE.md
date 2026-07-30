@@ -29,13 +29,21 @@ them, they win and this file is stale — say so.
 ## Build and run
 
 ```sh
-cmake --preset release -DVKML_VULKAN=ON      # presets: debug release relwithdebinfo asan
+# Linux and macOS. Presets: debug release relwithdebinfo asan
+cmake --preset release -DVKML_VULKAN=ON
 cmake --build build/release -j$(nproc)
+
+# Windows. The presets set CMAKE_BUILD_TYPE, which a multi-config generator
+# ignores -- `cmake --preset release` succeeds there and then builds Debug.
+cmake -B build/msvc -DVKML_VULKAN=ON -DVKML_BUILD_PYTHON=ON
+cmake --build build/msvc --config Release --parallel
+
 pip install -e .
 ```
 
 ```sh
-ctest --preset release                        # C++ suite
+ctest --preset release                        # C++ suite -- Linux and macOS
+ctest --test-dir build/msvc -C Release        # C++ suite -- Windows
 python -m pytest tests/python -q              # Python + PyTorch validation
 python scripts/hardware_report.py             # what this machine's GPU reports
 ```

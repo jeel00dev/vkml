@@ -343,8 +343,16 @@ jobs:
         # Configured directly rather than through a preset: the presets set
         # CMAKE_BUILD_TYPE, which a multi-config generator ignores in favour of
         # --config, and inheriting one here would quietly build the wrong type.
+        #
+        # BENCHMARKS ON, which is the default and what README.md documents.
+        # Turning them off here meant bench/cpp was the one directory MSVC never
+        # compiled, and it stayed broken -- harness.h used GCC inline asm, so the
+        # plain documented build failed on a clean checkout while CI stayed green
+        # (issue #13). A job that passes because it does not compile the target is
+        # not covering it, so this now builds what the instructions tell a user to
+        # build. It needs no GPU: the failure was a compile error.
         run: |
-          cmake -B build/msvc -DVKML_BUILD_PYTHON=OFF -DVKML_BUILD_BENCH=OFF
+          cmake -B build/msvc -DVKML_BUILD_PYTHON=OFF
           cmake --build build/msvc --config Release --parallel
           ctest --test-dir build/msvc -C Release --output-on-failure
 
