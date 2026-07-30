@@ -68,6 +68,22 @@ def test_reports_exist_on_any_build():
         assert reports == []
 
 
+def test_device_names_exist_on_any_build():
+    """The README's post-install check must answer on a CPU-only build too.
+
+    `python -c "import vkml; print(vkml.vulkan_device_names())"` is Step 3 of the
+    installation instructions, and the README documents a CPU-only install two
+    sections earlier. Binding this name only when `has_vulkan` made that command
+    raise AttributeError, which reads as a broken install rather than as a
+    machine with no GPU (issue #9). An empty list is the honest answer.
+    """
+    names = V.vulkan_device_names()
+    assert isinstance(names, list)
+    assert len(names) == V.vulkan_device_count()
+    if not V.has_vulkan:
+        assert names == []
+
+
 def test_report_carries_every_field():
     for report in V.vulkan_device_reports():
         assert set(report) == REQUIRED_KEYS

@@ -148,10 +148,12 @@ vulkan_device_count = _C.vulkan_device_count
 # to work on the machines that cannot run the backend -- those are the ones
 # worth hearing about.
 vulkan_device_reports = _C.vulkan_device_reports
+# Likewise []: this is what README.md's post-install check calls, and it is
+# called on a CPU-only build as often as on any other (issue #9).
+vulkan_device_names = _C.vulkan_device_names
 vulkan_unavailable_reason = _C.vulkan_unavailable_reason
 if has_vulkan:
     init_vulkan = _C.init_vulkan
-    vulkan_device_names = _C.vulkan_device_names
     vulkan_stats = _C.vulkan_stats
     vulkan_capabilities = _C.vulkan_capabilities
     vulkan_timestamps_supported = _C.vulkan_timestamps_supported

@@ -839,6 +839,12 @@ NB_MODULE(_vkml_core, m) {
     // Present even here: a hardware report from a CPU-only build should say
     // "built without Vulkan" rather than fail with AttributeError.
     m.def("vulkan_device_reports", [] { return nb::list(); });
+    // Same reason, and the one the README's own verification step calls:
+    // `python -c "import vkml; print(vkml.vulkan_device_names())"` is what a user
+    // runs straight after installing, including after the CPU-only install the
+    // README documents. An empty list is the honest answer there; AttributeError
+    // reads as a broken install (issue #9).
+    m.def("vulkan_device_names", [] { return std::vector<std::string>{}; });
     m.def("vulkan_unavailable_reason",
           [] { return std::string("this build was compiled without the Vulkan backend"); });
 #endif
