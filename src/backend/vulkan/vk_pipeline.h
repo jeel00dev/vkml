@@ -32,9 +32,16 @@ struct KernelConfig {
     /// subgroupSizeControl (present on the target GPU).
     uint32_t required_subgroup_size = 0;
 
-    /// Declared shared-memory use, in bytes. Recorded rather than enforced for
-    /// now; the reduction kernels at M2 will validate it against
-    /// maxComputeSharedMemorySize before creating the pipeline.
+    /// Declared shared-memory use, in bytes, validated against
+    /// maxComputeSharedMemorySize before the pipeline is created.
+    ///
+    /// DECLARED, not derived: the footprint follows from specialisation
+    /// constants, so the caller choosing them is the only thing that knows it.
+    /// The consequence is that leaving this at 0 makes the check pass vacuously
+    /// rather than fail loudly -- a caller that uses shared memory and forgets to
+    /// say so hands the driver an over-budget pipeline, which is undefined
+    /// behaviour and crashed one of them (issue #14). Set it wherever the shader
+    /// declares a `shared` array.
     uint32_t shared_memory_bytes = 0;
 
     /// Elements each invocation loads at once. 1 for scalar; 4 lets a shader

@@ -197,6 +197,32 @@ namespace {
 /// must agree; if gemv.comp's block changes, this changes with it.
 constexpr uint32_t kGemvPushBytes = sizeof(uint64_t) * 3 + sizeof(uint32_t) * 5 + 64;
 
+/// gemv.comp's shared-memory footprint, for a workgroup width and a pad size.
+///
+/// Mirrors the shared declarations in gemv.comp -- part[WG], As[WG*32],
+/// Bs[WG*32] and pad_buf[max(PAD_FLOATS,1)] -- and lives beside kGemvPushBytes
+/// for the same reason: the shader's layout is not visible from here, so the two
+/// must be updated together.
+///
+/// Declaring it is what lets PipelineCache reject an over-budget request before
+/// the driver sees it. Leaving KernelConfig::shared_memory_bytes at its default
+/// 0 makes that check pass vacuously, which is how these probes came to hand the
+/// driver a 48 KiB pipeline on a 32 KiB device (issue #14).
+constexpr uint32_t gemv_shared_bytes(uint32_t wg, uint32_t pad_floats) {
+    const uint32_t pad_alloc = pad_floats > 0 ? pad_floats : 1;
+    return (wg + wg * 32 + wg * 32 + pad_alloc) * static_cast<uint32_t>(sizeof(float));
+}
+
+/// True when `stats` carries a usable LDS figure.
+///
+/// The same trap as scratch: `available` says the driver answered the query, not
+/// that it reported this particular statistic. A driver spelling workgroup memory
+/// differently leaves lds_bytes at 0, which is indistinguishable from a kernel
+/// that uses none -- so a positive control is the only way to tell (issue #6).
+[[nodiscard]] bool reports_lds(const vkml::vk::PipelineCache::Stats& stats) {
+    return stats.available && stats.lds_bytes > 0;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -449,6 +475,17 @@ TEST_CASE("M3-R5: the scope boundaries of A1 and A2 are permanent") {
             .stats;
     };
 
+    // Does this driver report SCRATCH at all? Same positive control, and same
+    // reason, as the M3-R4 case above: a 128-float dynamically-indexed array is
+    // far past the documented threshold and must spill on any allocator, so zero
+    // scratch here means the statistic is missing rather than true. Without this
+    // the assertions below test the driver's vocabulary instead of its allocator,
+    // which is what failed on AMD's Windows driver (issue #6).
+    const bool reports_scratch = probe(128, 0, 1, 0).scratch_bytes > 0;
+    if (!reports_scratch) {
+        MESSAGE("this driver reports no scratch statistic; skipping the spill-size checks");
+    }
+
     SUBCASE("S1 -- the budget is 256 BYTES, not 64 array elements") {
         // vec4[16] is 64 floats' worth: same byte count as float[64], and it
         // behaves identically. vec4[17] crosses the boundary at 272 B even
@@ -460,6 +497,8 @@ TEST_CASE("M3-R5: the scope boundaries of A1 and A2 are permanent") {
         if (!at.available)
             return;
         CHECK(at.scratch_bytes == 0);
+        if (!reports_scratch)
+            return;
         CHECK(past.scratch_bytes > 0);
         CHECK(far.scratch_bytes > 0);
     }
@@ -473,6 +512,8 @@ TEST_CASE("M3-R5: the scope boundaries of A1 and A2 are permanent") {
         if (!constant_idx.available)
             return;
         CHECK(constant_idx.scratch_bytes == 0);
+        if (!reports_scratch)
+            return;
         CHECK(dynamic_idx.scratch_bytes > 0);
     }
 
@@ -493,6 +534,8 @@ TEST_CASE("M3-R5: the scope boundaries of A1 and A2 are permanent") {
                 return;
             // Threshold does not move with subgroup size: it is a per-lane budget.
             CHECK(at.scratch_bytes == 0);
+            if (!reports_scratch)
+                continue;
             CHECK(past.scratch_bytes > 0);
             // A2, generalised: scratch is rounded up to a 1024-byte granule PER
             // WAVE. The 4-float granule reported in M3-R4 was this same rule
@@ -525,16 +568,28 @@ TEST_CASE("M4-R2: LDS footprint alone changes GEMV performance (H2 rejected)") {
     auto lds_for = [&](uint32_t pad_floats) {
         vkml::vk::KernelConfig cfg;
         cfg.workgroup_size = 64;
+        cfg.shared_memory_bytes = gemv_shared_bytes(64, pad_floats);
         cfg.spec_constants = {64, 8, 1, 64, pad_floats};
         return pipes.get("gemv", vkml::spv::gemv, vkml::spv::gemv_size, kGemvPushBytes, cfg).stats;
     };
+
+    // 8 KiB of padding on top of gemv's own ~16 KiB. A device at the guaranteed
+    // 16384-byte floor cannot hold either arm, and one at 32 KiB cannot hold the
+    // larger pads M4-R3 asks for, so the budget is checked rather than assumed.
+    constexpr uint32_t kPadFloats = 2048;
+    if (gemv_shared_bytes(64, kPadFloats) > ctx.info().max_shared_memory) {
+        MESSAGE("device cannot hold the padded arm; skipping");
+        return;
+    }
+
     const auto none = lds_for(0);
-    const auto padded = lds_for(2048);  // 8 KiB
-    if (!none.available) {
+    const auto padded = lds_for(kPadFloats);
+    if (!reports_lds(none)) {
+        MESSAGE("this driver reports no LDS statistic; skipping");
         return;
     }
     CHECK(padded.lds_bytes > none.lds_bytes);
-    CHECK(padded.lds_bytes - none.lds_bytes == 2048 * sizeof(float));
+    CHECK(padded.lds_bytes - none.lds_bytes == kPadFloats * sizeof(float));
 }
 
 TEST_CASE("M4-R3: resident workgroups are an INTEGER function of LDS") {
@@ -554,18 +609,30 @@ TEST_CASE("M4-R3: resident workgroups are an INTEGER function of LDS") {
     auto lds_of = [&](uint32_t pad_floats) {
         vkml::vk::KernelConfig cfg;
         cfg.workgroup_size = 64;
+        cfg.shared_memory_bytes = gemv_shared_bytes(64, pad_floats);
         cfg.spec_constants = {64, 8, 1, 64, pad_floats};
         return pipes.get("gemv", vkml::spv::gemv, vkml::spv::gemv_size, kGemvPushBytes, cfg)
             .stats.lds_bytes;
     };
+
+    // The 4096-float arm is gemv's ~16 KiB plus another 16 KiB. That exceeds a
+    // 32 KiB device outright and is double the guaranteed floor, so the widest
+    // arm decides whether this test can run at all.
+    constexpr uint32_t kWidestPad = 4096;
+    if (gemv_shared_bytes(64, kWidestPad) > budget) {
+        MESSAGE("device cannot hold the widest arm; skipping");
+        return;
+    }
+
     const uint64_t base = lds_of(0);
     if (base == 0) {
+        MESSAGE("this driver reports no LDS statistic; skipping");
         return;
     }
     // 0 and 1024 floats (4 KiB) must land in the same plateau; 4096 floats
     // (16 KiB) must drop at least one step.
     CHECK(budget / base == budget / lds_of(1024));
-    CHECK(budget / lds_of(4096) < budget / base);
+    CHECK(budget / lds_of(kWidestPad) < budget / base);
 }
 
 #include "vk_command.h"
@@ -605,9 +672,22 @@ TEST_CASE("M4-R5: MLP vs resident waves" * doctest::skip(false)) {
     MESSAGE("MLP  padKB    LDS  wg/CU  resident   gpu_ms");
     for (const uint32_t mlp : {1u, 2u, 4u, 8u}) {
         for (const uint32_t pad_kb : {0u, 4u, 8u, 16u, 32u, 48u}) {
+            // probe_mlp.comp declares `shared float pad_buf[max(PAD_FLOATS,1)]`
+            // and nothing else, so the footprint is the pad itself. The sweep
+            // reaches 48 KiB, past both the 32 KiB this driver reports and the
+            // 16 KiB Vulkan guarantees -- so the wide end is skipped rather than
+            // handed to the driver, which is undefined behaviour (issue #14).
+            const uint32_t pad_floats = pad_kb * 256;
+            const uint32_t pad_alloc = pad_floats > 0 ? pad_floats : 1;
+            const uint32_t shared_bytes = pad_alloc * static_cast<uint32_t>(sizeof(float));
+            if (shared_bytes > ctx.info().max_shared_memory) {
+                continue;
+            }
+
             vkml::vk::KernelConfig cfg;
             cfg.workgroup_size = kWg;
-            cfg.spec_constants = {kWg, mlp, pad_kb * 256};
+            cfg.shared_memory_bytes = shared_bytes;
+            cfg.spec_constants = {kWg, mlp, pad_floats};
             const auto& pipe = pipes.get("probe_mlp", vkml::spv::probe_mlp,
                                          vkml::spv::probe_mlp_size, sizeof(Push), cfg);
             const uint64_t lds = pipe.stats.available ? pipe.stats.lds_bytes : 0;
