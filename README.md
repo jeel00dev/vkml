@@ -626,6 +626,18 @@ alternatives that were rejected and why:
 
 ---
 
+## Contributing
+
+Bug reports, and especially reports from hardware we do not have, are the main
+way device-specific assumptions get found. [`CONTRIBUTING.md`](CONTRIBUTING.md)
+covers what to put in an issue, how changes are proposed and reviewed, and what
+to run before pushing.
+
+If you are reporting a bug, `python scripts/hardware_report.py` produces the
+device details that make a report reproducible.
+
+---
+
 ## License
 
 vkML is licensed under the Apache License 2.0. See [LICENSE](LICENSE) and
