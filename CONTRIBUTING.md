@@ -18,6 +18,7 @@ them, because a duplicated rule is a rule that will drift.
 | Write a commit | [§5](#5-commits) |
 | Open a pull request | [§6](#6-pull-requests) |
 | Claim a performance improvement | [`docs/MEASUREMENT-AUDIT.md`](docs/MEASUREMENT-AUDIT.md) — **not optional** |
+| Write or change a test | [`docs/TESTING-STRATEGY.md`](docs/TESTING-STRATEGY.md) — the failure classes this project actually has, and how to test against them |
 | Change an invariant or a public contract | [§7](#7-decisions-that-need-an-adr) |
 
 ---
