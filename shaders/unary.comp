@@ -112,6 +112,32 @@ float sigmoid_op(float x) {
     return e / (1.0 + e);
 }
 
+/// tanh, saturated before the built-in can overflow.
+///
+/// GLSL defines tanh as (e^x - e^-x) / (e^x + e^-x), and an implementation that
+/// evaluates that literally produces inf/inf = NaN once |x| passes
+/// ln(FLT_MAX) = 88.7228. A FINITE input then yields NaN, which breaks the
+/// oracle contract in ARCHITECTURE.md 7 and fails silently -- a NaN appearing
+/// mid-network reads as a diverged model, not a kernel defect. RADV computes it
+/// some other way and is unaffected; AMD's Windows driver is not (issue #26).
+///
+/// The same lesson as f16 narrowing in common.glsl: where a built-in's edge
+/// behaviour is left to the implementation, do not depend on it.
+///
+/// Clamping the INPUT rather than the output keeps the built-in on the path for
+/// every argument it handles. 10.0 is where the answer saturates in f32 --
+/// tanh(10) is exactly 1.0f, while tanh(9.5) is still 0.99999994 -- so no value
+/// loses precision to this.
+///
+/// NaN passes through: `abs(NaN) > 10.0` is false, as every NaN comparison is,
+/// so a NaN reaches the built-in and stays one, matching std::tanh on the CPU.
+float tanh_op(float x) {
+    if (abs(x) > 10.0) {
+        return x > 0.0 ? 1.0 : -1.0;
+    }
+    return tanh(x);
+}
+
 /// Exact GELU: 0.5x(1 + erf(x/sqrt2)), matching torch's default
 /// approximate='none'. The tanh approximation differs by up to ~1e-3, far
 /// outside the 1e-5 gate, and would look like a bug rather than a choice.
@@ -120,6 +146,24 @@ float sigmoid_op(float x) {
 /// u < 0: at x = -3 the true value is 2.7e-3 formed from 1 and -0.997, losing
 /// most of the significand. `1 + erf(u) == erfc(-u)` computes it directly.
 float gelu_op(float x) {
+    // Past this magnitude erfc_pos underflows to exactly 0, so the weight below
+    // is exactly 2.0 for positive x and exactly 0.0 for negative -- meaning the
+    // answer is x, or a zero carrying x's sign, and no multiplication is needed
+    // to find that out.
+    //
+    // Doing it here rather than relying on the arithmetic is not caution, it is
+    // required. `0.5 * x * w` forms x * w under some groupings, which exceeds
+    // FLT_MAX and returns inf where the CPU returns x; and GLSL permits an
+    // implementation to REASSOCIATE a non-precise expression however it likes,
+    // so parenthesising it differently is not a fix. Measured: gelu of the
+    // largest finite float returned inf on RADV both as written and grouped.
+    // +inf takes the first branch and returns +inf, which is what torch and the
+    // CPU both give. -inf deliberately does NOT take the second: the limit is 0,
+    // but (-inf) * 0 is NaN and both torch and the CPU oracle produce NaN, so
+    // matching them wins over being mathematically tidier than they are.
+    if (x > 1e38) { return x; }
+    if (x < -1e38 && !isinf(x)) { return x * 0.0; }  // -0.0, as the CPU produces
+
     const float u = x * kInvSqrt2;
     const float w = x < 0.0 ? erfc_pos(-u) : 2.0 - erfc_pos(u);
     return 0.5 * x * w;
@@ -149,7 +193,7 @@ float apply_op(float x) {
         case OP_ERF:        return erf_op(x);
         case OP_SIN:        return sin(x);
         case OP_COS:        return cos(x);
-        case OP_TANH:       return tanh(x);
+        case OP_TANH:       return tanh_op(x);
         case OP_SIGMOID:    return sigmoid_op(x);
         case OP_GELU:       return gelu_op(x);
         case OP_SILU:       return x * sigmoid_op(x);
