@@ -39,6 +39,21 @@ REPO = Path(__file__).resolve().parent.parent
 PACKAGE = REPO / "python" / "vkml"
 BUILD_DIR = REPO / "build" / "cpu-only"
 
+# The interpreter to build and test against.
+#
+# NOT simply sys.executable. This gate is normally invoked as
+# `python scripts/check_cpu_only_build.py`, which on a machine with a project
+# virtualenv is usually the SYSTEM python -- and the system python has no
+# nanobind, so CMake refused to configure and the gate failed with
+# "nanobind not found" rather than anything about the CPU-only build. A gate
+# that goes red for a reason unrelated to what it checks is a gate people learn
+# to ignore.
+#
+# Prefer the project virtualenv when there is one, matching what
+# scripts/mutation_check.py does, and fall back to the running interpreter.
+_VENV_CANDIDATES = (REPO / ".venv/bin/python", REPO / ".venv/Scripts/python.exe")
+PYTHON = str(next((p for p in _VENV_CANDIDATES if p.is_file()), Path(sys.executable)))
+
 
 def extension_files() -> list[Path]:
     """The built extension, whatever this interpreter names it.
@@ -64,11 +79,11 @@ def build_cpu_only() -> bool:
         "-DVKML_BUILD_PYTHON=ON",
         "-DVKML_BUILD_TESTS=OFF",
         "-DVKML_BUILD_BENCH=OFF",
-        # Pinned to the interpreter running this script. Without it CMake picks
-        # whichever Python it finds first, which on a machine with a virtualenv
-        # is usually the wrong one, and the build then fails on a missing
-        # nanobind that is installed in the venv it did not choose.
-        f"-DPython_EXECUTABLE={sys.executable}",
+        # Pinned to PYTHON above. Without it CMake picks whichever Python it
+        # finds first, which on a machine with a virtualenv is usually the wrong
+        # one, and the build then fails on a missing nanobind that is installed
+        # in the venv it did not choose.
+        f"-DPython_EXECUTABLE={PYTHON}",
     ])
     if configure.returncode != 0:
         return False
@@ -99,7 +114,7 @@ def main() -> int:
             # Assert the swap actually happened. Without this the suite could run
             # against the Vulkan extension and report a green that means nothing
             # -- the exact vacuous pass this script exists to prevent.
-            probe = run([sys.executable, "-c",
+            probe = run([PYTHON, "-c",
                          "import sys;sys.path.insert(0,'python');import vkml;"
                          "print(vkml.has_vulkan)"],
                         capture_output=True, text=True)
@@ -109,7 +124,7 @@ def main() -> int:
                 return 1
 
             print("\nrunning the Python suite against the CPU-only build\n")
-            passed = run([sys.executable, "-m", "pytest", "tests/python", "-q"]).returncode == 0
+            passed = run([PYTHON, "-m", "pytest", "tests/python", "-q"]).returncode == 0
         finally:
             if args.keep:
                 print("\n--keep: leaving the CPU-only extension in place")
