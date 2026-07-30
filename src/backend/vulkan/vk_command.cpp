@@ -1,5 +1,7 @@
 #include "vk_command.h"
 
+#include "vk_dispatch_grid.h"
+
 #include "vkml/util/assert.h"
 #include "vkml/util/log.h"
 
@@ -183,29 +185,18 @@ void Recorder::dispatch(const PipelineCache::Pipeline& pipeline, const void* pus
                            push_constant_bytes, push_constants);
     }
 
-    const uint64_t groups = (element_count + pipeline.workgroup_size - 1) / pipeline.workgroup_size;
-
-    // maxComputeWorkGroupCount[x] is only GUARANTEED to be 65535, which caps a
-    // one-dimensional dispatch at 65535 * workgroup_size elements -- 16,776,960
-    // at the usual width of 256, or 64 MiB of f32. That is an ordinary tensor:
-    // one batch of 256 ImageNet images is over twice it. Development hardware
-    // reports far more, so the ceiling was never met until a driver reporting
-    // exactly the floor did (issue #20).
-    //
-    // The excess folds into y. Every kernel on this path reconstructs the flat
-    // index with global_index() in common.glsl, which is identically
-    // gl_GlobalInvocationID.x whenever y has a single group -- so the common
-    // one-dimensional case dispatches exactly as it did before.
-    const uint64_t max_x = ctx_.info().max_workgroup_count[0];
-    const uint64_t groups_x = groups <= max_x ? groups : max_x;
-    const uint64_t groups_y = (groups + groups_x - 1) / groups_x;
-
-    VKML_CHECK(groups_y <= ctx_.info().max_workgroup_count[1], DeviceError,
-               "dispatch needs {} workgroups ({} x {}) but the device allows {} x {}", groups,
-               groups_x, groups_y, max_x, ctx_.info().max_workgroup_count[1]);
+    // The geometry lives in vk_dispatch_grid.h, as a pure function taking the
+    // limits as parameters. It is not inlined here because the device this runs
+    // on reports 2^32-1 workgroups in x against a guaranteed 65535, so the
+    // folding path is unreachable locally -- and a rule that cannot be exercised
+    // on the machine that writes it is how issue #20 shipped. Separated, it is
+    // tested against the guaranteed minimum in every build.
+    const DispatchGrid grid = choose_dispatch_grid(element_count, pipeline.workgroup_size,
+                                                   ctx_.info().max_workgroup_count[0],
+                                                   ctx_.info().max_workgroup_count[1]);
 
     begin_timestamp("dispatch");
-    vkCmdDispatch(cmd_, static_cast<uint32_t>(groups_x), static_cast<uint32_t>(groups_y), 1);
+    vkCmdDispatch(cmd_, grid.groups_x, grid.groups_y, 1);
     end_timestamp();
     ++dispatch_count_;
 }

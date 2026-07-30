@@ -28,6 +28,11 @@ set(VKML_TEST_SOURCES
     test_graph.cpp
     test_ops.cpp
     test_aliasing.cpp
+    # Dispatch geometry against Vulkan's GUARANTEED limits. Unconditional on
+    # purpose: it is pure arithmetic needing no device and no Vulkan build, so
+    # it runs in the CPU-only configuration three CI jobs use and the Windows
+    # job -- the configurations where issue #20 was missed.
+    test_dispatch_grid.cpp
 )
 
 if(VKML_VULKAN)
@@ -37,6 +42,11 @@ endif()
 add_executable(vkml_tests ${VKML_TEST_SOURCES})
 
 target_link_libraries(vkml_tests PRIVATE vkml doctest vkml_warnings)
+
+# vk_dispatch_grid.h pulls in no Vulkan headers, so this path is safe to add
+# unconditionally -- and it must be, because test_dispatch_grid.cpp is built even
+# when the Vulkan backend is not.
+target_include_directories(vkml_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/backend/vulkan)
 
 if(VKML_VULKAN)
     # The Vulkan test reaches into the backend's internal header directly:

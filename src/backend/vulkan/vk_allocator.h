@@ -32,7 +32,9 @@ enum class MemoryKind : uint8_t {
     /// NOT GUARANTEED TO EXIST. The heap is small where it exists at all (256
     /// MiB on NAVI10) and some devices expose none, so allocation falls back to
     /// HostStaging and says so -- correct everywhere, slower where it lands.
-    /// Ask `device_local_mapped_available()` before assuming the fast path.
+    /// Read `Allocation::kind` afterwards to find out which one you got; there
+    /// is no way to ask in advance, and adding one before a caller needs it
+    /// would be a public accessor with nothing to check it.
     DeviceLocalMapped,
 };
 
