@@ -20,6 +20,7 @@ because it is loaded into every session and long files crowd out the work.
 | Wondering why the design is like this | `docs/ARCHITECTURE.md`, then `docs/adr/` |
 | Touching numerics | `docs/THEORY.md` — error bounds, pairwise summation, stability |
 | Claiming a speedup | `docs/MEASUREMENT-AUDIT.md` — **not optional**; it lists the instruments that lie |
+| Adding or changing a test | `docs/TESTING-STRATEGY.md` — why a green suite missed 26 bugs, and the four rules that came out of it |
 
 **The skill and the docs are the source of truth.** If this file disagrees with
 them, they win and this file is stale — say so.
