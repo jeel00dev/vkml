@@ -49,6 +49,7 @@ REQUIRED_KEYS = {
     "min_subgroup_size",
     "max_subgroup_size",
     "max_workgroup_invocations",
+    "max_workgroup_count_x",
     "shader_core_count",
     "max_shared_memory",
     "max_push_constants",

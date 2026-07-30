@@ -141,6 +141,11 @@ def print_device(index: int, d: dict) -> None:
         f"(controllable {d['min_subgroup_size']}..{d['max_subgroup_size']})"
     )
     print(f"    workgroup ......... {d['max_workgroup_invocations']} invocations")
+    # The elementwise ceiling follows from this: a one-dimensional dispatch
+    # covers count * workgroup_size elements, so a device at the guaranteed
+    # 65535 caps it at 64 MiB of f32 (issue #20). Printed with that consequence
+    # spelled out, because the raw number looks unremarkable next to the others.
+    print(f"    workgroups ........ {d['max_workgroup_count_x']:,} per dispatch in x")
     print(f"    shared memory ..... {d['max_shared_memory'] // 1024} KiB")
     print(f"    push constants .... {d['max_push_constants']} bytes")
     print(f"    max allocation .... {gib(d['max_allocation_size'])}")

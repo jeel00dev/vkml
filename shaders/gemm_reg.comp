@@ -75,7 +75,6 @@ layout(constant_id = 10) const uint OUT_DTYPE = T_F32;
 // The A read depends only on ty, so threads sharing a ty broadcast.
 layout(constant_id = 8) const uint LDS_VEC = 0;
 
-layout(local_size_x_id = 0) in;
 
 layout(push_constant, scalar) uniform Params {
     uint64_t a;

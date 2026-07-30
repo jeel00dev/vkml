@@ -7,7 +7,6 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
-layout(local_size_x_id = 0) in;
 
 layout(constant_id = 1) const uint SRC_TYPE = 0;
 layout(constant_id = 2) const uint DST_TYPE = 0;
@@ -26,7 +25,7 @@ layout(push_constant, scalar) uniform Params {
 } p;
 
 void main() {
-    const uint i = gl_GlobalInvocationID.x;
+    const uint i = global_index();
     if (i >= p.n) { return; }
 
     // Everything funnels through double-width float. i64 values beyond 2^24

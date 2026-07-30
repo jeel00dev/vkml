@@ -14,7 +14,6 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
-layout(local_size_x_id = 0) in;
 
 // Operation selector.
 layout(constant_id = 1) const uint OP = 0;
@@ -166,7 +165,7 @@ float apply_op(float x) {
 }
 
 void main() {
-    const uint i = gl_GlobalInvocationID.x;
+    const uint i = global_index();
     if (i >= p.n) { return; }
 
     const uint si = CONTIGUOUS ? i : operand_offset(i, p.in_op);

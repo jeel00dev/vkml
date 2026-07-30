@@ -99,6 +99,12 @@ struct DeviceReport {
     uint32_t min_subgroup_size = 0;
     uint32_t max_subgroup_size = 0;
     uint32_t max_workgroup_invocations = 0;
+    /// Workgroups per dispatch in x. Guaranteed to be at least 65535 and often
+    /// far more, which is why a device reporting exactly the floor capped an
+    /// elementwise dispatch at 64 MiB before anyone noticed (issue #20). Reported
+    /// because a limit absent from the device report is a limit nobody can
+    /// diagnose from a bug report.
+    uint32_t max_workgroup_count_x = 0;
     /// 0 means the driver did not report it, never "no compute units".
     uint32_t shader_core_count = 0;
     uint64_t max_shared_memory = 0;

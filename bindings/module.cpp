@@ -717,6 +717,7 @@ NB_MODULE(_vkml_core, m) {
                 d["min_subgroup_size"] = r.min_subgroup_size;
                 d["max_subgroup_size"] = r.max_subgroup_size;
                 d["max_workgroup_invocations"] = r.max_workgroup_invocations;
+                d["max_workgroup_count_x"] = r.max_workgroup_count_x;
                 d["shader_core_count"] = r.shader_core_count;
                 d["max_shared_memory"] = r.max_shared_memory;
                 d["max_push_constants"] = r.max_push_constants;

@@ -141,6 +141,34 @@ void store_f(uint64_t buf, uint idx, float value, uint dtype) {
     F32Buf(buf).v[idx] = value;
 }
 
+/// Workgroup width, supplied by the host as specialisation constant 0.
+///
+/// Declared here rather than in each shader because global_index() below must
+/// read gl_WorkGroupSize, and GLSL forbids that before the size is fixed -- with
+/// the declaration in the including file it comes too late. Every shader used
+/// the identical line, so this is also one definition instead of twenty-four.
+/// The width itself is chosen by KernelConfig::workgroup_size on the host.
+layout(local_size_x_id = 0) in;
+
+/// This invocation's flat element index, across a dispatch grid of any shape.
+///
+/// WHY NOT gl_GlobalInvocationID.x. maxComputeWorkGroupCount[x] is guaranteed to
+/// be only 65535, so a one-dimensional dispatch cannot cover more than
+/// 65535 * workgroup_size elements -- 64 MiB of f32 at the usual width. The host
+/// folds anything larger into y (Recorder::dispatch), and the flat index then has
+/// to be reconstructed from both dimensions.
+///
+/// Identical to gl_GlobalInvocationID.x when y holds a single group, because
+/// gl_GlobalInvocationID.y is then 0. The common case is unchanged, which is what
+/// makes this safe to use in every kernel rather than only the large ones.
+///
+/// Local size in y is always 1, so gl_GlobalInvocationID.y is the y group index
+/// and the x extent is gl_NumWorkGroups.x * gl_WorkGroupSize.x.
+uint global_index() {
+    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x)
+         + gl_GlobalInvocationID.x;
+}
+
 /// Layout of one strided operand. Mirrors vkml::Shape.
 ///
 /// Strides are in ELEMENTS here, not bytes as on the host side. The conversion

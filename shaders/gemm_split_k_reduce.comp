@@ -37,7 +37,6 @@ layout(constant_id = 1) const uint SPLIT_LEVELS = 5;
 // destination needs a storage type here.
 layout(constant_id = 2) const uint OUT_DTYPE = T_F32;
 
-layout(local_size_x_id = 0) in;
 
 layout(push_constant, scalar) uniform Params {
     uint64_t src;   // workspace base: `splits` consecutive M*N*batch slices
@@ -47,7 +46,7 @@ layout(push_constant, scalar) uniform Params {
 } p;
 
 void main() {
-    const uint idx = gl_GlobalInvocationID.x;
+    const uint idx = global_index();
     if (idx >= p.ne) { return; }
 
     // One invocation owns one output element for the whole reduction, so no

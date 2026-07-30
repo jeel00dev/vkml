@@ -16,7 +16,6 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
-layout(local_size_x_id = 0) in;
 
 layout(push_constant, scalar) uniform Params {
     uint64_t src;      // the incoming gradient, narrowed extent
@@ -31,7 +30,7 @@ layout(push_constant, scalar) uniform Params {
 } p;
 
 void main() {
-    const uint i = gl_GlobalInvocationID.x;
+    const uint i = global_index();
     if (i >= p.n) { return; }
 
     // Unravel over the OUTPUT extents, keeping the per-axis indices: the axis

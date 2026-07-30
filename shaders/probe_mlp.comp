@@ -32,7 +32,6 @@ layout(constant_id = 1) const uint MLP = 4;
 layout(constant_id = 2) const uint PAD_FLOATS = 0;
 const uint PAD_ALLOC = PAD_FLOATS > 0u ? PAD_FLOATS : 1u;
 
-layout(local_size_x_id = 0) in;
 
 layout(push_constant, scalar) uniform Params {
     uint64_t src;

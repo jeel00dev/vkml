@@ -41,7 +41,6 @@ const uint VSIZE_ALLOC = VSIZE > 0u ? VSIZE : 1u;
 // array out of existence rather than allocating it.
 layout(constant_id = 4) const uint DYNAMIC = 1;
 
-layout(local_size_x_id = 0) in;
 
 layout(push_constant, scalar) uniform Params {
     uint64_t dst;

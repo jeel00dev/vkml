@@ -40,7 +40,6 @@ layout(constant_id = 1) const uint TILE = 16;
 layout(constant_id = 2) const uint DTYPE = T_F32;
 layout(constant_id = 3) const uint OUT_DTYPE = T_F32;
 
-layout(local_size_x_id = 0) in;
 
 layout(push_constant, scalar) uniform Params {
     uint64_t a;

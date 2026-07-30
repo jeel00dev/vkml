@@ -2384,6 +2384,7 @@ std::vector<DeviceReport> vulkan_device_reports() {
         r.min_subgroup_size = info.min_subgroup_size;
         r.max_subgroup_size = info.max_subgroup_size;
         r.max_workgroup_invocations = info.max_workgroup_invocations;
+        r.max_workgroup_count_x = info.max_workgroup_count[0];
         r.shader_core_count = info.shader_core_count;
         r.max_shared_memory = info.max_shared_memory;
         r.max_push_constants = info.max_push_constants;

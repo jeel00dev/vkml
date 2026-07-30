@@ -11,7 +11,6 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
-layout(local_size_x_id = 0) in;
 
 // Storage type of the operands and result. Conversion happens at the memory
 // boundary; everything between is float (docs/ARCHITECTURE.md 7.3).
@@ -30,7 +29,7 @@ layout(push_constant, scalar) uniform Params {
 } p;
 
 void main() {
-    const uint i = gl_GlobalInvocationID.x;
+    const uint i = global_index();
     if (i >= p.n) { return; }
 
     const uint rest  = i % p.inner;

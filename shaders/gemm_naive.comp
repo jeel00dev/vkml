@@ -28,7 +28,6 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
-layout(local_size_x_id = 0) in;
 
 // Storage types. DTYPE is the OPERANDS'; OUT_DTYPE is the destination's, and
 // they differ in exactly one case: under split-K this kernel writes f32 partial
@@ -55,7 +54,7 @@ layout(push_constant, scalar) uniform Params {
 #define STACK_LEVELS 24
 
 void main() {
-    const uint gid = gl_GlobalInvocationID.x;
+    const uint gid = global_index();
     if (gid >= p.n_out) { return; }
 
     // Decompose the flat id into (batch0, batch1, row, col). The output is

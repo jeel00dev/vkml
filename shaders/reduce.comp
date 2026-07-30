@@ -33,7 +33,6 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
-layout(local_size_x_id = 0) in;
 
 layout(constant_id = 1) const uint OP = 0;
 layout(constant_id = 2) const uint WG = 256;
