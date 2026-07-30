@@ -43,8 +43,26 @@ pytest captures stderr, and a `if (true)` control was what exposed it):
 | Do `where`'s four operands carry the same extents? | **Yes, 101/101.** Inputs arrive already expanded to the output shape; broadcasting is carried entirely by zero strides |
 | Do `cat`'s? | **No, 22/22 differ.** It concatenates along an axis, so the inputs genuinely have different extents there |
 
+`softmax` was not measured at the time, and issue #24 was right that the
+omission changes this section's conclusion. Measured now, the same way:
+
+| Question | Result |
+|---|---|
+| Do `softmax`'s four operands share extents pairwise? | **Yes, 160/160.** `in_kept.ne == out_kept.ne` and `in_axis.ne == out_axis.ne` on every live dispatch across the whole Python suite |
+
+That puts `SoftmaxPush` at **120 bytes** under the repack — inside the
+guarantee:
+
+```
+today                                152 B      extents once per split   120 B
+  2x uint64 src, dst          16              2x uint64 + 2x uint32     24
+  2x uint32 n_out, n_axis      8              2x ne (kept, axis)        32
+  4x GpuOperand              128              4x nb                     64
+```
+
 So the obvious repack — store the extents once per dispatch rather than once per
-operand — fixes `where` (168 → 120) and does not generalise. That asymmetry is
+operand — fixes `where` (168 → 120) **and `softmax` (152 → 120)**, and does not
+generalise only to `cat`. That asymmetry is
 the argument against per-op packing: it works, but every future kernel has to
 re-derive its own budget and discover for itself which trick applies.
 
