@@ -81,6 +81,31 @@ struct GpuOperand {
     return op;
 }
 
+/// What Vulkan actually guarantees for `maxPushConstantsSize`.
+///
+/// The whole block-size question below is a PORTABILITY question, not a
+/// question about this machine, and every assertion here used to be written
+/// against 256 -- the limit the development GPU happens to report. A device
+/// that reports the guaranteed minimum instead cannot create those pipelines at
+/// all, which is issue #2: on AMD's Windows driver the suite fails and MNIST
+/// cannot train, while every gate here stayed green because no machine the
+/// project builds on can see the problem.
+///
+/// Asserting against the guaranteed floor makes it a COMPILE error on every
+/// machine, including the ones that would otherwise never reproduce it.
+inline constexpr size_t kGuaranteedPushConstantBytes = 128;
+
+/// The budget for blocks that do not fit the guarantee yet.
+///
+/// Three do: WherePush, SoftmaxPush and CatPush, all dominated by a 32-byte
+/// GpuOperand per tensor. Moving that metadata into a device buffer is decided
+/// but not implemented (docs/adr/0009); until then they are pinned here rather
+/// than silently asserted against a number that means nothing.
+///
+/// Every OTHER block asserts against the guarantee, so a newly added kernel
+/// cannot join this list by accident -- which is the property that was missing.
+inline constexpr size_t kOverBudgetPushConstantBytes = 256;
+
 struct FillPush {
     uint64_t dst;
     uint32_t n;
@@ -111,7 +136,8 @@ struct BinaryPush {
     GpuOperand out_op;
 };
 
-static_assert(sizeof(BinaryPush) <= 256, "binary push constants exceed the device budget");
+static_assert(sizeof(BinaryPush) <= kGuaranteedPushConstantBytes,
+              "BinaryPush exceeds the push-constant size Vulkan guarantees");
 
 struct WherePush {
     uint64_t cond;
@@ -125,7 +151,9 @@ struct WherePush {
     GpuOperand out_op;
 };
 
-static_assert(sizeof(WherePush) <= 256, "where push constants exceed the device budget");
+// Over the guarantee: tracked by issue #2 / docs/adr/0009.
+static_assert(sizeof(WherePush) <= kOverBudgetPushConstantBytes,
+              "WherePush exceeds even the development GPU's budget");
 
 struct TriPush {
     uint64_t src;
@@ -138,7 +166,8 @@ struct TriPush {
     GpuOperand out_op;
 };
 
-static_assert(sizeof(TriPush) <= 256, "tri push constants exceed the device budget");
+static_assert(sizeof(TriPush) <= kGuaranteedPushConstantBytes,
+              "TriPush exceeds the push-constant size Vulkan guarantees");
 
 struct CatPush {
     uint64_t a;
@@ -154,7 +183,9 @@ struct CatPush {
     GpuOperand out_op;
 };
 
-static_assert(sizeof(CatPush) <= 256, "cat push constants exceed the device budget");
+// Over the guarantee: tracked by issue #2 / docs/adr/0009.
+static_assert(sizeof(CatPush) <= kOverBudgetPushConstantBytes,
+              "CatPush exceeds even the development GPU's budget");
 
 /// Shared by index_select and scatter_add: the two are adjoints and remap the
 /// same axis, so they need the same description of it.
@@ -170,7 +201,8 @@ struct GatherPush {
     GpuOperand out_op;
 };
 
-static_assert(sizeof(GatherPush) <= 256, "gather push constants exceed the device budget");
+static_assert(sizeof(GatherPush) <= kGuaranteedPushConstantBytes,
+              "GatherPush exceeds the push-constant size Vulkan guarantees");
 
 /// Shared by im2col and col2im: adjoints over the same window geometry, so
 /// they need the same description of it. The window counts and row total are
@@ -191,7 +223,8 @@ struct UnfoldPush {
     GpuOperand in_op;
 };
 
-static_assert(sizeof(UnfoldPush) <= 256, "unfold push constants exceed the device budget");
+static_assert(sizeof(UnfoldPush) <= kGuaranteedPushConstantBytes,
+              "UnfoldPush exceeds the push-constant size Vulkan guarantees");
 
 /// Max pooling and its adjoint. `input` is used only by the adjoint, which
 /// recomputes the argmax rather than reading a stored index.
@@ -202,7 +235,8 @@ struct RandPush {
     uint64_t offset;
 };
 
-static_assert(sizeof(RandPush) <= 256, "rand push constants exceed the device budget");
+static_assert(sizeof(RandPush) <= kGuaranteedPushConstantBytes,
+              "RandPush exceeds the push-constant size Vulkan guarantees");
 
 struct SliceBackwardPush {
     uint64_t src;
@@ -216,8 +250,8 @@ struct SliceBackwardPush {
     GpuOperand out_op;
 };
 
-static_assert(sizeof(SliceBackwardPush) <= 256,
-              "slice_backward push constants exceed the device budget");
+static_assert(sizeof(SliceBackwardPush) <= kGuaranteedPushConstantBytes,
+              "SliceBackwardPush exceeds the push-constant size Vulkan guarantees");
 
 struct PoolPush {
     uint64_t src;
@@ -232,7 +266,8 @@ struct PoolPush {
     int32_t out_h, out_w;
 };
 
-static_assert(sizeof(PoolPush) <= 256, "pool push constants exceed the device budget");
+static_assert(sizeof(PoolPush) <= kGuaranteedPushConstantBytes,
+              "PoolPush exceeds the push-constant size Vulkan guarantees");
 
 struct ReducePush {
     uint64_t src;
@@ -243,7 +278,8 @@ struct ReducePush {
     GpuOperand reduced;
 };
 
-static_assert(sizeof(ReducePush) <= 256, "reduce push constants exceed the device budget");
+static_assert(sizeof(ReducePush) <= kGuaranteedPushConstantBytes,
+              "ReducePush exceeds the push-constant size Vulkan guarantees");
 
 /// Splits a shape into the axes a reduction keeps and the axes it collapses.
 ///
@@ -286,7 +322,9 @@ struct SoftmaxPush {
     GpuOperand out_axis;
 };
 
-static_assert(sizeof(SoftmaxPush) <= 256, "softmax push constants exceed the device budget");
+// Over the guarantee: tracked by issue #2 / docs/adr/0009.
+static_assert(sizeof(SoftmaxPush) <= kOverBudgetPushConstantBytes,
+              "SoftmaxPush exceeds even the development GPU's budget");
 
 struct GemmPush {
     uint64_t a;
@@ -301,7 +339,8 @@ struct GemmPush {
     GpuOperand op_b;
 };
 
-static_assert(sizeof(GemmPush) <= 256, "gemm push constants exceed the device budget");
+static_assert(sizeof(GemmPush) <= kGuaranteedPushConstantBytes,
+              "GemmPush exceeds the push-constant size Vulkan guarantees");
 
 struct SplitKReducePush {
     uint64_t src;
@@ -310,8 +349,8 @@ struct SplitKReducePush {
     uint32_t splits;
 };
 
-static_assert(sizeof(SplitKReducePush) <= 256,
-              "split-k reduce push constants exceed the device budget");
+static_assert(sizeof(SplitKReducePush) <= kGuaranteedPushConstantBytes,
+              "SplitKReducePush exceeds the push-constant size Vulkan guarantees");
 
 /// GEMV dispatch mode. AUTO is identical to OFF: M4-R1 implements and measures
 /// the kernel; enabling it by default is a separate decision with its own
@@ -461,7 +500,8 @@ struct CastPush {
     uint32_t n;
 };
 
-static_assert(sizeof(UnaryPush) <= 256, "unary push constants exceed the device budget");
+static_assert(sizeof(UnaryPush) <= kGuaranteedPushConstantBytes,
+              "UnaryPush exceeds the push-constant size Vulkan guarantees");
 
 /// Mirrors the OP_* codes in shaders/unary.comp. Codes 0-4 are frozen; adding
 /// an operation appends.

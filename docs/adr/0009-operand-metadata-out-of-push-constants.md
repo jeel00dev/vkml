@@ -104,6 +104,34 @@ are easy to get silently wrong.
    reclaimed against the existing timeline semaphore. Overwriting in place would
    produce wrong results only under load, which is the worst way to find out.
 
+## 4a. A second instance of the same root cause, found while gating this
+
+The defect in §1 is not really "push constants are too big". It is **limits
+asserted against the development machine instead of against the guarantee**, and
+once the assertions were rewritten against the floor, a second instance turned
+up immediately.
+
+Every pipeline vkML creates requests a workgroup of **256 invocations**
+(`KernelConfig::workgroup_size` defaults to it, and measurement across the whole
+Python suite found no kernel using anything else). The Vulkan specification's
+Required Limits table puts the minimum `maxComputeWorkGroupInvocations` at
+**128** — cited from the spec, not measured here, and worth confirming before
+acting on it.
+
+If that floor is right, the blast radius is larger than §1: a conformant device
+reporting the minimum cannot create **any** vkML pipeline, not merely the three
+oversized ones. It has not been reported because it has not been met — both
+development GPUs report 1024, and the Windows device in issue #2 got far enough
+to fail on push constants, which means it too reports more than 128.
+
+Measured shared memory is fine: the largest request is 8192 bytes against a
+guaranteed 16384.
+
+**Not fixed here, deliberately.** Halving the workgroup changes occupancy and
+the GEMM tile geometry is tuned around the current width, so this is a
+performance decision with a benchmark attached, not a portability patch. Recorded
+rather than silently carried (P7).
+
 ## 5. Verification this must carry
 
 - The static asserts change from `<= 256` to the guaranteed minimum, so the
