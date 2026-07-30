@@ -31,6 +31,7 @@ Check it yourself rather than trusting this docstring:
 
 from __future__ import annotations
 
+import gzip
 import io
 import pickle
 import pickletools
@@ -105,18 +106,35 @@ def _member_bytes() -> dict[str, bytes]:
     doctored archive has nowhere to write.
     """
     path = _archive_path()
-    if path.suffix == ".zip":
-        with zipfile.ZipFile(path) as archive:
-            return {key: archive.read(member) for key, member in MEMBERS.items()}
+    try:
+        if path.suffix == ".zip":
+            with zipfile.ZipFile(path) as archive:
+                return {key: archive.read(member) for key, member in MEMBERS.items()}
 
-    with tarfile.open(path, "r:gz") as archive:
-        out = {}
-        for key, member in MEMBERS.items():
-            handle = archive.extractfile(member)
-            if handle is None:
-                raise ValueError(f"{member} is missing from {path.name}")
-            out[key] = handle.read()
-        return out
+        with tarfile.open(path, "r:gz") as archive:
+            out = {}
+            for key, member in MEMBERS.items():
+                handle = archive.extractfile(member)
+                if handle is None:
+                    raise ValueError(f"{member} is missing from {path.name}")
+                out[key] = handle.read()
+            return out
+    except (EOFError, tarfile.ReadError, zipfile.BadZipFile, gzip.BadGzipFile) as exc:
+        # An INCOMPLETE archive, which is likelier here than a missing one: the
+        # download is manual precisely because the host dislikes being scripted
+        # at, and it throttles hard enough that interrupting it is the normal
+        # outcome. Untranslated, this surfaced as a twenty-line traceback ending
+        # in `EOFError: Compressed file ended before the end-of-stream marker was
+        # reached` -- which never names CIFAR-100, this file, or the remedy
+        # (issue #18).
+        #
+        # _archive_path() already says the right thing when the file is absent;
+        # this is the same courtesy for a file that is present and unusable.
+        raise ValueError(
+            f"{path} is not a complete archive ({path.stat().st_size:,} bytes): "
+            f"{type(exc).__name__}: {exc}. The download was probably interrupted -- "
+            f"{SOURCE_URL} is slow and throttles. Delete the file and fetch it again."
+        ) from exc
 
 
 def _unpickle(payload: bytes) -> dict:
