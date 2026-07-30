@@ -106,6 +106,20 @@ def main() -> int:
             shutil.copy2(path, Path(stash) / path.name)
         print(f"saved {len(saved)} extension file(s); they will be restored afterwards\n")
 
+        # Delete before building, or the build may not produce anything.
+        #
+        # Both configurations link their extension to python/vkml, so that path
+        # is the CPU-only target's own output. CMake sees a file there newer
+        # than its sources, concludes the target is up to date and skips the
+        # link -- leaving the VULKAN extension in place for the suite to run
+        # against. The has_vulkan probe below then fails, correctly but
+        # confusingly, on a run where nothing was actually wrong with the code.
+        #
+        # Removing the output first makes the link unconditional. Safe because
+        # the original is already in the stash and restored in the `finally`.
+        for path in saved:
+            path.unlink()
+
         try:
             if not build_cpu_only():
                 print("\nCPU-only BUILD failed", file=sys.stderr)
