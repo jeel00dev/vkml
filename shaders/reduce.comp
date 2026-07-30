@@ -73,7 +73,7 @@ bool is_minmax(){ return OP == OP_MAX || OP == OP_MIN || is_arg(); }
 #define STACK_LEVELS 24
 
 void main() {
-    const uint out_id = gl_WorkGroupID.x;
+    const uint out_id = global_group_index();
     if (out_id >= p.n_out) { return; }
 
     const uint lane = gl_LocalInvocationID.x;

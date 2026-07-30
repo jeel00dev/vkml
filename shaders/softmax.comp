@@ -73,7 +73,7 @@ shared float pad_buf[PAD_ALLOC];
 #define STACK_LEVELS 24
 
 void main() {
-    const uint row = gl_WorkGroupID.x;
+    const uint row = global_group_index();
     if (row >= p.n_out) { return; }
 
     const uint lane = gl_LocalInvocationID.x;

@@ -169,6 +169,20 @@ uint global_index() {
          + gl_GlobalInvocationID.x;
 }
 
+/// This workgroup's flat index, across a dispatch grid of any shape.
+///
+/// The group-granularity counterpart of global_index(), for kernels where one
+/// workgroup owns one output row rather than one invocation owning one element:
+/// reductions, softmax, GEMV and the GEMM family.
+///
+/// Same ceiling and same remedy. A reduction dispatches one group per output
+/// row, so a tensor with more than 65535 rows exceeds a one-dimensional grid --
+/// 32 images of 3x64x64 pooled to 32x32 is already 98,304 rows. Identical to
+/// gl_WorkGroupID.x when y holds a single group.
+uint global_group_index() {
+    return gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+}
+
 /// Layout of one strided operand. Mirrors vkml::Shape.
 ///
 /// Strides are in ELEMENTS here, not bytes as on the host side. The conversion

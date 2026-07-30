@@ -104,7 +104,7 @@ shared float pad_buf[PAD_ALLOC];
 
 void main() {
     // One workgroup owns one output element of a (b0, b1, m, n) tensor.
-    const uint out_id = gl_WorkGroupID.x;
+    const uint out_id = global_group_index();
     if (out_id >= p.n_out) { return; }
 
     const uint col   = out_id % p.n;

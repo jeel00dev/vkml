@@ -109,7 +109,7 @@ void main() {
     const uint tiles_n = (p.n + BN - 1u) / BN;
     const uint tiles_m = (p.m + BM - 1u) / BM;
 
-    const uint wg_id  = gl_WorkGroupID.x;
+    const uint wg_id  = global_group_index();
     const uint tile_c = wg_id % tiles_n;
     const uint rest0  = wg_id / tiles_n;
     const uint tile_r = rest0 % tiles_m;

@@ -64,7 +64,7 @@ void main() {
     const uint tiles_m = (p.m + TILE - 1u) / TILE;
 
     // One workgroup per output tile, per batch element.
-    const uint wg_id   = gl_WorkGroupID.x;
+    const uint wg_id   = global_group_index();
     const uint tile_c  = wg_id % tiles_n;
     const uint rest0   = wg_id / tiles_n;
     const uint tile_r  = rest0 % tiles_m;

@@ -118,6 +118,54 @@ def test_elementwise_crosses_the_workgroup_count_boundary(offset):
                                   err_msg="binary result is misplaced past the 1-D ceiling")
 
 
+def reduction_row_ceiling() -> int:
+    """Largest number of output rows a one-dimensional reduction could cover.
+
+    The reduction path dispatches one workgroup per output ROW, not per element,
+    so it meets the same limit far sooner than the elementwise path -- a tensor
+    needs only 65,536 rows rather than 16.7 million elements.
+    """
+    return device_report()["max_workgroup_count_x"]
+
+
+@pytest.mark.parametrize("op,ref", [("sum", np.sum), ("amax", np.max)],
+                         ids=["sum", "amax"])
+def test_row_reductions_cross_the_workgroup_count_boundary(op, ref):
+    """One workgroup per output row, past the point where one row of groups runs out.
+
+    Regression for a gap in the first fix for this: `Recorder::dispatch` was
+    folded into y but `dispatch_groups` was not, so elementwise ops worked above
+    the ceiling while reductions still refused. It went unnoticed because the
+    obvious reduction test -- summing a large tensor to a scalar -- produces one
+    output row and never approaches the limit.
+    """
+    rows = reduction_row_ceiling() + 4096
+    require_room_for(rows * 8)
+
+    x = (np.arange(rows * 8, dtype=np.float32) % 977.0).reshape(rows, 8) - 488.0
+    got = getattr(V, op)(V.tensor(x, device=gpu_device()), 1).numpy()
+    np.testing.assert_allclose(got, ref(x, axis=1), rtol=1e-5, atol=1e-5,
+                               err_msg=f"{op} is misplaced past the 1-D row ceiling")
+
+
+def test_pooling_crosses_the_workgroup_count_boundary():
+    """avg_pool2d is the op that exposed the reduction-path gap.
+
+    32 images of 3x64x64 pool to 98,304 output rows, past a guaranteed 65,535 --
+    an ordinary batch, not a contrived size.
+    """
+    n = (reduction_row_ceiling() // (3 * 32 * 32)) + 8
+    require_room_for(n * 3 * 64 * 64)
+
+    img = (np.arange(n * 3 * 64 * 64, dtype=np.float32) % 251.0).reshape(n, 3, 64, 64)
+    got = V.avg_pool2d(V.tensor(img, device=gpu_device()), [2, 2], [2, 2]).numpy()
+
+    # Reference by reshape-and-mean rather than a second vkml call, so the
+    # comparison has an independent implementation on the other side.
+    want = img.reshape(n, 3, 32, 2, 32, 2).mean(axis=(3, 5))
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-5)
+
+
 def test_a_strided_operand_survives_the_boundary():
     """operand_offset() indexes from the flat index, so it moves with it.
 

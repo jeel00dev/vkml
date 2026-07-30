@@ -212,11 +212,23 @@ void Recorder::dispatch_groups(const PipelineCache::Pipeline& pipeline, const vo
         vkCmdPushConstants(cmd_, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            push_constant_bytes, push_constants);
     }
-    VKML_CHECK(group_count <= ctx_.info().max_workgroup_count[0], DeviceError,
-               "reduction needs {} workgroups but the device allows {} in x", group_count,
-               ctx_.info().max_workgroup_count[0]);
+    // Same ceiling as dispatch(), reached sooner: this path dispatches one group
+    // per output ROW, so a tensor with more than maxComputeWorkGroupCount[x] rows
+    // exceeds a one-dimensional grid. 32 images of 3x64x64 average-pooled is
+    // 98,304 rows against a guaranteed 65,535 (issue #20).
+    //
+    // The kernels on this path reconstruct the flat group index with
+    // global_group_index() in common.glsl, which is identically
+    // gl_WorkGroupID.x whenever y holds a single group.
+    const uint64_t max_x = ctx_.info().max_workgroup_count[0];
+    const uint64_t groups_x = group_count <= max_x ? group_count : max_x;
+    const uint64_t groups_y = (group_count + groups_x - 1) / groups_x;
+
+    VKML_CHECK(groups_y <= ctx_.info().max_workgroup_count[1], DeviceError,
+               "reduction needs {} workgroups ({} x {}) but the device allows {} x {}", group_count,
+               groups_x, groups_y, max_x, ctx_.info().max_workgroup_count[1]);
     begin_timestamp("dispatch");
-    vkCmdDispatch(cmd_, static_cast<uint32_t>(group_count), 1, 1);
+    vkCmdDispatch(cmd_, static_cast<uint32_t>(groups_x), static_cast<uint32_t>(groups_y), 1);
     end_timestamp();
     ++dispatch_count_;
 }
