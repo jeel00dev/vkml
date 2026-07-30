@@ -1,6 +1,9 @@
 # ADR 0009 — Operand metadata moves out of push constants
 
-**Status:** accepted; **not yet implemented**
+**Status:** accepted; **partially superseded** — the extents-once repack in §2 is
+implemented for `where` and `softmax`, which now fit the guarantee. Only `cat`
+still needs the device-buffer decision in §3, and it is deferred until its cost
+is demonstrated.
 **Date:** 2026-07-30
 **Covers:** issue #2 (Windows: push constants exceed the 128-byte guaranteed
 minimum), and the shape of the per-dispatch metadata path in general.
@@ -20,11 +23,11 @@ static_assert(sizeof(WherePush) <= 256, "where push constants exceed the device 
 `256` is not a budget. It is one device's limit, asserted as if it were the
 contract. Three blocks are over the real minimum:
 
-| Block | Size | Over by |
-|---|---|---|
-| `WherePush` | 168 | 40 |
-| `SoftmaxPush` | 152 | 24 |
-| `CatPush` | 144 | 16 |
+| Block | Size | Over by | Now |
+|---|---|---|---|
+| `WherePush` | 168 | 40 | **120 — repacked, fits** |
+| `SoftmaxPush` | 152 | 24 | **120 — repacked, fits** |
+| `CatPush` | 144 | 16 | still over; extents genuinely differ |
 
 On a device that reports 128 — AMD's Windows driver on the reporting machine —
 those pipelines cannot be created. 104 tests fail and MNIST cannot train.
@@ -65,6 +68,22 @@ operand — fixes `where` (168 → 120) **and `softmax` (152 → 120)**, and doe
 generalise only to `cat`. That asymmetry is
 the argument against per-op packing: it works, but every future kernel has to
 re-derive its own budget and discover for itself which trick applies.
+
+**Both repacks are now implemented**, and the sharing they rely on is
+STRUCTURAL rather than observed — which is what made them safe to do:
+
+- `where`: `ops.cpp` broadcasts `cond`, `a` and `b` to the output shape at the
+  single construction site, and the output is `Shape::contiguous(dims)`, so
+  broadcasting is carried entirely by zero strides.
+- `softmax`: the node is built with `Shape::contiguous(a.shape())`, so input and
+  output have the same dims and `split_for_reduce` partitions them by the same
+  axis. Only the strides can differ, which they do whenever the input is a
+  transposed or broadcast view — the case the per-operand stride blocks exist
+  for.
+
+`strides_sharing_extents()` re-checks it per dispatch anyway, because a
+guarantee nothing verifies decays: a later change to broadcasting would not
+break a test, it would silently index with the wrong extents.
 
 ## 3. Decision
 

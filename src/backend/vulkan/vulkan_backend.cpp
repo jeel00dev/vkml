@@ -81,6 +81,27 @@ struct GpuOperand {
     return op;
 }
 
+/// This operand's strides, having checked that it shares `ne` with the dispatch.
+///
+/// `where` and `softmax` store the extents ONCE for several operands rather than
+/// once each, which is what keeps their push-constant blocks inside the 128
+/// bytes Vulkan guarantees (docs/adr/0009 sec2). That packing is sound only
+/// while the operands really do share extents.
+///
+/// They do, by construction, and the struct comments say why. This checks it
+/// anyway, because a guarantee nothing verifies is one that decays: a later
+/// change to broadcasting or to shape inference would not break a test, it would
+/// silently index with the wrong extents and produce wrong numbers. Four integer
+/// comparisons per dispatch is not a price worth negotiating over.
+[[nodiscard]] std::array<uint32_t, 4>
+strides_sharing_extents(const GpuOperand& op, const std::array<uint32_t, 4>& ne, const char* what) {
+    VKML_CHECK(op.ne == ne, ShapeError,
+               "{} has extents [{} {} {} {}] but the dispatch packs [{} {} {} {}] once for every "
+               "operand; they are required to match (docs/adr/0009 sec2)",
+               what, op.ne[0], op.ne[1], op.ne[2], op.ne[3], ne[0], ne[1], ne[2], ne[3]);
+    return op.nb;
+}
+
 /// What Vulkan actually guarantees for `maxPushConstantsSize`.
 ///
 /// The whole block-size question below is a PORTABILITY question, not a
@@ -139,20 +160,28 @@ struct BinaryPush {
 static_assert(sizeof(BinaryPush) <= kGuaranteedPushConstantBytes,
               "BinaryPush exceeds the push-constant size Vulkan guarantees");
 
+/// Mirrors where.comp. Extents ONCE, strides per operand.
+///
+/// Four GpuOperands put this at 168 bytes, over the 128 Vulkan guarantees, so
+/// the pipeline could not be created on a device reporting the minimum
+/// (issue #2). All four operands carry the same extents by CONSTRUCTION, not by
+/// coincidence: ops.cpp broadcasts cond, a and b to the output shape, and the
+/// output is contiguous over those dims, so broadcasting is carried entirely by
+/// zero strides. `where_extents()` asserts it per dispatch anyway.
 struct WherePush {
     uint64_t cond;
     uint64_t a;
     uint64_t b;
     uint64_t dst;
     uint32_t n;
-    GpuOperand cond_op;
-    GpuOperand a_op;
-    GpuOperand b_op;
-    GpuOperand out_op;
+    std::array<uint32_t, 4> ne;  ///< shared by all four operands
+    std::array<uint32_t, 4> cond_nb;
+    std::array<uint32_t, 4> a_nb;
+    std::array<uint32_t, 4> b_nb;
+    std::array<uint32_t, 4> out_nb;
 };
 
-// Over the guarantee: tracked by issue #2 / docs/adr/0009.
-static_assert(sizeof(WherePush) <= kOverBudgetPushConstantBytes,
+static_assert(sizeof(WherePush) <= kGuaranteedPushConstantBytes,
               "WherePush exceeds even the development GPU's budget");
 
 struct TriPush {
@@ -311,19 +340,28 @@ struct SplitShape {
     return SplitShape{Shape::strided(kd, ks, in.itemsize()), Shape::strided(rd, rs, in.itemsize())};
 }
 
+/// Mirrors softmax.comp. Extents once PER SPLIT, strides per operand.
+///
+/// Four GpuOperands put this at 152 bytes, over the 128 Vulkan guarantees
+/// (issue #2). Input and output share extents by construction -- softmax is
+/// shape-preserving, the node is built with Shape::contiguous(a.shape()), and
+/// split_for_reduce partitions the same dims by the same axis -- so only the
+/// strides can differ, which they do whenever the input is a transposed or
+/// broadcast view.
 struct SoftmaxPush {
     uint64_t src;
     uint64_t dst;
     uint32_t n_out;
     uint32_t n_axis;
-    GpuOperand in_kept;
-    GpuOperand in_axis;
-    GpuOperand out_kept;
-    GpuOperand out_axis;
+    std::array<uint32_t, 4> ne_kept;  ///< shared by in_kept and out_kept
+    std::array<uint32_t, 4> ne_axis;  ///< shared by in_axis and out_axis
+    std::array<uint32_t, 4> in_kept_nb;
+    std::array<uint32_t, 4> in_axis_nb;
+    std::array<uint32_t, 4> out_kept_nb;
+    std::array<uint32_t, 4> out_axis_nb;
 };
 
-// Over the guarantee: tracked by issue #2 / docs/adr/0009.
-static_assert(sizeof(SoftmaxPush) <= kOverBudgetPushConstantBytes,
+static_assert(sizeof(SoftmaxPush) <= kGuaranteedPushConstantBytes,
               "SoftmaxPush exceeds even the development GPU's budget");
 
 struct GemmPush {
@@ -1450,10 +1488,17 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 push.b = address_of(b);
                 push.dst = address_of(*node);
                 push.n = n_elems;
-                push.cond_op = to_gpu_operand(cond.shape, cond_esz);
-                push.a_op = to_gpu_operand(a.shape, val_esz);
-                push.b_op = to_gpu_operand(b.shape, val_esz);
-                push.out_op = to_gpu_operand(node->shape, val_esz);
+                // The output's extents are the dispatch's extents: every input was
+                // broadcast to this shape when the node was built.
+                const GpuOperand out_op = to_gpu_operand(node->shape, val_esz);
+                push.ne = out_op.ne;
+                push.out_nb = out_op.nb;
+                push.cond_nb = strides_sharing_extents(to_gpu_operand(cond.shape, cond_esz),
+                                                       push.ne, "where's condition");
+                push.a_nb = strides_sharing_extents(to_gpu_operand(a.shape, val_esz), push.ne,
+                                                    "where's first value");
+                push.b_nb = strides_sharing_extents(to_gpu_operand(b.shape, val_esz), push.ne,
+                                                    "where's second value");
 
                 if (debug_dispatch_enabled()) {
                     trace_dispatch(*node, "where", cfg, sizeof(WherePush), (n_elems + wg - 1) / wg,
@@ -1599,10 +1644,19 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 push.dst = address_of(*node);
                 push.n_out = n_out;
                 push.n_axis = n_axis;
-                push.in_kept = to_gpu_operand(in_split.kept, esz);
-                push.in_axis = to_gpu_operand(in_split.reduced, esz);
-                push.out_kept = to_gpu_operand(out_split.kept, esz);
-                push.out_axis = to_gpu_operand(out_split.reduced, esz);
+                // Input and output split the same dims by the same axis, so each
+                // split's extents are shared; only the strides differ, and only
+                // when the input is a transposed or broadcast view.
+                const GpuOperand in_kept = to_gpu_operand(in_split.kept, esz);
+                const GpuOperand in_axis = to_gpu_operand(in_split.reduced, esz);
+                push.ne_kept = in_kept.ne;
+                push.ne_axis = in_axis.ne;
+                push.in_kept_nb = in_kept.nb;
+                push.in_axis_nb = in_axis.nb;
+                push.out_kept_nb = strides_sharing_extents(to_gpu_operand(out_split.kept, esz),
+                                                           push.ne_kept, "softmax's output rows");
+                push.out_axis_nb = strides_sharing_extents(to_gpu_operand(out_split.reduced, esz),
+                                                           push.ne_axis, "softmax's output axis");
 
                 if (debug_dispatch_enabled()) {
                     trace_dispatch(*node, "softmax", cfg, sizeof(SoftmaxPush), n_out,

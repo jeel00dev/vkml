@@ -19,26 +19,38 @@
 layout(constant_id = 1) const bool CONTIGUOUS = false;
 layout(constant_id = 2) const uint DTYPE = T_F32;
 
+// EXTENTS ONCE, STRIDES PER OPERAND.
+//
+// Four Operands would be 128 bytes of extents and strides, putting the block at
+// 168 -- over the 128 that Vulkan guarantees, so these pipelines cannot be
+// created on a device reporting the minimum (issue #2). All four operands carry
+// the SAME extents here, and not by luck: ops.cpp broadcasts cond, a and b to
+// the output shape at construction, and the output is contiguous over those same
+// dims, so broadcasting is expressed entirely through zero STRIDES. The host
+// asserts it per dispatch rather than trusting this comment.
+//
+// Storing them once costs 48 bytes and brings the block to 120.
 layout(push_constant, scalar) uniform Params {
     uint64_t cond;
     uint64_t a;
     uint64_t b;
     uint64_t dst;
     uint     n;
-    Operand  cond_op;
-    Operand  a_op;
-    Operand  b_op;
-    Operand  out_op;
+    uvec4    ne;       // shared by all four operands
+    uvec4    cond_nb;
+    uvec4    a_nb;
+    uvec4    b_nb;
+    uvec4    out_nb;
 } p;
 
 void main() {
     const uint i = global_index();
     if (i >= p.n) { return; }
 
-    const uint ci = CONTIGUOUS ? i : operand_offset(i, p.cond_op);
-    const uint ai = CONTIGUOUS ? i : operand_offset(i, p.a_op);
-    const uint bi = CONTIGUOUS ? i : operand_offset(i, p.b_op);
-    const uint di = CONTIGUOUS ? i : operand_offset(i, p.out_op);
+    const uint ci = CONTIGUOUS ? i : offset_from(i, p.ne, p.cond_nb);
+    const uint ai = CONTIGUOUS ? i : offset_from(i, p.ne, p.a_nb);
+    const uint bi = CONTIGUOUS ? i : offset_from(i, p.ne, p.b_nb);
+    const uint di = CONTIGUOUS ? i : offset_from(i, p.ne, p.out_nb);
 
     // Selecting rather than blending matters: the unselected operand may hold
     // NaN or an infinity, and any arithmetic form of this would propagate it.

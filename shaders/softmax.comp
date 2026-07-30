@@ -35,15 +35,29 @@
 layout(constant_id = 1) const uint LOG = 0;  // 0 = softmax, 1 = log_softmax
 layout(constant_id = 2) const uint WG = 256;
 
+// EXTENTS ONCE PER SPLIT, STRIDES PER OPERAND.
+//
+// Four Operands put the block at 152 bytes, over the 128 Vulkan guarantees, so
+// these pipelines cannot be created on a device reporting the minimum
+// (issue #2). Input and output share extents by construction -- softmax is
+// shape-preserving, ops.cpp builds the node with Shape::contiguous(a.shape()),
+// and split_for_reduce partitions the same dims by the same axis -- so only the
+// STRIDES can differ, which they do whenever the input is a transposed or
+// broadcast view. That is the case the two stride blocks per split exist for.
+//
+// Storing the extents once per split costs 32 bytes and brings the block to 120.
+// The host asserts the sharing per dispatch rather than trusting this comment.
 layout(push_constant, scalar) uniform Params {
     uint64_t src;
     uint64_t dst;
     uint     n_out;      // rows == workgroups
     uint     n_axis;     // length of the normalised axis
-    Operand  in_kept;
-    Operand  in_axis;
-    Operand  out_kept;
-    Operand  out_axis;
+    uvec4    ne_kept;    // shared by in_kept and out_kept
+    uvec4    ne_axis;    // shared by in_axis and out_axis
+    uvec4    in_kept_nb;
+    uvec4    in_axis_nb;
+    uvec4    out_kept_nb;
+    uvec4    out_axis_nb;
 } p;
 
 shared float s_red[gl_WorkGroupSize.x];
@@ -63,13 +77,13 @@ void main() {
     if (row >= p.n_out) { return; }
 
     const uint lane = gl_LocalInvocationID.x;
-    const uint in_base  = operand_offset(row, p.in_kept);
-    const uint out_base = operand_offset(row, p.out_kept);
+    const uint in_base  = offset_from(row, p.ne_kept, p.in_kept_nb);
+    const uint out_base = offset_from(row, p.ne_kept, p.out_kept_nb);
 
     // -- pass 1: row maximum ------------------------------------------------
     float peak = -1.0 / 0.0;
     for (uint k = lane; k < p.n_axis; k += WG) {
-        peak = max(peak, load_f(p.src, in_base + operand_offset(k, p.in_axis), DTYPE));
+        peak = max(peak, load_f(p.src, in_base + offset_from(k, p.ne_axis, p.in_axis_nb), DTYPE));
     }
     s_red[lane] = peak;
     barrier();
@@ -106,7 +120,7 @@ void main() {
         while (k < p.n_axis) {
             float block = 0.0;
             for (uint b = 0; b < 32u && k < p.n_axis; ++b, k += WG) {
-                block += exp(load_f(p.src, in_base + operand_offset(k, p.in_axis), DTYPE) - peak);
+                block += exp(load_f(p.src, in_base + offset_from(k, p.ne_axis, p.in_axis_nb), DTYPE) - peak);
             }
             uint c = count++;
             uint level = 0;
@@ -131,8 +145,8 @@ void main() {
 
     // -- pass 3: normalise --------------------------------------------------
     for (uint k = lane; k < p.n_axis; k += WG) {
-        const float shifted = load_f(p.src, in_base + operand_offset(k, p.in_axis), DTYPE) - peak;
+        const float shifted = load_f(p.src, in_base + offset_from(k, p.ne_axis, p.in_axis_nb), DTYPE) - peak;
         const float v = (LOG == 1u) ? (shifted - log_denom) : (exp(shifted) / denom);
-        store_f(p.dst, out_base + operand_offset(k, p.out_axis), v, DTYPE);
+        store_f(p.dst, out_base + offset_from(k, p.ne_axis, p.out_axis_nb), v, DTYPE);
     }
 }

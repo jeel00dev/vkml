@@ -180,20 +180,30 @@ struct Operand {
     uvec4 nb;  // strides in elements
 };
 
-/// Flat index -> element offset for a possibly-strided operand.
+/// Flat index -> element offset, with extents and strides supplied separately.
 ///
 /// Mirrors vkml::cpu::linear_to_offset exactly, so that a CPU/GPU disagreement
 /// is a real bug rather than a difference in traversal order. Stride 0 handles
 /// broadcasting for free.
-uint operand_offset(uint linear, Operand op) {
+///
+/// Split from Operand because some kernels store the extents ONCE for several
+/// operands that provably share them, and pass only the strides per operand --
+/// which is what keeps their push-constant block inside the 128 bytes Vulkan
+/// guarantees (docs/adr/0009 sec2). Those kernels call this directly.
+uint offset_from(uint linear, uvec4 ne, uvec4 nb) {
     uint off = 0;
     [[unroll]] for (int i = VKML_MAX_DIMS - 1; i >= 0; --i) {
-        uint extent = op.ne[i];
+        uint extent = ne[i];
         uint idx = linear % extent;
         linear /= extent;
-        off += idx * op.nb[i];
+        off += idx * nb[i];
     }
     return off;
+}
+
+/// Flat index -> element offset for a possibly-strided operand.
+uint operand_offset(uint linear, Operand op) {
+    return offset_from(linear, op.ne, op.nb);
 }
 
 /// True when an operand can be walked with a flat index.
