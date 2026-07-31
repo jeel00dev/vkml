@@ -337,8 +337,13 @@ jobs:
         # Exits non-zero when either kind is absent rather than falling back, so
         # a machine with one GPU fails loudly instead of running the same device
         # twice under two names.
+        # PYTHONPATH=python because this runs a bare interpreter, not pytest.
+        # The build writes the extension into python/vkml, and it is
+        # tests/python/conftest.py that puts that directory on sys.path -- so
+        # every other step imports vkml only because pytest loaded a conftest
+        # first. This one has no conftest and must say so itself.
         run: |
-          python - >> "$GITHUB_ENV" <<'PY'
+          PYTHONPATH=python python - >> "$GITHUB_ENV" <<'PY'
           import sys
           import vkml as V
           reports = V.vulkan_device_reports()
