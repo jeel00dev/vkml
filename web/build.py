@@ -38,35 +38,120 @@ sys.path.insert(0, str(ROOT / "python"))
 sys.path.insert(0, str(WEB))
 
 import vkml as V  # noqa: E402
+import research as R  # noqa: E402
 from content import PAGES, PROSE  # noqa: E402
 
 GROUPS: list[tuple[str, list[str]]] = [
-    ("Creation", ["tensor", "zeros", "ones", "full", "arange", "rand", "from_numpy", "asarray"]),
-    ("Element-wise", ["abs", "neg", "exp", "log", "sqrt", "rsqrt", "reciprocal", "square",
-                      "sign", "sin", "cos", "tanh", "sigmoid", "erf", "erfc",
-                      "relu", "gelu", "silu", "clamp", "clamp_min", "clamp_max"]),
+    (
+        "Creation",
+        ["tensor", "zeros", "ones", "full", "arange", "rand", "from_numpy", "asarray"],
+    ),
+    (
+        "Element-wise",
+        [
+            "abs",
+            "neg",
+            "exp",
+            "log",
+            "sqrt",
+            "rsqrt",
+            "reciprocal",
+            "square",
+            "sign",
+            "sin",
+            "cos",
+            "tanh",
+            "sigmoid",
+            "erf",
+            "erfc",
+            "relu",
+            "gelu",
+            "silu",
+            "clamp",
+            "clamp_min",
+            "clamp_max",
+        ],
+    ),
     ("Arithmetic", ["add", "sub", "mul", "div", "pow", "maximum", "minimum"]),
-    ("Comparison", ["equal", "not_equal", "less", "less_equal", "greater", "greater_equal",
-                    "where"]),
+    (
+        "Comparison",
+        [
+            "equal",
+            "not_equal",
+            "less",
+            "less_equal",
+            "greater",
+            "greater_equal",
+            "where",
+        ],
+    ),
     ("Reduction", ["sum", "mean", "prod", "amax", "amin", "argmax", "argmin"]),
-    ("Shape & indexing", ["cat", "tril", "triu", "masked_fill", "index_select", "scatter_add",
-                          "im2col", "col2im", "detach"]),
-    ("Linear algebra & NN", ["matmul", "softmax", "log_softmax", "layer_norm", "rms_norm",
-                             "batch_norm", "dropout", "conv2d", "max_pool2d", "avg_pool2d"]),
-    ("Losses", ["cross_entropy", "mse_loss", "huber_loss", "kl_div",
-                "binary_cross_entropy_with_logits"]),
+    (
+        "Shape & indexing",
+        [
+            "cat",
+            "tril",
+            "triu",
+            "masked_fill",
+            "index_select",
+            "scatter_add",
+            "im2col",
+            "col2im",
+            "detach",
+        ],
+    ),
+    (
+        "Linear algebra & NN",
+        [
+            "matmul",
+            "softmax",
+            "log_softmax",
+            "layer_norm",
+            "rms_norm",
+            "batch_norm",
+            "dropout",
+            "conv2d",
+            "max_pool2d",
+            "avg_pool2d",
+        ],
+    ),
+    (
+        "Losses",
+        [
+            "cross_entropy",
+            "mse_loss",
+            "huber_loss",
+            "kl_div",
+            "binary_cross_entropy_with_logits",
+        ],
+    ),
     ("Autograd & execution", ["backward", "realize", "set_eager", "is_eager"]),
     ("Serialization", ["save", "load", "save_module", "load_module"]),
-    ("Devices & introspection", ["init_vulkan", "available_devices", "best_device",
-                                 "vulkan_available", "vulkan_device_count",
-                                 "vulkan_device_names", "vulkan_device_reports",
-                                 "vulkan_capabilities", "vulkan_stats",
-                                 "vulkan_pipeline_stats", "vulkan_timestamps_supported",
-                                 "vulkan_unavailable_reason", "vulkan_last_profile",
-                                 "vulkan_submit_ms", "vulkan_set_profiling",
-                                 "vulkan_set_subgroup_override", "set_log_level"]),
+    (
+        "Devices & introspection",
+        [
+            "init_vulkan",
+            "available_devices",
+            "best_device",
+            "vulkan_available",
+            "vulkan_device_count",
+            "vulkan_device_names",
+            "vulkan_device_reports",
+            "vulkan_capabilities",
+            "vulkan_stats",
+            "vulkan_pipeline_stats",
+            "vulkan_timestamps_supported",
+            "vulkan_unavailable_reason",
+            "vulkan_last_profile",
+            "vulkan_submit_ms",
+            "vulkan_set_profiling",
+            "vulkan_set_subgroup_override",
+            "set_log_level",
+        ],
+    ),
 ]
 
+FACTS = R.gather(sorted({n for _, names in GROUPS for n in names}))
 CPU_ONLY = {"prod"}
 ALL_NAMES = {n for _, names in GROUPS for n in names}
 
@@ -83,12 +168,63 @@ PAGE_OF: dict[str, str] = {n: group_slug(g) for g, names in GROUPS for n in name
 
 # ---------------------------------------------------------- syntax colours --
 
-KEYWORDS = {"import", "from", "as", "def", "class", "return", "if", "elif", "else", "for",
-            "while", "in", "not", "and", "or", "is", "None", "True", "False", "with", "try",
-            "except", "raise", "assert", "lambda", "yield", "pass", "break", "continue",
-            "global", "nonlocal", "del", "await", "async"}
-BUILTINS = {"print", "len", "range", "float", "int", "str", "bool", "list", "dict", "tuple",
-            "set", "type", "isinstance", "enumerate", "zip", "sorted", "next", "iter", "open"}
+KEYWORDS = {
+    "import",
+    "from",
+    "as",
+    "def",
+    "class",
+    "return",
+    "if",
+    "elif",
+    "else",
+    "for",
+    "while",
+    "in",
+    "not",
+    "and",
+    "or",
+    "is",
+    "None",
+    "True",
+    "False",
+    "with",
+    "try",
+    "except",
+    "raise",
+    "assert",
+    "lambda",
+    "yield",
+    "pass",
+    "break",
+    "continue",
+    "global",
+    "nonlocal",
+    "del",
+    "await",
+    "async",
+}
+BUILTINS = {
+    "print",
+    "len",
+    "range",
+    "float",
+    "int",
+    "str",
+    "bool",
+    "list",
+    "dict",
+    "tuple",
+    "set",
+    "type",
+    "isinstance",
+    "enumerate",
+    "zip",
+    "sorted",
+    "next",
+    "iter",
+    "open",
+}
 
 # One pass, ordered so that a keyword inside a string or comment is never seen as
 # a keyword -- strings and comments are matched first and consume their content.
@@ -98,14 +234,15 @@ PY_TOKEN = re.compile(
     r"|(?P<n>\b\d+\.?\d*(?:[eE][-+]?\d+)?\b)"
     r"|(?P<f>\b[A-Za-z_]\w*(?=\s*\())"
     r"|(?P<w>\b[A-Za-z_]\w*\b)",
-    re.S)
+    re.S,
+)
 
 
 def highlight(src: str) -> str:
     """Colour Python source. Escapes as it goes, so callers must NOT pre-escape."""
     out, last = [], 0
     for m in PY_TOKEN.finditer(src):
-        out.append(html.escape(src[last:m.start()]))
+        out.append(html.escape(src[last : m.start()]))
         text = html.escape(m.group(0))
         if m.lastgroup == "w":
             word = m.group(0)
@@ -134,14 +271,17 @@ def code_block(src: str, repl: bool = False) -> str:
     for line in src.split("\n"):
         m = REPL_LINE.match(line)
         if m:
-            rows.append(f'<span class="p">{html.escape(m.group(1))}</span>'
-                        f"{highlight(m.group(2))}")
+            rows.append(
+                f'<span class="p">{html.escape(m.group(1))}</span>'
+                f"{highlight(m.group(2))}"
+            )
         else:
             rows.append(f'<span class="o">{html.escape(line)}</span>')
     return f'<pre class="repl">{copy}<code>' + "\n".join(rows) + "</code></pre>"
 
 
 # ------------------------------------------------------------------ markup --
+
 
 def inline(text: str, xref: bool = True) -> str:
     """The small markdown subset the content files use.
@@ -211,36 +351,115 @@ def docstring_prose(name: str) -> str:
 
 
 def admon(kind: str, text: str) -> str:
-    icon = {"warning": "▲", "note": "ⓘ", "tip": "★"}.get(kind, "ⓘ")
-    cls = {"warning": "admon warn", "tip": "admon tip"}.get(kind, "admon")
-    return (f'<div class="{cls}"><span class="label">{icon} {kind}</span>'
+    icon = {"warning": "⚠", "note": "ⓘ", "tip": "★"}.get(kind, "ⓘ")
+    cls = {"warning": "warn", "tip": "tip"}.get(kind, "note")
+    return (f'<div class="admon {cls}"><span class="label">{icon} {kind.title()}</span>'
             f'<div class="body">{paragraphs(text)}</div></div>')
 
 
+def impl_table(f) -> str:
+    """Where this operator actually lives. Every row is extracted, not written.
+
+    A row with no answer says so rather than being dropped: "no gradient rule"
+    is information, and an absent row would read as an oversight.
+    """
+    rows = []
+    if f.decls:
+        d = f.decls[0]
+        rows.append(("Declared in", f'<a href="{d.url}"><code>{d.path}:{d.line}</code></a>'))
+    if f.op_kind:
+        rows.append(("Graph node", f"<code>OpKind::{f.op_kind}</code>"))
+
+    if f.cpu_kernel:
+        path, line = f.cpu_kernel
+        rows.append(("CPU kernel",
+                     f'<a href="{R.REPO_URL}/{path}#L{line}"><code>{path}:{line}</code></a>'))
+    else:
+        rows.append(("CPU kernel", '<span class="none">composed from other operators</span>'))
+
+    if f.shader:
+        sh = f.shader
+        extra = (f" · {len(sh['spec_constants'])} specialisation constants"
+                 if sh["spec_constants"] else "")
+        rows.append(("Vulkan shader",
+                     f'<a href="{sh["url"]}"><code>{sh["path"]}</code></a> '
+                     f'<span class="none">({sh["lines"]} lines{extra})</span>'))
+    elif f.on_vulkan:
+        rows.append(("Vulkan shader",
+                     '<span class="none">composed, or dispatched through a shared kernel</span>'))
+    else:
+        rows.append(("Vulkan shader",
+                     '<span class="none">not implemented — raises NotImplementedError</span>'))
+
+    if f.has_grad:
+        rows.append(("Gradient rule",
+                     f'<a href="{R.REPO_URL}/src/autograd/autograd.cpp#L{f.grad_line}">'
+                     f"<code>autograd.cpp:{f.grad_line}</code></a>"))
+    else:
+        rows.append(("Gradient rule",
+                     '<span class="none">none — backward through it raises</span>'))
+
+    if f.tests:
+        files = sorted({t[0] for t in f.tests})
+        rows.append((f"Tests (≥{len(f.tests)})",
+                     " ".join(f'<a href="{R.REPO_URL}/tests/python/{fn}"><code>{fn}</code></a>'
+                              for fn in files)))
+    else:
+        rows.append(("Tests", '<span class="none">none found by name</span>'))
+
+    body = "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in rows)
+    return f'<h4>Implementation</h4><table class="impl"><tbody>{body}</tbody></table>'
+
+
+def header_doc(f) -> str:
+    """The `///` block from the C++ header, verbatim.
+
+    This prose was written next to the code by whoever made the decision it
+    explains. It IS the developer documentation -- it simply was not reachable
+    from a browser before.
+    """
+    d = next((d for d in f.decls if d.doc), None)
+    if not d:
+        return ""
+    return (f"<h4>From the header</h4>"
+            f'<div class="decl">{highlight(d.signature)}'
+            f'<span class="where">— <a href="{d.url}">{d.path}:{d.line}</a></span></div>'
+            + paragraphs(d.doc))
+
+
 # ------------------------------------------------------------------- pages --
+
 
 def api_entry(name: str) -> tuple[str, bool, str]:
     """Render one entry -> (html, documented, one-line summary for search)."""
     p = PROSE.get(name, {})
     documented = bool(p.get("summary"))
 
-    out = [f'<h3 id="{name}"><code>{name}</code>'
-           f'<a class="anchor" href="#{name}" aria-label="Permalink">¶</a></h3>',
-           render_signature(name, signature_of(name))]
+    out = [
+        f'<h3 id="{name}"><code>{name}</code>'
+        f'<a class="anchor" href="#{name}" aria-label="Permalink">¶</a></h3>',
+        render_signature(name, signature_of(name)),
+    ]
 
-    on_gpu = name not in CPU_ONLY
-    out.append('<div class="support"><span class="chip yes">CPU</span>'
-               f'<span class="chip {"yes" if on_gpu else "no"}">Vulkan</span>'
-               + ("" if on_gpu else '<span class="chip">CPU-only by decision</span>')
-               + "</div>")
+    # From the backend's own supports(), not from a list kept here by hand.
+    facts_for_chip = FACTS.get(name)
+    on_gpu = facts_for_chip.on_vulkan if facts_for_chip else (name not in CPU_ONLY)
+    out.append(
+        '<div class="support"><span class="chip yes">CPU</span>'
+        f'<span class="chip {"yes" if on_gpu else "no"}">Vulkan</span>'
+        + ("" if on_gpu else '<span class="chip">CPU-only by decision</span>')
+        + "</div>"
+    )
 
     summary = p.get("summary") or docstring_prose(name)
     if summary:
         out.append(paragraphs(summary))
     if not documented:
-        out.append('<div class="todo">No written description yet. The signature above is '
-                   "generated from the installed module and is current; the prose is not "
-                   "written. See <code>web/content/</code>.</div>")
+        out.append(
+            '<div class="todo">No written description yet. The signature above is '
+            "generated from the installed module and is current; the prose is not "
+            "written. See <code>web/content/</code>.</div>"
+        )
 
     if p.get("detail"):
         out.append(paragraphs(p["detail"]))
@@ -249,18 +468,29 @@ def api_entry(name: str) -> tuple[str, bool, str]:
         out.append('<h4>Parameters</h4><dl class="params">')
         for pname, ptype, pdesc in p["params"]:
             opt = ' <span class="opt">optional</span>' if "=" in ptype else ""
-            out.append(f"<dt>{html.escape(pname)} "
-                       f'<span class="type">({html.escape(ptype)})</span>{opt}</dt>'
-                       f"<dd>{inline(pdesc)}</dd>")
+            out.append(
+                f"<dt>{html.escape(pname)} "
+                f'<span class="type">({html.escape(ptype)})</span>{opt}</dt>'
+                f"<dd>{inline(pdesc)}</dd>"
+            )
         out.append("</dl>")
 
     if p.get("returns"):
-        out.append(f'<h4>Returns</h4><p>{inline(p["returns"])}</p>')
+        out.append(f"<h4>Returns</h4><p>{inline(p['returns'])}</p>")
     for kind in ("note", "warning", "tip"):
         if p.get(kind):
             out.append(admon(kind, p[kind]))
     if p.get("example"):
         out.append("<h4>Example</h4>" + code_block(p["example"], repl=True))
+    # Everything below is EXTRACTED from the repository rather than written, so
+    # a page cannot claim a shader or a test file that has moved.
+    facts = FACTS.get(name)
+    if facts:
+        hdr = header_doc(facts)
+        if hdr:
+            out.append(hdr)
+        out.append(impl_table(facts))
+
     if p.get("see"):
         links = ", ".join(f'<a href="#{s}"><code>{s}</code></a>' for s in p["see"])
         out.append(f"<p><strong>See also</strong> {links}</p>")
@@ -270,27 +500,35 @@ def api_entry(name: str) -> tuple[str, bool, str]:
 
 
 def sidenav(active: str) -> str:
-    s = ['<aside class="sidenav" id="sidenav"><h2>Documentation</h2>',
-         "<h3>Guide</h3><ol>"]
+    s = [
+        '<aside class="sidenav" id="sidenav"><h2>Documentation</h2>',
+        "<h3>Guide</h3><ol>",
+    ]
     for slug, title, _ in PAGES:
         cls = ' class="active"' if slug == active else ""
         s.append(f'<li><a{cls} href="{slug}.html">{html.escape(title)}</a></li>')
     s.append("</ol>")
-    s.append('<h3>API reference</h3><ol>')
-    s.append(f'<li><a{" class=\"active\"" if active == "api" else ""} '
-             f'href="api.html">Overview</a></li></ol>')
+    s.append("<h3>API reference</h3><ol>")
+    s.append(
+        f"<li><a{' class="active"' if active == 'api' else ''} "
+        f'href="api.html">Overview</a></li></ol>'
+    )
     for gi, (gname, names) in enumerate(GROUPS, 1):
         slug = group_slug(gname)
         here = slug == active
         # Only the section being read is expanded. All of them open at once is
         # a wall of 99 links; none open is a reference you cannot scan.
-        s.append(f'<div class="grp{"" if here else " closed"}">'
-                 f'<button type="button"><span class="chev">▾</span>'
-                 f"{html.escape(gname)}</button><ol>")
+        s.append(
+            f'<div class="grp{"" if here else " closed"}">'
+            f'<button type="button"><span class="chev">▾</span>'
+            f"{html.escape(gname)}</button><ol>"
+        )
         for ni, n in enumerate(names, 1):
             href = f"#{n}" if here else f"{slug}.html#{n}"
-            s.append(f'<li><a href="{href}"><span class="num">{gi}.{ni}</span>'
-                     f"<code>{n}</code></a></li>")
+            s.append(
+                f'<li><a href="{href}"><span class="num">{gi}.{ni}</span>'
+                f"<code>{n}</code></a></li>"
+            )
         s.append("</ol></div>")
     s.append("</aside>")
     return "\n".join(s)
@@ -302,21 +540,41 @@ def toc_for(entries: list[tuple[str, str, int]]) -> str:
         return '<aside class="toc"></aside>'
     items = "".join(
         f'<li><a class="{"lvl3" if lvl == 3 else ""}" href="#{i}">{html.escape(t)}</a></li>'
-        for i, t, lvl in entries)
-    return ('<aside class="toc"><h4>☰ On this page</h4><ul>' + items + "</ul>"
-            '<div class="side-links">'
-            '<a href="https://github.com/jeel00dev/vkml">Source ↗</a>'
-            '<a href="https://github.com/jeel00dev/vkml/issues">Issues ↗</a>'
-            '<a href="https://github.com/jeel00dev/vkml/tree/main/docs">Design docs ↗</a>'
-            "</div></aside>")
+        for i, t, lvl in entries
+    )
+    return (
+        '<aside class="toc"><h4>☰ On this page</h4><ul>' + items + "</ul>"
+        '<div class="side-links">'
+        '<a href="https://github.com/jeel00dev/vkml">Source ↗</a>'
+        '<a href="https://github.com/jeel00dev/vkml/issues">Issues ↗</a>'
+        '<a href="https://github.com/jeel00dev/vkml/tree/main/docs">Design docs ↗</a>'
+        "</div></aside>"
+    )
+
+
+def pagenav(prev: tuple[str, str] | None, nxt: tuple[str, str] | None) -> str:
+    """Previous / next, so the docs read straight through as well as by search."""
+    if not prev and not nxt:
+        return ""
+    bits = ['<nav class="pagenav">']
+    if prev:
+        bits.append(f'<a class="prev" href="{prev[1]}"><span class="dir">‹ Previous</span>'
+                    f'<span class="ttl">{html.escape(prev[0])}</span></a>')
+    if nxt:
+        bits.append(f'<a class="next" href="{nxt[1]}"><span class="dir">Next ›</span>'
+                    f'<span class="ttl">{html.escape(nxt[0])}</span></a>')
+    return "".join(bits) + "</nav>"
 
 
 def crumbs(*parts: tuple[str, str | None]) -> str:
     bits = ['<nav class="crumbs"><a href="index.html">⌂</a>']
     for label, href in parts:
         bits.append('<span class="sep">›</span>')
-        bits.append(f'<a href="{href}">{html.escape(label)}</a>' if href
-                    else f'<span class="here">{html.escape(label)}</span>')
+        bits.append(
+            f'<a href="{href}">{html.escape(label)}</a>'
+            if href
+            else f'<span class="here">{html.escape(label)}</span>'
+        )
     return "".join(bits) + "</nav>"
 
 
@@ -373,12 +631,31 @@ SHELL = """<!doctype html>
 """
 
 
-def write(path: Path, *, title: str, desc: str, body: str, nav: str, toc: str,
-          crumb: str, page: str, index_json: str) -> None:
-    path.write_text(SHELL.format(
-        title=html.escape(title), desc=html.escape(desc), body=body,
-        sidenav=nav, toc=toc, crumbs=crumb, version=html.escape(V.__version__),
-        apicls="active" if page == "api" else "", index=index_json))
+def write(
+    path: Path,
+    *,
+    title: str,
+    desc: str,
+    body: str,
+    nav: str,
+    toc: str,
+    crumb: str,
+    page: str,
+    index_json: str,
+) -> None:
+    path.write_text(
+        SHELL.format(
+            title=html.escape(title),
+            desc=html.escape(desc),
+            body=body,
+            sidenav=nav,
+            toc=toc,
+            crumbs=crumb,
+            version=html.escape(V.__version__),
+            apicls="active" if page == "api" else "",
+            index=index_json,
+        )
+    )
 
 
 SITE_JS = """/* Behaviour for the vkML docs. No framework: the whole site is four pages and
@@ -532,9 +809,13 @@ def build() -> int:
     shutil.copy(ROOT / "assets" / "vkml_logo.png", OUT / "assets" / "vkml_logo.png")
     (OUT / ".nojekyll").write_text("")
 
-    public = {n for n in dir(V)
-              if not n.startswith("_") and callable(getattr(V, n))
-              and not inspect.isclass(getattr(V, n))}
+    public = {
+        n
+        for n in dir(V)
+        if not n.startswith("_")
+        and callable(getattr(V, n))
+        and not inspect.isclass(getattr(V, n))
+    }
     unknown = sorted(ALL_NAMES - public)
     if unknown:
         print(f"  ERROR: listed but absent from the module: {', '.join(unknown)}")
@@ -549,8 +830,9 @@ def build() -> int:
             frags.append(frag)
             toc.append((n, n, 3))
             ndoc += ok
-            index.append({"n": n, "u": f"{group_slug(gname)}.html#{n}", "g": gname,
-                          "d": summary})
+            index.append(
+                {"n": n, "u": f"{group_slug(gname)}.html#{n}", "g": gname, "d": summary}
+            )
         documented += ndoc
         per_group.append((gname, names, frags, toc, ndoc))
 
@@ -563,40 +845,78 @@ def build() -> int:
         f'<a class="card" href="{group_slug(g)}.html"><h3>{html.escape(g)}</h3>'
         f"<p>{len(names)} function{'s' if len(names) != 1 else ''} · "
         f"{nd}/{len(names)} documented</p></a>"
-        for g, names, _, _, nd in per_group)
-    overview = ("<h1>API reference</h1>"
-                '<p class="lede">Every public function, with the signature read from the '
-                "installed module at build time.</p>"
-                + (admon("note", f"{len(missing)} public function(s) are not yet grouped and "
-                                 f"do not appear: `{', '.join(missing)}`.") if missing else "")
-                + f'<div class="cards">{cards}</div>')
-    write(OUT / "api.html", title="API reference — vkML", desc="Every public vkML function.",
-          body=overview, nav=sidenav("api"),
-          toc=toc_for([(group_slug(g), g, 2) for g, _, _, _, _ in per_group]),
-          crumb=crumbs(("API reference", None)), page="api", index_json=index_json)
+        for g, names, _, _, nd in per_group
+    )
+    overview = (
+        "<h1>API reference</h1>"
+        '<p class="lede">Every public function, with the signature read from the '
+        "installed module at build time.</p>"
+        + (
+            admon(
+                "note",
+                f"{len(missing)} public function(s) are not yet grouped and "
+                f"do not appear: `{', '.join(missing)}`.",
+            )
+            if missing
+            else ""
+        )
+        + f'<div class="cards">{cards}</div>'
+    )
+    write(
+        OUT / "api.html",
+        title="API reference — vkML",
+        desc="Every public vkML function.",
+        body=overview,
+        nav=sidenav("api"),
+        toc=toc_for([(group_slug(g), g, 2) for g, _, _, _, _ in per_group]),
+        crumb=crumbs(("API reference", None)),
+        page="api",
+        index_json=index_json,
+    )
 
     for gname, names, frags, toc, nd in per_group:
         slug = group_slug(gname)
-        body = (f"<h1>{html.escape(gname)}</h1>"
-                f'<p class="lede">{len(names)} function'
-                f"{'s' if len(names) != 1 else ''} — {nd} documented.</p>"
-                + "\n".join(frags))
-        write(OUT / f"{slug}.html", title=f"{gname} — vkML", desc=f"vkML {gname} operators.",
-              body=body, nav=sidenav(slug), toc=toc_for(toc),
-              crumb=crumbs(("API reference", "api.html"), (gname, None)),
-              page=slug, index_json=index_json)
+        body = (
+            f"<h1>{html.escape(gname)}</h1>"
+            f'<p class="lede">{len(names)} function'
+            f"{'s' if len(names) != 1 else ''} — {nd} documented.</p>"
+            + "\n".join(frags)
+        )
+        write(
+            OUT / f"{slug}.html",
+            title=f"{gname} — vkML",
+            desc=f"vkML {gname} operators.",
+            body=body,
+            nav=sidenav(slug),
+            toc=toc_for(toc),
+            crumb=crumbs(("API reference", "api.html"), (gname, None)),
+            page=slug,
+            index_json=index_json,
+        )
 
     for slug, title, body in PAGES:
-        heads = [(m.group(1), re.sub(r"<[^>]+>", "", m.group(2)), 2)
-                 for m in re.finditer(r'<h2 id="([^"]+)"[^>]*>(.*?)</h2>', body, re.S)]
+        heads = [
+            (m.group(1), re.sub(r"<[^>]+>", "", m.group(2)), 2)
+            for m in re.finditer(r'<h2 id="([^"]+)"[^>]*>(.*?)</h2>', body, re.S)
+        ]
         crumb = "" if slug == "index" else crumbs((title, None))
-        write(OUT / f"{slug}.html", title=f"{title} — vkML", desc=title, body=body,
-              nav=sidenav(slug), toc=toc_for(heads), crumb=crumb, page=slug,
-              index_json=index_json)
+        write(
+            OUT / f"{slug}.html",
+            title=f"{title} — vkML",
+            desc=title,
+            body=body,
+            nav=sidenav(slug),
+            toc=toc_for(heads),
+            crumb=crumb,
+            page=slug,
+            index_json=index_json,
+        )
 
     total = len(ALL_NAMES)
     print(f"  built {OUT.relative_to(ROOT)}")
-    print(f"  {total} operators, {documented} with written prose ({100 * documented // total}%)")
+    print(
+        f"  {total} operators, {documented} with written prose ({100 * documented // total}%)"
+    )
     if missing:
         print(f"  {len(missing)} ungrouped: {', '.join(missing)}")
     return 0
@@ -610,7 +930,8 @@ if __name__ == "__main__":
     if rc == 0 and a.serve:
         import http.server
         import os
+
         os.chdir(OUT)
         print("  http://localhost:8000")
-        http.server.test(HandlerClass=http.server.SimpleHTTPRequestHandler, port=8000)
+        http.server.test(HandlerClass=http.server.SimpleHTTPRequestHandler, port=1235)
     sys.exit(rc)
