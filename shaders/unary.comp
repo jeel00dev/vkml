@@ -45,6 +45,10 @@ layout(constant_id = 3) const uint DTYPE = T_F32;
 #define OP_GELU       16
 #define OP_SILU       17
 #define OP_CLAMP      18
+// Appended, not slotted in beside OP_ERF: this value IS the specialisation
+// constant the host sends, so renumbering the ops after it would change what an
+// already-cached pipeline computes.
+#define OP_ERFC       19
 
 layout(push_constant, scalar) uniform Params {
     uint64_t src;
@@ -96,6 +100,19 @@ float erf_op(float x) {
     }
     const float r = 1.0 - erfc_pos(abs(x));
     return x < 0.0 ? -r : r;
+}
+
+/// erfc over the whole line, reflecting the x >= 0 approximation.
+///
+/// erfc(-x) = 2 - erfc(x) is used for the negative half, and unlike the erf
+/// case that subtraction is safe: erfc_pos(x) is at most 1 there, so the result
+/// is O(1) and nothing cancels. The tail this exists to protect is the POSITIVE
+/// one, where erfc decays toward zero and is returned by erfc_pos directly.
+///
+/// NaN falls to the second branch, since `x >= 0.0` is false for it, and
+/// propagates through unchanged. +inf gives 0 and -inf gives 2, both exact.
+float erfc_op(float x) {
+    return x >= 0.0 ? erfc_pos(x) : 2.0 - erfc_pos(-x);
 }
 
 /// Logistic function, in the same two-branch form the CPU kernel uses.
@@ -211,6 +228,7 @@ float apply_op(float x) {
         case OP_RECIPROCAL: return 1.0 / x;
         case OP_LOG:        return log(x);
         case OP_ERF:        return erf_op(x);
+        case OP_ERFC:       return erfc_op(x);
         case OP_SIN:        return sin(x);
         case OP_COS:        return cos(x);
         case OP_TANH:       return tanh_op(x);

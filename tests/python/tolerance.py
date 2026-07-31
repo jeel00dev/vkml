@@ -184,6 +184,24 @@ POLICY: dict[str, Tolerance] = {
     # margin over the 1.2e-7 bound.
     "erf": Tolerance(Kind.RELATIVE, rtol=1e-6, atol=1e-7,
                      note="NR 6.2 erfc, rel err < 1.2e-7; series below |x|=0.5"),
+    # LOOSER than erf, and the reason is structural rather than a widening to
+    # make a test pass. erf returns 1 - erfc_pos(|x|) above the split, and that
+    # subtraction DAMPS erfc_pos's relative error: when erfc_pos is small the
+    # result is still O(1), so its error shrinks relative to the answer. erfc
+    # returns erfc_pos directly, so the fp32 evaluation error of the ten-term
+    # nested polynomial and its exp() is exposed undamped.
+    #
+    # Measured GPU against the CPU oracle, 20,000 uniform draws over the test
+    # domain (-3, 3): 1.36e-6 worst case, and the two branches differ as the
+    # analysis predicts -- 1.36e-6 where erfc_pos is returned directly against
+    # 4.6e-7 on the reflected x < 0 branch, whose result is in [1, 2]. Further
+    # out, where erfc decays toward zero, it reaches 1.2e-5 over (3, 9).
+    #
+    # 1e-5 is the same figure the transcendental class carries in conftest for
+    # tanh, sigmoid and gelu, all of which are likewise a composite of exp with
+    # further arithmetic. It leaves roughly 7x margin on the tested domain.
+    "erfc": Tolerance(Kind.RELATIVE, rtol=1e-5, atol=1e-7,
+                      note="NR 6.2 erfc_pos returned undamped; measured 1.36e-6 on (-3, 3)"),
     "tanh": Tolerance(Kind.RELATIVE, rtol=1e-5, note="composite of exp and div"),
     "sigmoid": Tolerance(Kind.RELATIVE, rtol=1e-5, note="composite of exp and div"),
     "gelu": Tolerance(Kind.RELATIVE, rtol=1e-5, note="erf-based; libm and GPU erf differ"),

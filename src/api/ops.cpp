@@ -203,6 +203,8 @@ Tensor log(const Tensor& a) { return unary(OpKind::Log, a); }
 
 Tensor erf(const Tensor& a) { return unary(OpKind::Erf, a); }
 
+Tensor erfc(const Tensor& a) { return unary(OpKind::Erfc, a); }
+
 Tensor sin(const Tensor& a) { return unary(OpKind::Sin, a); }
 
 Tensor cos(const Tensor& a) { return unary(OpKind::Cos, a); }

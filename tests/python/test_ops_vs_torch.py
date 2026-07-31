@@ -36,6 +36,12 @@ UNARY = [
     ("reciprocal", V.reciprocal, torch.reciprocal, "nonzero", "elementwise"),
     ("exp", V.exp, torch.exp, "small", "transcendental"),
     ("log", V.log, torch.log, "positive", "transcendental"),
+    # erf and erfc are both here deliberately. erf had no entry, and its only
+    # execution in a CPU-only run was incidental -- gelu's backward rule called
+    # it. When that rule moved to erfc the coverage gate reported erf as never
+    # executed at all, which is how this gap surfaced.
+    ("erf", V.erf, torch.erf, "any", "transcendental"),
+    ("erfc", V.erfc, torch.erfc, "any", "transcendental"),
     ("sin", V.sin, torch.sin, "any", "transcendental"),
     ("cos", V.cos, torch.cos, "any", "transcendental"),
     ("tanh", V.tanh, torch.tanh, "any", "transcendental"),

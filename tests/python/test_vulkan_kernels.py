@@ -97,6 +97,7 @@ UNARY = [
     ("reciprocal", V.reciprocal, "nonzero"),
     ("log", V.log, "positive"),
     ("erf", V.erf, "any"),
+    ("erfc", V.erfc, "any"),
     ("sin", V.sin, "any"),
     ("cos", V.cos, "any"),
     ("tanh", V.tanh, "any"),

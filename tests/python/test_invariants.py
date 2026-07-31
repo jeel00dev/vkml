@@ -1139,3 +1139,63 @@ def test_gelu_keeps_relative_accuracy_in_its_negative_tail():
         f"the pre-#28 cancelling form now passes at {mutant.max():.3e}, so this "
         f"domain no longer exercises the loss of significance the test exists for"
     )
+
+
+def test_gelu_gradient_keeps_relative_accuracy_in_its_negative_tail():
+    """The same cancellation as the forward, one derivative up -- and torch has it.
+
+    gelu's gradient is Phi(x) + x*phi(x). The cdf term was built as
+    0.5(1 + erf(x/sqrt2)), which cancels for negative x exactly as the forward
+    kernel did before #28. It survived that fix because it lives in autograd.cpp
+    rather than in a kernel, and because it is much less visible: x*phi(x)
+    dominates the tail and is computed accurately, so the error is 2.8% at
+    x = -6 rather than the forward's 100%.
+
+    WHY THE REFERENCE IS NOT TORCH. Measured on this domain, torch's own gelu
+    gradient is 16% wrong at x = -6 and 0.34% at x = -5 -- it forms the cdf the
+    same cancelling way. vkml is now roughly seven orders of magnitude closer to
+    the true value there than torch is, so asserting against torch would pin
+    vkml to the less accurate answer and fail the moment it got better. This is
+    the one place in the suite where the established framework is NOT the
+    oracle, and the reason is written here rather than assumed.
+
+    The bound is the central RELATIVE tolerance with atol pinned to zero, for
+    the same reason as the forward test: every gradient here is far below the
+    policy's absolute term, so atol + rtol*|want| would admit anything.
+    """
+    x = np.linspace(-6.0, -3.0, 256, dtype=np.float32)
+
+    v = V.tensor(x, device=V.cpu, requires_grad=True)
+    V.sum(V.gelu(v)).backward()
+    got = v.grad.numpy().astype(np.float64)
+
+    # Phi(x) + x*phi(x) in double precision, with Phi through erfc so the
+    # reference itself does not carry the defect under test.
+    exact = np.array([
+        0.5 * math.erfc(-float(t) / math.sqrt(2.0))
+        + float(t) * math.exp(-0.5 * float(t) * float(t)) / math.sqrt(2.0 * math.pi)
+        for t in x
+    ])
+
+    rtol = TOLERANCES["transcendental"].rtol
+    assert np.abs(exact).min() > 0.0, "domain reaches a true zero; rel. error is undefined"
+
+    rel = np.abs(got - exact) / np.abs(exact)
+    worst = int(np.argmax(rel))
+    assert rel.max() <= rtol, (
+        f"gelu gradient lost the tail: max relative error {rel.max():.3e} > {rtol:.0e} "
+        f"at x = {x[worst]:.6f} (got {got[worst]:.6e}, exact {exact[worst]:.6e})"
+    )
+
+    # The mutant, as in the forward test: the pre-fix cdf in fp32, which must
+    # still fail the bound. Without this the test would go quiet if the domain
+    # ever moved out of the cancelling regime.
+    inv_sqrt2 = np.float32(0.70710678118654752440)
+    erf_f32 = np.array([math.erf(float(t)) for t in (x * inv_sqrt2)], dtype=np.float32)
+    cdf_cancelling = np.float32(0.5) * (np.float32(1.0) + erf_f32)
+    pdf = np.exp(np.float32(-0.5) * x * x, dtype=np.float32) * np.float32(0.39894228040143267794)
+    mutant_rel = np.abs((cdf_cancelling + x * pdf).astype(np.float64) - exact) / np.abs(exact)
+    assert mutant_rel.max() > rtol, (
+        f"the pre-fix cancelling cdf now passes at {mutant_rel.max():.3e}, so this "
+        f"domain no longer exercises the loss of significance the test exists for"
+    )

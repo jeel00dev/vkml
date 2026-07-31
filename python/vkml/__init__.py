@@ -64,6 +64,7 @@ reciprocal = _C.reciprocal
 exp = _C.exp
 log = _C.log
 erf = _C.erf
+erfc = _C.erfc
 sin = _C.sin
 cos = _C.cos
 tanh = _C.tanh

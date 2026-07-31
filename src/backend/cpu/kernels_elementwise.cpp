@@ -200,6 +200,10 @@ void k_erf(Node& o) {
     unary_float(o, [](float x) { return std::erf(x); });
 }
 
+void k_erfc(Node& o) {
+    unary_float(o, [](float x) { return std::erfc(x); });
+}
+
 void k_sin(Node& o) {
     unary_float(o, [](float x) { return std::sin(x); });
 }
@@ -400,6 +404,7 @@ void register_elementwise_kernels(KernelTable& t) {
     t[static_cast<size_t>(OpKind::Exp)] = k_exp;
     t[static_cast<size_t>(OpKind::Log)] = k_log;
     t[static_cast<size_t>(OpKind::Erf)] = k_erf;
+    t[static_cast<size_t>(OpKind::Erfc)] = k_erfc;
     t[static_cast<size_t>(OpKind::Sin)] = k_sin;
     t[static_cast<size_t>(OpKind::Cos)] = k_cos;
     t[static_cast<size_t>(OpKind::Tanh)] = k_tanh;

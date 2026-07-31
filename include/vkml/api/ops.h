@@ -44,6 +44,12 @@ namespace vkml {
 [[nodiscard]] Tensor exp(const Tensor& a);
 [[nodiscard]] Tensor log(const Tensor& a);
 [[nodiscard]] Tensor erf(const Tensor& a);
+/// Complementary error function, 1 - erf(x), computed without forming that
+/// difference. Exists because the subtraction is what destroys the result: erf
+/// approaches +/-1, so `1 - erf(x)` and `1 + erf(x)` cancel and lose the
+/// significand exactly where erfc is still perfectly representable. gelu's
+/// value and its gradient are both built on it for that reason.
+[[nodiscard]] Tensor erfc(const Tensor& a);
 [[nodiscard]] Tensor sin(const Tensor& a);
 [[nodiscard]] Tensor cos(const Tensor& a);
 [[nodiscard]] Tensor tanh(const Tensor& a);

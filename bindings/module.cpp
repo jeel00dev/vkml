@@ -554,6 +554,7 @@ NB_MODULE(_vkml_core, m) {
     // erf has been in the C++ API since M0 but was never exposed here, so the
     // validation suite could not reach it at all.
     m.def("erf", &vkml::erf);
+    m.def("erfc", &vkml::erfc);
     m.def("sin", &vkml::sin);
     m.def("cos", &vkml::cos);
     m.def("tanh", &vkml::tanh);

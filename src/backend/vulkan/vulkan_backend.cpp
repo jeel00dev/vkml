@@ -564,6 +564,10 @@ enum class UnaryOp : uint32_t {
     Gelu = 16,
     Silu = 17,
     Clamp = 18,
+    // Appended rather than placed next to Erf: these codes are the shader's
+    // specialisation constant, so inserting in the middle would renumber every
+    // op after it and silently change what an existing pipeline computes.
+    Erfc = 19,
 };
 
 /// Mirrors the OP_* codes in shaders/binary.comp. Codes from Equal upward are
@@ -647,6 +651,7 @@ enum class BinaryOp : uint32_t {
         case OpKind::Reciprocal: return UnaryOp::Reciprocal;
         case OpKind::Log: return UnaryOp::Log;
         case OpKind::Erf: return UnaryOp::Erf;
+        case OpKind::Erfc: return UnaryOp::Erfc;
         case OpKind::Sin: return UnaryOp::Sin;
         case OpKind::Cos: return UnaryOp::Cos;
         case OpKind::Tanh: return UnaryOp::Tanh;
@@ -862,6 +867,7 @@ bool VulkanBackend::supports(const Node& node) const {
         case OpKind::Reciprocal:
         case OpKind::Log:
         case OpKind::Erf:
+        case OpKind::Erfc:
         case OpKind::Sin:
         case OpKind::Cos:
         case OpKind::Tanh:
@@ -1073,6 +1079,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
             case OpKind::Reciprocal:
             case OpKind::Log:
             case OpKind::Erf:
+            case OpKind::Erfc:
             case OpKind::Sin:
             case OpKind::Cos:
             case OpKind::Tanh:

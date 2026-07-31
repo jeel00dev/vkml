@@ -376,14 +376,25 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             return;
 
         case OpKind::Gelu: {
-            // d/dx [0.5x(1+erf(x/sqrt2))] = 0.5(1+erf(x/sqrt2)) + x*phi(x)
-            // where phi is the standard normal pdf. Expressed with existing ops:
-            // the cdf term is out/x, but that is singular at 0, so it is
-            // recomputed from erf via the forward gelu of a unit input instead.
+            // d/dx [x*Phi(x)] = Phi(x) + x*phi(x), where Phi is the standard
+            // normal cdf and phi its pdf. Expressed with existing ops: the cdf
+            // term is out/x, but that is singular at 0, so it is recomputed
+            // instead.
+            //
+            // Phi(x) = 0.5*erfc(-x/sqrt2), NOT the equivalent 0.5(1 + erf(x/sqrt2)):
+            // that sum cancels as erf approaches -1 and loses the significand,
+            // the same defect issue #28 fixed in the forward kernel. It costs
+            // less here than there, because x*phi(x) dominates the tail and is
+            // computed accurately -- but it is still 2.8% relative error at
+            // x = -6 and 1.6e-3 at x = -5, against ~1e-7 with erfc.
+            //
+            // erfc is an ordinary forward op, so this stays composed rather
+            // than becoming a *_backward kernel, per the rule recorded in
+            // graph/op.h that backward passes are built from forward ops.
             constexpr double kInvSqrt2 = 0.70710678118654752440;
             constexpr double kInvSqrt2Pi = 0.39894228040143267794;
             const Tensor x = ta();
-            const Tensor cdf = mul(add(erf(mul(x, kInvSqrt2)), 1.0), 0.5);
+            const Tensor cdf = mul(erfc(mul(x, -kInvSqrt2)), 0.5);
             const Tensor pdf = mul(exp(mul(square(x), -0.5)), kInvSqrt2Pi);
             accumulate(grads, a, grad * add(cdf, x * pdf));
             return;

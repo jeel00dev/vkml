@@ -78,6 +78,7 @@ enum class OpKind : uint16_t {
     Exp,
     Log,
     Erf,
+    Erfc,
     Sin,
     Cos,
     Tanh,

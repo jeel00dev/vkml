@@ -51,6 +51,7 @@ constexpr std::array<std::string_view, kNumOps> kOpNames = {
     "exp",
     "log",
     "erf",
+    "erfc",
     "sin",
     "cos",
     "tanh",
