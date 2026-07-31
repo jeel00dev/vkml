@@ -1,3 +1,4 @@
+#include "vkml/util/env.h"
 #include "vkml/util/coverage.h"
 
 #include <atomic>
@@ -57,8 +58,10 @@ bool enabled() noexcept {
     // Read once. The suite sets this before the process starts, and re-reading
     // the environment per node would cost more than the recording does.
     static const std::atomic<bool> flag{[] {
-        const char* env = std::getenv("VKML_COVERAGE");
-        return env != nullptr && env[0] != '\0';
+        // Presence-and-non-empty, NOT parse_env_flag: this names an output
+        // FILE, so "0" is a legitimate filename rather than "off".
+        const std::optional<std::string> path = env_value("VKML_COVERAGE");
+        return path.has_value() && !path->empty();
     }()};
     return flag.load(std::memory_order_relaxed);
 }

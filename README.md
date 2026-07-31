@@ -387,6 +387,19 @@ cmake --build build/msvc --config Release --parallel
 
 Presets: `release`, `debug` (warnings as errors), `asan`, `relwithdebinfo`.
 
+### Runtime switches
+
+Separately from the build options above, a handful of `VKML_*` **environment
+variables** select debug output and tuning experiments at run time —
+`VKML_VULKAN_DEBUG=1` traces every dispatch, `VKML_EAGER=1` realizes each
+operation as it is built, `VKML_COVERAGE=<path>` records an operator-coverage
+table.
+
+**They are read once, at first use, and cached for the life of the process.**
+They are configuration, not a control interface: changing one after vkML has
+started has no defined effect, because pipelines are already selected and cached
+from the earlier value. Set them before launching, not during.
+
 ### Running the tests
 
 The Python test suite compares every operator against PyTorch, so you need

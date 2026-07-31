@@ -2,6 +2,7 @@
 
 #include "vkml/backend/api/backend.h"
 #include "vkml/graph/graph.h"
+#include "vkml/util/env.h"
 #include "vkml/util/assert.h"
 #include "vkml/util/coverage.h"
 #include "vkml/util/log.h"
@@ -14,10 +15,7 @@ namespace vkml {
 namespace {
 
 std::atomic<bool>& eager_flag() noexcept {
-    static std::atomic<bool> flag{[] {
-        const char* env = std::getenv("VKML_EAGER");
-        return env != nullptr && env[0] != '\0' && env[0] != '0';
-    }()};
+    static std::atomic<bool> flag{[] { return env_flag("VKML_EAGER", false); }()};
     return flag;
 }
 

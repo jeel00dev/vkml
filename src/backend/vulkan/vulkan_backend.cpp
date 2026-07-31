@@ -29,6 +29,7 @@
 #include "vkml/spv/where.h"
 
 #include "vkml/util/assert.h"
+#include "vkml/util/env.h"
 #include "vkml/util/log.h"
 
 #include <algorithm>
@@ -401,8 +402,8 @@ enum class GemvMode : uint8_t { Auto, Off, Forced };
 
 [[nodiscard]] GemvMode gemv_mode() {
     static const GemvMode mode = [] {
-        const char* v = std::getenv("VKML_GEMV");
-        const std::string_view sel = v != nullptr ? v : "";
+        const std::optional<std::string> v = env_value("VKML_GEMV");
+        const std::string_view sel = v ? std::string_view(*v) : std::string_view();
         if (sel == "FORCED" || sel == "forced") {
             return GemvMode::Forced;
         }
@@ -421,8 +422,8 @@ enum class SplitKMode : uint8_t { Auto, Off, Forced };
 
 [[nodiscard]] SplitKMode split_k_mode() {
     static const SplitKMode mode = [] {
-        const char* v = std::getenv("VKML_GEMM_SPLITK");
-        const std::string_view sel = v != nullptr ? v : "";
+        const std::optional<std::string> v = env_value("VKML_GEMM_SPLITK");
+        const std::string_view sel = v ? std::string_view(*v) : std::string_view();
         if (sel == "FORCED" || sel == "forced") {
             return SplitKMode::Forced;
         }
@@ -440,11 +441,7 @@ enum class SplitKMode : uint8_t { Auto, Off, Forced };
 /// (docs/SPLIT_K_DESIGN.md 2.4), only on the chunk being a power of two.
 [[nodiscard]] uint32_t split_k_requested() {
     static const uint32_t n = [] {
-        const char* v = std::getenv("VKML_GEMM_SPLITK_SPLITS");
-        if (v == nullptr || v[0] == '\0') {
-            return 4U;
-        }
-        const int parsed = std::atoi(v);
+        const int64_t parsed = env_int("VKML_GEMM_SPLITK_SPLITS", 4);
         return parsed > 1 ? static_cast<uint32_t>(parsed) : 4U;
     }();
     return n;
@@ -668,10 +665,7 @@ enum class BinaryOp : uint32_t {
 /// which matters, because std::format of a dozen fields per dispatch would be
 /// far more expensive than the dispatch itself for small tensors.
 [[nodiscard]] bool debug_dispatch_enabled() {
-    static const bool on = [] {
-        const char* v = std::getenv("VKML_VULKAN_DEBUG");
-        return v != nullptr && v[0] != '\0' && v[0] != '0';
-    }();
+    static const bool on = [] { return env_flag("VKML_VULKAN_DEBUG", false); }();
     return on;
 }
 
@@ -679,12 +673,8 @@ enum class BinaryOp : uint32_t {
 /// Off unless set; capped so a stray setting cannot print a 4M-element tensor.
 [[nodiscard]] int64_t debug_dump_limit() {
     static const int64_t limit = []() -> int64_t {
-        const char* v = std::getenv("VKML_VULKAN_DUMP");
-        if (v == nullptr || v[0] == '\0') {
-            return 0;
-        }
-        const long parsed = std::strtol(v, nullptr, 10);
-        return parsed > 0 ? std::min<long>(parsed, 256) : 0;
+        const int64_t parsed = env_int("VKML_VULKAN_DUMP", 0);
+        return parsed > 0 ? std::min<int64_t>(parsed, 256) : 0;
     }();
     return limit;
 }
@@ -702,14 +692,6 @@ void trace_dispatch(const Node& node, const char* kernel, const vk::KernelConfig
         cfg.required_subgroup_size != 0 ? std::to_string(cfg.required_subgroup_size)
                                         : std::format("driver({})", subgroup_default),
         spec, push_bytes, cfg.shared_memory_bytes, node.shape.str(), dtype_name(node.dtype));
-}
-
-[[nodiscard]] bool env_flag(const char* name, bool fallback) {
-    const char* v = std::getenv(name);
-    if (v == nullptr || v[0] == '\0') {
-        return fallback;
-    }
-    return v[0] != '0';
 }
 
 }  // namespace
@@ -1649,8 +1631,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 // M4-R4 theory probe: raises LDS only, so P1'' can be tested on a
                 // kernel it was not derived from. 0 in production.
                 static const uint32_t sm_pad = [] {
-                    const char* v = std::getenv("VKML_SOFTMAX_PAD_KB");
-                    return v == nullptr ? 0U : static_cast<uint32_t>(std::atoi(v)) * 256U;
+                    return static_cast<uint32_t>(env_int("VKML_SOFTMAX_PAD_KB", 0)) * 256U;
                 }();
                 cfg.shared_memory_bytes += sm_pad * sizeof(float);
                 cfg.spec_constants = {wg, node->op == OpKind::LogSoftmax ? 1U : 0U, wg, sm_pad,
@@ -1738,8 +1719,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     gcfg.shared_memory_bytes = (kGemvWg + 2 * kGemvWg * 32) * sizeof(float);
                     // M4-R2: LDS padding, discriminator only. Default 0.
                     static const uint32_t pad_floats = [] {
-                        const char* v = std::getenv("VKML_GEMV_PAD_KB");
-                        return v == nullptr ? 0U : static_cast<uint32_t>(std::atoi(v)) * 256U;
+                        return static_cast<uint32_t>(env_int("VKML_GEMV_PAD_KB", 0)) * 256U;
                     }();
                     gcfg.shared_memory_bytes += pad_floats * sizeof(float);
                     gcfg.spec_constants = {kGemvWg,
@@ -1792,10 +1772,11 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 // VKML_GEMM_KERNEL selects the implementation, so all three can
                 // be compared in one process: naive | tiled | reg (default).
                 static const int kernel_choice = [] {
-                    const char* v = std::getenv("VKML_GEMM_KERNEL");
-                    if (v == nullptr || v[0] == '\0') {
+                    const std::optional<std::string> raw = env_value("VKML_GEMM_KERNEL");
+                    if (!raw || raw->empty()) {
                         return 2;
                     }
+                    const char* v = raw->c_str();
                     if (std::string_view(v) == "naive") {
                         return 0;
                     }
@@ -1808,10 +1789,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 // Stage 6 kernel stays byte-identical as the frozen control.
                 // Stage 6.5 produced a spurious 1.4x by modifying the control
                 // arm of its own A/B comparison; this avoids repeating that.
-                static const bool want_db = [] {
-                    const char* v = std::getenv("VKML_GEMM_DB");
-                    return v != nullptr && v[0] != '\0' && v[0] != '0';
-                }();
+                static const bool want_db = [] { return env_flag("VKML_GEMM_DB", false); }();
 
                 const bool use_naive = kernel_choice == 0;
                 const bool use_tiled = kernel_choice == 1;
@@ -1838,8 +1816,8 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 };
 
                 static const BlockGeom forced_block = []() -> BlockGeom {
-                    const char* v = std::getenv("VKML_GEMM_BLOCK");
-                    const std::string_view sel = v != nullptr ? v : "";
+                    const std::optional<std::string> v = env_value("VKML_GEMM_BLOCK");
+                    const std::string_view sel = v ? std::string_view(*v) : std::string_view();
                     if (sel == "4x2") {
                         return BlockGeom{64, 32, 4, 2};
                     }
@@ -1882,7 +1860,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     }
                     return BlockGeom{32, 32, 2, 2};  // Stage 6 default
                 }();
-                const bool block_forced = std::getenv("VKML_GEMM_BLOCK") != nullptr;
+                const bool block_forced = env_value("VKML_GEMM_BLOCK").has_value();
 
                 // M3-01: shape-driven THREADBLOCK tile.
                 //
@@ -1934,8 +1912,13 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 // Kept selectable so the experiment reproduces, exactly as
                 // VKML_GEMM_BLOCK preserves Stage 8. Default is the frozen
                 // Stage 6 geometry.
-                static const char* tile_force = std::getenv("VKML_GEMM_TILE");
-                const std::string_view tile_sel = tile_force != nullptr ? tile_force : "";
+                // OWNED, not a borrowed pointer. This static used to hold
+                // getenv's return value and dereference it on every dispatch for
+                // the life of the process -- the one site where C4996 was
+                // pointing at something real (issue #23).
+                static const std::string tile_force =
+                    env_value("VKML_GEMM_TILE").value_or(std::string());
+                const std::string_view tile_sel{tile_force};
                 const uint32_t kBM = block_forced                           ? forced_block.bm
                                      : (tile_sel == "m" || tile_sel == "l") ? 64U
                                                                             : 32U;
@@ -2028,10 +2011,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     //
                     // VKML_GEMM_NOVEC=1 forces the scalar path so the two can be
                     // compared in one process.
-                    static const bool novec = [] {
-                        const char* v = std::getenv("VKML_GEMM_NOVEC");
-                        return v != nullptr && v[0] != '\0' && v[0] != '0';
-                    }();
+                    static const bool novec = [] { return env_flag("VKML_GEMM_NOVEC", false); }();
                     const bool can_vec4 =
                         !novec && (kBK % 4 == 0) && (kBN % 4 == 0) &&
                         a.shape.stride(3) == static_cast<int64_t>(dtype_size(a.dtype)) &&
@@ -2045,8 +2025,7 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     // exact. VKML_GEMM_NOLDSVEC=1 forces the scalar path for
                     // comparison in one process.
                     static const bool no_ldsvec = [] {
-                        const char* v = std::getenv("VKML_GEMM_NOLDSVEC");
-                        return v != nullptr && v[0] != '\0' && v[0] != '0';
+                        return env_flag("VKML_GEMM_NOLDSVEC", false);
                     }();
                     const bool lds_vec = !no_ldsvec && kRN == 2;
 

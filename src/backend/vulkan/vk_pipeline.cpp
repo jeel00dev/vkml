@@ -3,6 +3,7 @@
 #include <cstdlib>
 
 #include "vkml/util/assert.h"
+#include "vkml/util/env.h"
 #include "vkml/util/log.h"
 
 #include <format>
@@ -168,8 +169,7 @@ const PipelineCache::Pipeline& PipelineCache::get(const std::string& name, const
     // an order of magnitude below the smallest effect the project has ever
     // claimed, so the flag stays on (docs/MEASUREMENT-AUDIT.md 2).
     static const bool suppress_stats = [] {
-        const char* v = std::getenv("VKML_VULKAN_NO_PIPELINE_STATS");
-        return v != nullptr && v[0] != '\0' && v[0] != '0';
+        return env_flag("VKML_VULKAN_NO_PIPELINE_STATS", false);
     }();
     if (ctx_.info().pipeline_executable_properties && !suppress_stats) {
         pci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
