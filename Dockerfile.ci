@@ -1,0 +1,80 @@
+# The Linux CI environment, pinned.
+#
+# WHY THIS EXISTS. The self-hosted runner's host is Void Linux, which
+# actions/setup-python has no prebuilt CPython for -- it fails with "version
+# '3.12' ... not found for VoidLinux rolling" before a single step runs. Every
+# job also `sudo apt-get install`s its dependencies, which is throwaway on a
+# hosted VM and repeated mutation of a workstation on a self-hosted one. Running
+# each job inside this image answers both: the distro is one the toolchain
+# expects, and the host stays untouched.
+#
+# It also fixes something the GitHub-hosted runners could never do. `ubuntu-latest`
+# has no GPU, so the Vulkan suite never ran against real hardware in CI at all --
+# only against lavapipe. With `--device /dev/dri` this image sees RADV on the
+# real GPUs *and* llvmpipe, so the hardware and software drivers are one image.
+FROM ubuntu:24.04
+
+# Nothing here is interactive, and tzdata will block forever if asked.
+ENV DEBIAN_FRONTEND=noninteractive
+
+# One layer, and `--no-install-recommends`, so what is installed is what is
+# named. A recommends-pulled package that some job silently depends on is a
+# dependency nobody wrote down.
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        clang \
+        clang-tidy \
+        cmake \
+        curl \
+        git \
+        glslang-tools \
+        libvulkan-dev \
+        libvulkan1 \
+        mesa-vulkan-drivers \
+        ninja-build \
+        python3 \
+        python3-dev \
+        python3-pip \
+        python3-venv \
+        sudo \
+        unzip \
+        vulkan-tools \
+        zip \
+    && rm -rf /var/lib/apt/lists/*
+
+# `sudo` exists and is a no-op for root. The workflow steps run `sudo apt-get
+# install ...`; inside a container that is both unnecessary and, without this,
+# fatal ("sudo: command not found"). Installing it lets the existing steps run
+# UNCHANGED -- their packages are already here, so apt turns them into fast
+# no-ops -- which keeps this change to hosting and environment rather than
+# rewriting nine jobs at the same time.
+RUN echo 'Defaults!/usr/bin/apt-get env_keep += "DEBIAN_FRONTEND"' > /etc/sudoers.d/apt-noninteractive
+
+# PEP 668 marks the system Python as externally managed, so plain `pip install`
+# refuses. CI *wants* to install into the system interpreter -- the container is
+# the isolation. Setting this beats appending --break-system-packages to every
+# pip call in the workflow, where one missed call fails a job for a reason that
+# has nothing to do with the change under test.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_ROOT_USER_ACTION=ignore
+
+# PINNED, and deliberately not from apt -- the reason is in ci.yml's own comment:
+# apt gives whatever clang-format the image ships that week, so the gate's
+# verdict would depend on the date. Baked in rather than pip-installed per run
+# so the pin lives in one place and the job cannot drift off it.
+RUN pip install --no-cache-dir clang-format==18.1.8
+
+# VK_ICD_FILENAMES is deliberately NOT set here. Setting it image-wide overrides
+# the loader's own discovery, and an image that names its drivers by path is an
+# image that breaks when a package renames one -- Ubuntu ships `radeon_icd.json`
+# and `lvp_icd.json` where the host distro uses a `.x86_64` suffix, which is
+# exactly the mistake this comment replaces. Auto-discovery finds RADV on both
+# GPUs and llvmpipe; the `second-driver` job narrows to
+# /usr/share/vulkan/icd.d/lvp_icd.json itself, where the choice is visible next
+# to the reason for it.
+
+# The runner bind-mounts the workspace, so git refuses to operate on a tree it
+# sees as owned by another user.
+RUN git config --system --add safe.directory '*'
