@@ -31,7 +31,18 @@ sys.path.insert(0, str(ROOT / "web"))
 from content import PROSE  # noqa: E402
 
 # A backticked token that looks like a repository path, optionally with :line.
-PATH_RE = re.compile(r"`((?:[\w.]+/)*[\w.]+\.(?:h|cpp|comp|glsl|py|json|md|txt))(?::(\d+))?`")
+#
+# Two forms are accepted and the distinction matters. A token containing a
+# separator (`src/api/ops.cpp`) is unambiguously repo-relative. A bare filename
+# is only treated as a repository reference when it carries a SOURCE extension,
+# because documentation legitimately names files that are not in the tree --
+# `vkml.json` is a member inside a checkpoint archive, and the first version of
+# this gate reported it as missing. A gate that cries wolf gets switched off.
+PATH_RE = re.compile(
+    r"`("
+    r"(?:[\w.-]+/)+[\w.-]+\.(?:h|cpp|comp|glsl|py|json|md|txt)"   # has a separator
+    r"|[\w.-]+\.(?:h|cpp|comp|glsl|py)"                            # bare, source only
+    r")(?::(\d+))?`")
 # A backticked identifier in the project's constant style.
 # Matches the identifier at the START of the backticked span, so
 # `kPairwiseBlock = 32` is checked as kPairwiseBlock rather than skipped.
