@@ -764,6 +764,14 @@ struct VulkanBackend::Impl {
     vk::StagingBuffer staging;
     DeviceCapabilities caps;
 
+    /// Whether the matmul-kernel fallback has already been reported.
+    ///
+    /// The decision is per dispatch because that is where the geometry is
+    /// known, but the FACT is per device and never changes. Logging it each
+    /// time produced 4,785 identical lines in one MNIST epoch, which is how a
+    /// log stops being read.
+    bool reported_gemm_fallback = false;
+
     /// Adapts the Vulkan allocator to the backend-agnostic Allocator interface.
     class StorageAllocator final : public vkml::Allocator {
     public:
@@ -1045,7 +1053,20 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
     // bandwidth-bound elementwise work with no cross-lane communication, so the
     // width does not matter. Reductions at M2 will pin it (llama.cpp uses
     // wave64 for exactly those on RDNA1).
-    const uint32_t wg = 256;
+    //
+    // CLAMPED to what the device allows, not fixed at 256. Vulkan 1.3 guarantees
+    // only 128 invocations per workgroup, and this asked for 256 unconditionally
+    // -- so a conformant minimum-spec device could create almost no pipeline at
+    // all (issue #21). Devices that allow 256 keep it and are unaffected.
+    //
+    // Safe to vary because the width reaches the shader as a specialisation
+    // constant and the grid is derived from it, so every kernel on this path
+    // adapts. Measured at 128 against 256 over the general kernels, minimum of
+    // seven process runs with a noise control: mixed and mostly inside the
+    // noise, two slower, four faster, five indistinguishable (docs/adr/0009
+    // sec4a). Shared-memory requests scale with it too, so a narrower workgroup
+    // asks for less, never more.
+    const uint32_t wg = std::min(256U, impl_->caps.max_workgroup_invocations);
 
     std::vector<Node*> traced;
 
@@ -1848,8 +1869,9 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 // arm of its own A/B comparison; this avoids repeating that.
                 static const bool want_db = [] { return env_flag("VKML_GEMM_DB", false); }();
 
-                const bool use_naive = kernel_choice == 0;
-                const bool use_tiled = kernel_choice == 1;
+                // What was ASKED for. What actually runs is decided below, once
+                // the two blocked kernels' widths are known, because a device
+                // may not permit them (issue #21).
 
                 constexpr uint32_t kTile = 16;
 
@@ -1991,11 +2013,51 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 const uint32_t kRM = forced_block.rm;
                 const uint32_t kRN = forced_block.rn;
                 const uint32_t kRegWg = (kBM / kRM) * (kBN / kRN);
-                VKML_ASSERT(kRegWg <= impl_->caps.max_workgroup_invocations,
-                            "gemm tile {}x{} at {}x{} needs {} invocations, device allows {}", kBM,
-                            kBN, kRM, kRN, kRegWg, impl_->caps.max_workgroup_invocations);
+
+                // Fall back to the naive kernel on a device too small for the
+                // blocked ones, rather than asserting.
+                //
+                // Both blocked kernels hardcode 256 invocations -- the tiled one
+                // as kTile*kTile, the register-blocked one as (BM/RM)*(BN/RN),
+                // deliberately, so the three variants stay comparable. Vulkan
+                // guarantees 128. Clamping the general width alone would leave
+                // such a device with every elementwise, reduction and movement
+                // operator and still no matmul: the appearance of support
+                // without the ability to train, which docs/adr/0009 sec4a
+                // rightly called worse than a clear refusal.
+                //
+                // The naive kernel takes the clamped `wg`, so it fits by
+                // construction and there is always something to fall back TO.
+                // It is slower, and that is the trade this makes explicit: a
+                // minimum-spec device gets working matmul rather than none.
+                //
+                // Note the fallback is on what the DEVICE permits, not on what
+                // VKML_GEMM_KERNEL asked for -- an explicit request for a kernel
+                // the device cannot run is still overridden, because the
+                // alternative is a DeviceError the caller can do nothing about.
+                const uint32_t max_invocations = impl_->caps.max_workgroup_invocations;
+                const bool reg_fits = kRegWg <= max_invocations;
+                const bool tiled_fits = kTile * kTile <= max_invocations;
+
+                bool use_naive = kernel_choice == 0;
+                bool use_tiled = kernel_choice == 1;
+                if ((use_tiled && !tiled_fits) || (!use_naive && !use_tiled && !reg_fits)) {
+                    if (!impl_->reported_gemm_fallback) {
+                        impl_->reported_gemm_fallback = true;
+                        VKML_LOG_INFO("matmul: the {} kernel needs {} invocations and the device "
+                                      "allows {}; using the naive kernel at {} for every matmul "
+                                      "on this device",
+                                      use_tiled ? "tiled" : "register-blocked",
+                                      use_tiled ? kTile * kTile : kRegWg, max_invocations, wg);
+                    }
+                    use_naive = true;
+                    use_tiled = false;
+                }
 
                 const uint32_t gemm_wg = use_naive ? wg : (use_tiled ? kTile * kTile : kRegWg);
+                VKML_ASSERT(gemm_wg <= max_invocations,
+                            "gemm asks for {} invocations, device allows {}", gemm_wg,
+                            max_invocations);
 
                 // -- split-K decision ---------------------------------------
                 //

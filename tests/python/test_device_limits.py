@@ -18,12 +18,18 @@ table, not measured here. A device may report more; none may report less.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 
 from vkvalidate import VULKAN_DEVICE, gpu_device, requires_vulkan
 
 import vkml as V
+
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 pytestmark = requires_vulkan
 
@@ -241,3 +247,66 @@ def test_the_reported_subgroup_range_is_self_consistent():
     report = device_report()
     assert report["min_subgroup_size"] <= report["subgroup_size"] <= report["max_subgroup_size"]
     assert report["min_subgroup_size"] >= 1
+
+
+def test_the_stack_runs_at_the_guaranteed_floor():
+    """The whole backend on a simulated minimum-spec device, matmul included.
+
+    Every other test in this file checks that one REQUEST fits the floor. This
+    one runs the stack with the floor actually reported, which is a different
+    claim and the one that was wrong: kernels asked for 256 invocations against
+    a guaranteed 128, so a conformant minimum-spec device could create almost no
+    pipeline at all (issue #21).
+
+    It could not be tested before. Both development GPUs report 1024, no device
+    reporting less was available, and the only way to see the failure was to
+    hand-edit vk_device.cpp -- which CI cannot run and a contributor cannot
+    reproduce. VKML_MIN_SPEC=1 makes the device report the Vulkan 1.3 floor, so
+    the claim is checkable anywhere.
+
+    MATMUL IS THE POINT, not an extra. Clamping the general width alone was
+    considered and rejected in docs/adr/0009 sec4a, because it would leave such
+    a device with every elementwise and reduction operator and still no matmul
+    -- support in appearance, unable to train in fact. Both blocked GEMM kernels
+    hardcode 256 invocations, so the backend has to fall back to the naive one.
+
+    A subprocess because the limit is read once when the device is created, so
+    the environment has to be set before this process ever touched Vulkan.
+
+    NEGATIVE CONTROL, measured rather than assumed: with the width left at a
+    fixed 256, this same configuration fails 592 of the suite's tests. The
+    assertions below are not delicate.
+    """
+    script = (
+        "import sys;sys.path.insert(0,'python');"
+        "import numpy as np, vkml as V;"
+        "V.set_log_level(V.LogLevel.ERROR);"
+        f"V.init_vulkan({VULKAN_DEVICE});"
+        f"d=V.device('vulkan:{VULKAN_DEVICE}');"
+        "caps=V.vulkan_capabilities(%d);" % VULKAN_DEVICE +
+        "assert caps['max_workgroup_invocations'] == 128, caps['max_workgroup_invocations'];"
+        # matmul, big enough to cross several workgroups in both dimensions.
+        "rng=np.random.default_rng(0);"
+        "a=rng.standard_normal((96,128)).astype(np.float32);"
+        "b=rng.standard_normal((128,64)).astype(np.float32);"
+        "m=V.matmul(V.tensor(a,device=d),V.tensor(b,device=d)).numpy();"
+        "ref=a@b;"
+        "assert np.allclose(m,ref,rtol=1e-4,atol=1e-4), np.abs(m-ref).max();"
+        # elementwise across more than one workgroup, and a reduction.
+        "x=rng.standard_normal(5000).astype(np.float32);"
+        "t=V.tensor(x,device=d);"
+        "assert np.allclose(V.mul(t,t).numpy(),x*x,rtol=1e-5,atol=1e-6);"
+        "assert np.allclose(float(V.sum(t).numpy()),float(x.sum()),rtol=1e-4,atol=1e-3);"
+        # softmax, whose shared-memory request scales with the workgroup width.
+        "s=V.softmax(V.tensor(x.reshape(50,100),device=d),dim=1).numpy();"
+        "assert np.allclose(s.sum(axis=1),1.0,rtol=1e-5,atol=1e-5);"
+        "print('FLOOR-OK')"
+    )
+    env = {**os.environ, "VKML_MIN_SPEC": "1"}
+    out = subprocess.run([sys.executable, "-c", script], cwd=REPO, env=env,
+                         capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0, (
+        f"the stack failed on a device reporting the Vulkan floor:\n"
+        f"{out.stdout[-2000:]}\n{out.stderr[-3000:]}"
+    )
+    assert "FLOOR-OK" in out.stdout, out.stdout[-2000:]

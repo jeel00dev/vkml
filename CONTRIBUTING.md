@@ -57,6 +57,20 @@ dispatch:
 VKML_VULKAN_DEBUG=1 python your_script.py
 ```
 
+If you suspect the bug is about a device *limit* rather than a driver, you can
+reproduce a minimum-spec device on the hardware you have:
+
+```sh
+VKML_MIN_SPEC=1 python your_script.py
+```
+
+That reports the Vulkan 1.3 Required Limits — 128 workgroup invocations, 16 KiB
+of shared memory, 128 bytes of push constants — instead of what your GPU
+actually offers, and runs the whole stack against them. It only ever reports
+*less* than the hardware has, so anything that works under it genuinely works.
+Every portability defect this project has had was a limit written against one
+machine, and this is the cheapest way to find the next one.
+
 ### What makes a report especially valuable
 
 - **A device we do not have.** vkML is developed on RADV (AMD, Mesa). Reports

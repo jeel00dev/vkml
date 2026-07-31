@@ -336,7 +336,18 @@ def test_tiled_kernel_has_a_different_fold_tree():
     TILE to 32 -- fine, but the comparison arm it provides for Stage 4 would no
     longer be the kernel that was measured. If it starts disagreeing with the
     ORACLE, that is a real bug.
+
+    Skipped where the tiled kernel cannot run. It asks for TILE*TILE = 256
+    invocations and Vulkan guarantees 128, so on a device at the floor the
+    backend overrides the request and runs the naive kernel instead (issue #21).
+    Both arms would then be the same kernel and the hashes would match --
+    reporting a fold-tree defect for a kernel that never executed. The property
+    is about the tiled kernel, so it needs a device that has one.
     """
+    invocations = V.vulkan_capabilities(VULKAN_DEVICE)["max_workgroup_invocations"]
+    if invocations < 256:
+        pytest.skip(f"device allows {invocations} invocations; the tiled kernel needs 256")
+
     assert _hash_matmuls({"VKML_GEMM_KERNEL": "tiled"}) != _hash_matmuls_cached(())
 
     rng = np.random.default_rng(5150)

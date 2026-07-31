@@ -253,28 +253,52 @@ take `wg`, is the second half and is architectural rather than a constant change
 Shared memory is fine: the largest request is 8192 bytes against a guaranteed
 16384 (32768 only from Roadmap 2026).
 
-**Deferred, not fixed.** The change that follows from this analysis is adaptive
-clamping plus a device-aware GEMM fallback, which is a different and larger
-change than the width constant this section originally proposed.
+**Resolved, both halves.** The change this analysis asked for — adaptive clamping
+*plus* a device-aware GEMM fallback — is implemented. Clamping alone was
+correctly rejected here: it would have left a minimum-spec device running the
+twelve general kernels with no `matmul`, the appearance of support without the
+ability to train.
 
-Clamping alone was considered and rejected. It is cheap and safe, but it would
-leave a minimum-spec device running the twelve general kernels with no `matmul`
-— the appearance of support without the ability to train, which is worse than a
-clear refusal because it moves the failure from pipeline creation to a user's
-first model.
+- The general width is `min(256, maxComputeWorkGroupInvocations)`. Devices that
+  allow 256 keep it, so nothing measured in this section changes for them.
+- `matmul` falls back to the naive kernel when the blocked ones do not fit.
+  Both hardcode 256 deliberately, to stay comparable, so the fallback is on the
+  device's limit rather than on the geometry. The naive kernel takes the clamped
+  width, so it fits by construction and there is always somewhere to fall back
+  to. It is slower; a minimum-spec device gets working `matmul` rather than none.
 
-**Revisit when either of these appears** (P7 — a deferral needs a trigger, or it
-is just silence):
+**What made it testable, which was the real obstacle.** The deferral rested on
+"no device reporting under 256 is available", and the only way to see the
+failure was to hand-edit `vk_device.cpp` — not something CI runs or a
+contributor can reproduce. `VKML_MIN_SPEC=1` now makes any device report the
+Vulkan 1.3 Required Limits, so the whole stack runs as it would on the weakest
+conformant implementation. It only ever reports limits *smaller* than the
+hardware has, so it can make vkML more conservative and never less.
 
-1. A supported device is observed reporting `maxComputeWorkGroupInvocations` under
-   256. Every device seen so far reports 1024 — both development GPUs and, by
-   inference, the Windows device in issue #2, which got far enough to fail on push
-   constants instead.
-2. A user is blocked by it.
+Measured on RADV/Navi10 reporting the floor:
 
-Until then the failure is a named `DeviceError` at pipeline creation
-(`vk_pipeline.cpp`), which is the correct behaviour for a device vkml cannot
-serve. Tracked as issue #21.
+| | unclamped width | after |
+|---|---|---|
+| Python suite at the floor | **592 failed**, 809 passed | **0 failed**, 1401 passed |
+| MNIST at the floor | could not train | 96.12% in 5.50s, same accuracy as unconstrained |
+
+The 592 is the blast radius this section could previously only estimate.
+
+Two tests changed as a consequence, both of which had encoded this device's
+limits as requirements:
+
+- `test_device_meets_what_the_kernels_require` asserted 256 invocations and
+  32 KiB of shared memory. Neither is guaranteed and neither is now needed; it
+  asserts the 1.3 floor, which is what the docstring always claimed it was for.
+- `test_tiled_kernel_has_a_different_fold_tree` compares the tiled kernel
+  against the default. At the floor the backend overrides that request, so both
+  arms would be the naive kernel and the hashes would match — reporting a
+  fold-tree defect for a kernel that never ran. It skips where the tiled kernel
+  cannot exist.
+
+Issue #21 also corrected this section's parenthetical: `gemv` asks for 64
+(`kGemvWg`), reachable only under `VKML_GEMV=forced`, so "no kernel using
+anything else" was wrong about the code and right about a default build.
 
 ## 5. Verification this must carry
 

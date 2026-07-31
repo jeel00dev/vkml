@@ -1,6 +1,7 @@
 #include "vk_device.h"
 
 #include "vkml/util/assert.h"
+#include "vkml/util/env.h"
 #include "vkml/util/log.h"
 
 #include <algorithm>
@@ -451,6 +452,41 @@ DeviceInfo query_device_info(VkPhysicalDevice physical) {
     info.max_storage_buffer_range = limits.maxStorageBufferRange;
     info.max_allocation_size = maint3.maxMemoryAllocationSize;
     info.timestamp_period = limits.timestampPeriod;
+
+    // Report the guaranteed floor instead of what this device offers, on request.
+    //
+    // The largest single source of bugs in this project is a limit sized against
+    // the development GPU rather than against the guarantee. Push constants
+    // (issue #2), workgroups per dispatch (#20) and workgroup invocations (#21)
+    // were each written down as the number some machine happened to report, and
+    // each was found either by someone else's hardware or by hand-editing this
+    // function -- which is not something CI can run, and not something a
+    // contributor without the hardware can reproduce.
+    //
+    // VKML_MIN_SPEC=1 makes any machine a minimum-spec device, so the whole
+    // stack runs as it would on the weakest conformant implementation and the
+    // suite can assert against that rather than against local hardware.
+    //
+    // A TESTING facility, never a tuning knob. It only ever reports limits
+    // SMALLER than the device really has, so anything it permits is genuinely
+    // permitted -- it can make vkml more conservative, never less. The values
+    // are the Vulkan 1.3 specification's "Required Limits" table, and 1.3 is
+    // what vk_device requests; a 1.4 or Roadmap-2022 device guarantees more.
+    if (env_flag("VKML_MIN_SPEC", false)) {
+        info.max_workgroup_invocations = std::min(info.max_workgroup_invocations, 128U);
+        info.max_shared_memory = std::min<uint64_t>(info.max_shared_memory, 16384);
+        info.max_push_constants = std::min<uint64_t>(info.max_push_constants, 128);
+        info.max_workgroup_count[0] = std::min(info.max_workgroup_count[0], 65535U);
+        info.max_workgroup_count[1] = std::min(info.max_workgroup_count[1], 65535U);
+        info.max_workgroup_count[2] = std::min(info.max_workgroup_count[2], 65535U);
+        info.max_workgroup_size[0] = std::min(info.max_workgroup_size[0], 128U);
+        info.max_workgroup_size[1] = std::min(info.max_workgroup_size[1], 128U);
+        info.max_workgroup_size[2] = std::min(info.max_workgroup_size[2], 64U);
+        VKML_LOG_INFO("VKML_MIN_SPEC: reporting the Vulkan 1.3 guaranteed floor "
+                      "({} invocations, {} KiB shared, {} B push constants)",
+                      info.max_workgroup_invocations, info.max_shared_memory / 1024,
+                      info.max_push_constants);
+    }
 
     // -- features ----------------------------------------------------------
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomic_float{};

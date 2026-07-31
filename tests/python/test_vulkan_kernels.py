@@ -637,10 +637,23 @@ def test_device_meets_what_the_kernels_require():
     """
     caps = V.vulkan_capabilities(VULKAN_DEVICE)
 
-    # The GEMM tiles are sized against this; below it they would not fit.
-    assert caps["max_shared_memory_bytes"] >= 32 * 1024
+    # These used to demand 32 KiB of shared memory and 256 invocations, which is
+    # the same mistake the docstring above warns about: both are what the
+    # development GPU reports, not what vkML needs, and neither is what Vulkan
+    # guarantees. 1.3 promises 16 KiB and 128 invocations.
+    #
+    # vkML now fits inside those. The general kernels take their width from
+    # min(256, maxComputeWorkGroupInvocations), and matmul falls back to the
+    # naive kernel when the blocked ones do not fit (issue #21). The largest
+    # shared-memory request measured is 8 KiB (docs/adr/0009 sec4a).
+    #
+    # Asserting the FLOOR rather than the device means this fails on a device
+    # vkML genuinely cannot serve, and passes on every conformant one --
+    # including under VKML_MIN_SPEC=1, which is how that claim gets tested here
+    # rather than only on hardware nobody in the project owns.
+    assert caps["max_shared_memory_bytes"] >= 16 * 1024, "the Vulkan 1.3 floor"
     assert caps["min_subgroup_size"] <= caps["subgroup_size"] <= caps["max_subgroup_size"]
-    assert caps["max_workgroup_invocations"] >= 256, "the default workgroup size"
+    assert caps["max_workgroup_invocations"] >= 128, "the Vulkan 1.3 floor"
 
 
 @requires_radv

@@ -127,19 +127,21 @@ Current: 115 C++ test cases, ~1402 Python tests, 11 CI jobs green.
 
 Open, in rough priority:
 
-1. **Workgroup width.** Every pipeline requests 256 invocations; Vulkan 1.3's
-   core floor is 128, and vkML requests 1.3. A 1.4 or Roadmap-2022 device
-   guarantees 256, so the exposure is narrower than it first looked but real.
-   Clamping alone is not the fix — the GEMM paths do not take `wg` and would
-   leave a 128-device with every elementwise operator and still no `matmul`.
-   Issue #21, `docs/adr/0009` §4a. Needs a benchmark, not a patch.
-2. Deferred performance work — see `docs/M3_ROADMAP.md`.
+1. Deferred performance work — see `docs/M3_ROADMAP.md`.
 
 **Issue #2 is closed.** Every push-constant block now fits the guaranteed 128
 bytes, by per-op repacking rather than ADR 0009 §3's device buffer: `where` and
 `softmax` store shared extents once, `cat` derives its operands' extents from
 the output's. §3 stays unimplemented and un-needed — see `docs/adr/0009` §2a for
 why that is a reprieve rather than a solution to the general problem.
+
+**Issue #21 is closed.** The general workgroup width is now
+`min(256, maxComputeWorkGroupInvocations)` and `matmul` falls back to the naive
+kernel where the blocked ones do not fit, so a minimum-spec device can train
+rather than fail at pipeline creation. **`VKML_MIN_SPEC=1` reports the Vulkan
+1.3 Required Limits on any device**, which is how that is now tested — run it
+before claiming a limit is satisfied, because it is the cheapest way to find the
+next instance of this project's most common bug.
 
 **A rebuild is not necessarily what `import vkml` gives you.** `cmake --build`
 writes `python/vkml`; after `pip install -e .` the extension resolves from
