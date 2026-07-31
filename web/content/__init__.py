@@ -28,6 +28,7 @@ from .reduction import R as _REDUCTION
 from .linalg import L as _LINALG
 from .losses import LO as _LOSSES
 from .binary import B as _BINARY
+from .shape import S as _SHAPE
 from .guide import PAGES
 from .prose import PROSE
 
@@ -38,5 +39,6 @@ PROSE.update(_REDUCTION)
 PROSE.update(_LINALG)
 PROSE.update(_LOSSES)
 PROSE.update(_BINARY)
+PROSE.update(_SHAPE)
 
 __all__ = ["PAGES", "PROSE"]
