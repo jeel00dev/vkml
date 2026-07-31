@@ -153,6 +153,9 @@ struct FillPush {
     float step;  ///< 0 for fill; arange is the same kernel with a slope
 };
 
+static_assert(sizeof(FillPush) <= kGuaranteedPushConstantBytes,
+              "FillPush exceeds the push-constant size Vulkan guarantees");
+
 struct UnaryPush {
     uint64_t src;
     uint64_t dst;
@@ -579,6 +582,9 @@ struct CastPush {
     uint64_t dst;
     uint32_t n;
 };
+
+static_assert(sizeof(CastPush) <= kGuaranteedPushConstantBytes,
+              "CastPush exceeds the push-constant size Vulkan guarantees");
 
 static_assert(sizeof(UnaryPush) <= kGuaranteedPushConstantBytes,
               "UnaryPush exceeds the push-constant size Vulkan guarantees");

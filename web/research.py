@@ -472,3 +472,69 @@ def shader_detail(path: Path) -> dict:
 
 def all_shader_details() -> dict[str, dict]:
     return {s.stem: shader_detail(s) for s in SHADERS}
+
+
+# --------------------------------------------------- dispatch and pipelines --
+
+def pipeline_map() -> dict[str, list[dict]]:
+    """OpKind -> the pipelines its `case` arm can create.
+
+    Walks VulkanBackend::compute's switch, tracking which `case OpKind::X:`
+    labels are in scope, and records every `pipes.get("name", ...)` under them.
+    A case with several entries genuinely dispatches several kernels -- matmul
+    is the clearest, with gemv, three GEMM variants and a split-K reduction.
+
+    Line-scanned rather than parsed. The switch is 1300 lines of a single
+    function and a real parse would need a C++ front end for no additional
+    truth: the two forms it has to recognise are `case OpKind::X:` and
+    `pipes.get("literal"`, and both are unambiguous.
+    """
+    path = ROOT / "src" / "backend" / "vulkan" / "vulkan_backend.cpp"
+    lines = path.read_text().split("\n")
+
+    start = next(i for i, l in enumerate(lines) if "void VulkanBackend::compute(" in l)
+    out: dict[str, list[dict]] = {}
+    active: list[str] = []
+    for i in range(start, len(lines)):
+        line = lines[i]
+        if line.startswith("void ") and i > start:
+            break                                   # left compute()
+
+        # `case OpKind::X:` -- several may stack before one body.
+        for m in re.finditer(r"case OpKind::(\w+)\s*:", line):
+            active.append(m.group(1))
+
+        m = re.search(r'pipes\.get\(\s*"([\w.]+)"', line)
+        if m and active:
+            entry = {"pipeline": m.group(1), "line": i + 1,
+                     "url": src_link(path, i + 1)}
+            for kind in active:
+                if entry["pipeline"] not in [e["pipeline"] for e in out.setdefault(kind, [])]:
+                    out[kind].append(entry)
+
+        # A `break;` at case depth ends the group of labels.
+        if re.match(r"\s{16}break;", line) or re.match(r"\s{12}\}", line):
+            active = []
+    return out
+
+
+def push_structs() -> dict[str, dict]:
+    """The C++ push-constant structs, with their compile-time size assertions.
+
+    The GLSL side is checked by scripts/check_push_constants.py; this is the
+    other half. Each struct carries a static_assert against
+    kGuaranteedPushConstantBytes, so the budget is enforced at COMPILE time on
+    the host as well -- 14 assertions, one per block.
+    """
+    path = ROOT / "src" / "backend" / "vulkan" / "vulkan_backend.cpp"
+    text = path.read_text()
+    out = {}
+    for m in re.finditer(r"struct\s+(\w*Push)\s*\{(.*?)\}\s*;", text, re.S):
+        name, body = m.group(1), m.group(2)
+        fields = re.findall(r"^\s*([\w:]+)\s+(\w+)\s*(?:\[(\d+)\])?\s*(?:=[^;]*)?;", body, re.M)
+        out[name] = {
+            "fields": [{"type": t, "name": n, "count": int(c or 1)} for t, n, c in fields],
+            "asserted": f"sizeof({name}) <= kGuaranteedPushConstantBytes" in text,
+            "line": text[:m.start()].count("\n") + 1,
+        }
+    return out
