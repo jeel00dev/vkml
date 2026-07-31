@@ -148,26 +148,57 @@ asserted against the development machine instead of against the guarantee**, and
 once the assertions were rewritten against the floor, a second instance turned
 up immediately.
 
-Every pipeline vkML creates requests a workgroup of **256 invocations**
-(`KernelConfig::workgroup_size` defaults to it, and measurement across the whole
-Python suite found no kernel using anything else). The Vulkan specification's
-Required Limits table puts the minimum `maxComputeWorkGroupInvocations` at
-**128** — cited from the spec, not measured here, and worth confirming before
-acting on it.
+Every pipeline vkML creates requests a workgroup of **256 invocations**. The
+paragraph that stood here was wrong in two ways, both corrected below; issue #21
+caught the first and the spec settled the second.
 
-If that floor is right, the blast radius is larger than §1: a conformant device
-reporting the minimum cannot create **any** vkML pipeline, not merely the three
-oversized ones. It has not been reported because it has not been met — both
-development GPUs report 1024, and the Windows device in issue #2 got far enough
-to fail on push constants, which means it too reports more than 128.
+**The floor is not one number.** Fetched from the Vulkan specification's
+`limits-required` table rather than recalled, the minimum
+`maxComputeWorkGroupInvocations` depends on what the device claims:
 
-Measured shared memory is fine: the largest request is 8192 bytes against a
-guaranteed 16384.
+| | minimum |
+|---|---|
+| Vulkan Core (1.0–1.3) | **128** |
+| Vulkan Roadmap 2022 profile | **256** |
+| Vulkan 1.4 | **256** |
 
-**Not fixed here, deliberately.** Halving the workgroup changes occupancy and
-the GEMM tile geometry is tuned around the current width, so this is a
-performance decision with a benchmark attached, not a portability patch. Recorded
-rather than silently carried (P7).
+`maxComputeWorkGroupSize` moves with it: `(128,128,64)` core, `(256,256,64)` for
+1.4 and Roadmap 2022. vkML requests **Vulkan 1.3** (`vk_device.cpp`), so the core
+floor of 128 is the one that binds, and the exposure is real. It is narrower than
+feared: a 1.4 device, or any device claiming Roadmap 2022, guarantees 256.
+
+**"No kernel using anything else" was wrong**, as issue #21 reported. `gemv` asks
+for 64 (`kGemvWg`). The correction is smaller than it looks, because that path is
+reached only under `VKML_GEMV=forced` — `GemvMode::Auto`, the default, never
+selects it. Measured at `PipelineCache::get`, the single choke point every
+pipeline passes through: **twelve pipelines in a default build, all 256**, and
+`gemv` at 64 appears only once the variable is set. So the original sentence is
+right about a default build and wrong about the code, and issue #21 is right
+about the code and understates the default.
+
+**Halving the width is NOT the fix**, which is the substantive finding here.
+Clamping it to what the device reports — `min(256, maxComputeWorkGroupInvocations)`
+— costs capable devices nothing, because they keep 256. Measured on the general
+kernels at 128 against 256, minimum of 7 process runs each with a noise control:
+mixed and mostly inside the noise, two cases slower (relu 4Mi +4.3%, softmax
+4096×256 +9.0%), four faster, five indistinguishable. **Correctness holds at 128
+— the full suite passes**, so the twelve general kernels are width-agnostic.
+
+**What clamping alone does not fix.** The GEMM paths do not take `wg`: the tiled
+kernel uses `kTile * kTile` = 256 and the register-blocked one
+`(kBM/kRM) * (kBN/kRN)` = 256, and `kernel_choice` is a tuning knob
+(`VKML_GEMM_KERNEL`), not device-aware. A 128-device would therefore get every
+elementwise, reduction and movement operator and still no `matmul` — so it still
+could not train. Making the selection fall back to the naive kernel, which does
+take `wg`, is the second half and is architectural rather than a constant change.
+
+Shared memory is fine: the largest request is 8192 bytes against a guaranteed
+16384 (32768 only from Roadmap 2026).
+
+**Not fixed here.** The change that follows from this analysis is adaptive
+clamping plus a device-aware GEMM fallback, which is a different and larger
+change than the width constant this section originally proposed. Recorded rather
+than silently carried (P7).
 
 ## 5. Verification this must carry
 
