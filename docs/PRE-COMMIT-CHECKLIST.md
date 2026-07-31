@@ -39,6 +39,24 @@ message and called `init_vulkan`, which is only bound when the backend is
 compiled in. Both passed locally and broke all three jobs at once. The script
 reproduces it in about a minute.
 
+**A rebuild is not necessarily what you then test.** `cmake --build` writes
+`python/vkml/_vkml_core*`, but after `pip install -e .` — which README.md tells
+you to run — a scikit-build-core meta-path finder resolves `vkml._vkml_core`
+from site-packages instead, and the two are different binaries. So a C++ change
+can be compiled, the suite rerun, and the *previous* extension tested, with
+nothing saying so. The failure looks like a fix that does not work, or worse a
+broken change that appears to pass.
+
+Check which one you are testing whenever a result surprises you:
+
+```sh
+python -c "import vkml; print(vkml._vkml_core.__file__)"
+```
+
+If that is not the file you just built, rerun `pip install -e .` before
+believing the suite. `check_cpu_only_build.py` asks this question itself and
+swaps both copies (issue #29), but the suite does not.
+
 **Where this bites, specifically.** Almost every Vulkan-touching test is marked
 `requires_vulkan`, and that marker calls `vulkan_ready()`, which checks
 `has_vulkan and vulkan_available()` — so it already screens out a CPU-only

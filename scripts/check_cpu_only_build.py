@@ -13,9 +13,9 @@ compiled in. Both passed locally and broke all three jobs.
 
 WHY THIS IS A SCRIPT AND NOT A SECOND BUILD DIRECTORY. Both configurations link
 their extension to the SAME path, `python/vkml/_vkml_core*.so` -- deliberately,
-because that is where `import vkml` looks and where scikit-build-core stages a
-wheel (bindings/CMakeLists.txt). So the two builds overwrite each other, and
-after running this the tree must be put back. Doing that by hand is a trap:
+because that is where scikit-build-core stages a wheel
+(bindings/CMakeLists.txt). So the two builds overwrite each other, and after
+running this the tree must be put back. Doing that by hand is a trap:
 `cmake --build build/release` afterwards sees the timestamp and decides there
 is nothing to do, leaving the CPU-only extension in place while every later
 Vulkan test skips itself and the run looks fine.
@@ -24,6 +24,19 @@ This script therefore saves the extension, swaps it, and restores it in a
 `finally`. Exit code 0 if the suite passes, 1 otherwise.
 
     python scripts/check_cpu_only_build.py
+
+WHERE THE BUILD WRITES IS NOT ALWAYS WHERE THE IMPORT READS. That sentence used
+to say `python/vkml` was "where `import vkml` looks", and it is not, once the
+package has been installed the way README.md instructs. `pip install -e .`
+leaves a scikit-build-core meta-path finder that runs ahead of `sys.path`, so
+`vkml/__init__.py` comes from the source tree while `vkml._vkml_core` comes from
+site-packages -- two different binaries. Swapping only the built one changed
+nothing the suite could see, and this gate could not pass at all on a machine
+that had followed the install instructions (issue #29).
+
+So the import location is now ASKED for rather than assumed, and the CPU-only
+extension is placed in both. Both are restored. If you interrupt this script,
+`pip install -e .` puts the installed copy back.
 """
 
 from __future__ import annotations
@@ -71,6 +84,33 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, cwd=REPO, **kwargs)
 
 
+def imported_extension_dir() -> Path | None:
+    """Where `import vkml` gets its extension, ASKED rather than assumed.
+
+    The build writes `python/vkml`, and for a long time this script assumed that
+    is also what gets imported. After `pip install -e .` -- which README.md tells
+    every contributor to run -- it is not: scikit-build-core installs a meta-path
+    finder ahead of `sys.path`, so `vkml/__init__.py` resolves from the source
+    tree while `vkml._vkml_core` resolves from site-packages, and the two are
+    different binaries. Swapping the one the build wrote then had no effect on
+    the one the suite imported, and the gate could never pass (issue #29).
+
+    `sys.path.insert(0, 'python')` and `cwd=REPO` mirror exactly what the probe
+    and pytest below do, because the answer is only useful if it is the same
+    resolution they will get.
+
+    None when the extension cannot be imported at all -- the caller reports that
+    against the tree rather than guessing a path.
+    """
+    probe = run([PYTHON, "-c",
+                 "import sys;sys.path.insert(0,'python');"
+                 "import vkml;print(vkml._vkml_core.__file__)"],
+                capture_output=True, text=True)
+    if probe.returncode != 0 or not probe.stdout.strip():
+        return None
+    return Path(probe.stdout.strip()).resolve().parent
+
+
 def build_cpu_only() -> bool:
     """Configures and builds with the Vulkan backend off. True on success."""
     configure = run([
@@ -101,10 +141,36 @@ def main() -> int:
         print("no built extension in python/vkml -- build one first", file=sys.stderr)
         return 1
 
+    # Where the build WRITES and where the suite READS are not always the same
+    # directory, so both are saved and both are restored (issue #29).
+    imported = imported_extension_dir()
+    if imported is None:
+        print("cannot import vkml with this interpreter, so there is nothing to "
+              "swap -- build the extension first", file=sys.stderr)
+        return 1
+    mirror = None if imported == PACKAGE else imported
+    if mirror is not None:
+        print(f"\nthe build writes {PACKAGE}\n"
+              f"but `import vkml` reads {mirror}\n"
+              f"-- an editable install redirects it, so the CPU-only extension is "
+              f"copied there too, and both are restored afterwards\n")
+
     with tempfile.TemporaryDirectory() as stash:
+        build_stash = Path(stash) / "build"
+        build_stash.mkdir()
         for path in saved:
-            shutil.copy2(path, Path(stash) / path.name)
-        print(f"saved {len(saved)} extension file(s); they will be restored afterwards\n")
+            shutil.copy2(path, build_stash / path.name)
+
+        mirror_stash = Path(stash) / "imported"
+        mirror_saved: list[Path] = []
+        if mirror is not None:
+            mirror_stash.mkdir()
+            mirror_saved = sorted(mirror.glob("_vkml_core*"))
+            for path in mirror_saved:
+                shutil.copy2(path, mirror_stash / path.name)
+
+        print(f"saved {len(saved) + len(mirror_saved)} extension file(s); "
+              f"they will be restored afterwards\n")
 
         # Delete before building, or the build may not produce anything.
         #
@@ -124,6 +190,16 @@ def main() -> int:
             if not build_cpu_only():
                 print("\nCPU-only BUILD failed", file=sys.stderr)
                 return 1
+
+            # Put what was just built where the interpreter will actually look.
+            # Without this the suite imports whatever the install left behind,
+            # and on this machine that is the Vulkan extension -- which the
+            # has_vulkan probe below catches, but only as a confusing failure.
+            if mirror is not None:
+                for path in mirror.glob("_vkml_core*"):
+                    path.unlink()
+                for path in extension_files():
+                    shutil.copy2(path, mirror / path.name)
 
             # Assert the swap actually happened. Without this the suite could run
             # against the Vulkan extension and report a green that means nothing
@@ -145,8 +221,13 @@ def main() -> int:
             else:
                 for path in extension_files():
                     path.unlink()
-                for name in (Path(stash)).iterdir():
+                for name in build_stash.iterdir():
                     shutil.copy2(name, PACKAGE / name.name)
+                if mirror is not None:
+                    for path in mirror.glob("_vkml_core*"):
+                        path.unlink()
+                    for name in mirror_stash.iterdir():
+                        shutil.copy2(name, mirror / name.name)
                 print("\nrestored the original extension")
 
     print("\nCPU-only suite PASSED" if passed else "\nCPU-only suite FAILED")
