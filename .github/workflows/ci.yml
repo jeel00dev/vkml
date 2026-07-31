@@ -165,9 +165,21 @@ jobs:
         run: |
           cd /tmp
           python -c "
-          import vkml, os
-          assert 'site-packages' in vkml.__file__, vkml.__file__
-          print('vkml', vkml.__version__, 'from', os.path.dirname(vkml.__file__))
+          import sysconfig, os, vkml
+          # Assert the PROPERTY, not a path convention. This read
+          # 'site-packages' in vkml.__file__, which is true for the interpreter
+          # actions/setup-python provides and false for a Debian-family system
+          # Python, where the same correctly-installed wheel lands in
+          # dist-packages. It failed there on a wheel that was fine. What the
+          # check is for is that the import did not come from the source tree,
+          # so it asks sysconfig where packages belong and compares against that.
+          installed = os.path.realpath(vkml.__file__)
+          expected = tuple(os.path.realpath(p) for p in
+                           {sysconfig.get_paths()['purelib'],
+                            sysconfig.get_paths()['platlib']})
+          assert installed.startswith(expected), f'{installed} is not under {expected}'
+          assert os.environ['GITHUB_WORKSPACE'] not in installed, installed
+          print('vkml', vkml.__version__, 'from', os.path.dirname(installed))
           print('vulkan built in:', vkml.has_vulkan)
           assert vkml.has_vulkan, 'the wheel should carry the Vulkan backend'
           "
