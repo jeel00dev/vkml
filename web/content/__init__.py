@@ -26,6 +26,7 @@ from __future__ import annotations
 from .elementwise import E as _ELEMENTWISE
 from .reduction import R as _REDUCTION
 from .linalg import L as _LINALG
+from .losses import LO as _LOSSES
 from .guide import PAGES
 from .prose import PROSE
 
@@ -34,5 +35,6 @@ from .prose import PROSE
 PROSE.update(_ELEMENTWISE)
 PROSE.update(_REDUCTION)
 PROSE.update(_LINALG)
+PROSE.update(_LOSSES)
 
 __all__ = ["PAGES", "PROSE"]
