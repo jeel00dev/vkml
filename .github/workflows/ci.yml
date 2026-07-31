@@ -295,6 +295,101 @@ jobs:
   #
   # Revisit when macOS is a platform vkML supports rather than probes.
   # -------------------------------------------------------------------------
+  vulkan-gpu:
+    name: Linux / Vulkan suite on real GPUs
+    runs-on: [self-hosted, Linux]
+    container:
+      image: localhost:5000/vkml-ci:latest
+      # The GPUs. Every hosted runner this project has ever used had none, so
+      # until now the Vulkan suite ran only against lavapipe -- a software
+      # implementation with subgroup 8, a different SPIR-V compiler and no real
+      # memory hierarchy. The bugs this project actually ships are the ones a
+      # real driver finds: the 128-byte push-constant limit, the 65535 workgroup
+      # ceiling, f16 rounding. None of those are reachable without hardware.
+      options: --device /dev/dri
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pytest nanobind
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build with the Vulkan backend
+        # -DVKML_VULKAN=ON is the point. The `python` job builds with the
+        # release preset alone, which does NOT enable Vulkan -- so its
+        # has_vulkan is False and every Vulkan test skips there. That job stays
+        # CPU-only on purpose, because a test that wrongly assumes a device is
+        # exactly what it catches; this one is its opposite number.
+        run: |
+          cmake --preset release -DVKML_VULKAN=ON -DVKML_BUILD_PYTHON=ON
+          cmake --build build/release -j$(nproc)
+
+      - name: Resolve which device is which
+        # BY PROPERTY, NEVER BY INDEX. The enumeration order is not stable
+        # across environments: this host reports the discrete card at 0, and
+        # inside the container the integrated one takes 0 and llvmpipe appears
+        # as a third device. VKML_TEST_DEVICE defaults to 0, so a job that
+        # trusted the index would silently test the iGPU here and the discrete
+        # card locally, and report both as "the GPU".
+        #
+        # Exits non-zero when either kind is absent rather than falling back, so
+        # a machine with one GPU fails loudly instead of running the same device
+        # twice under two names.
+        run: |
+          python - >> "$GITHUB_ENV" <<'PY'
+          import sys
+          import vkml as V
+          reports = V.vulkan_device_reports()
+          for i, r in enumerate(reports):
+              print(f"  {i}  {r['device_type']:<11} {r['driver_name']:<9} {r['name']}",
+                    file=sys.stderr)
+          seen = {}
+          for i, r in enumerate(reports):
+              seen.setdefault(r["device_type"], i)
+          missing = [k for k in ("discrete", "integrated") if k not in seen]
+          if missing:
+              print(f"no {', '.join(missing)} device present", file=sys.stderr)
+              sys.exit(1)
+          print(f"VKML_DISCRETE={seen['discrete']}")
+          print(f"VKML_INTEGRATED={seen['integrated']}")
+          PY
+
+      # WHAT THIS JOB DOES NOT RUN, and why each exclusion is a decision rather
+      # than a convenience. Turning the GPUs on surfaced twelve failures at
+      # once; both groups are recorded as issues and neither is a regression
+      # this job introduced.
+      #
+      #   -m "not slow" drops eleven tests in test_invariants.py that MODEL
+      #   RADV's register allocator -- exact VGPR counts, spill thresholds,
+      #   split-K heuristics. vkvalidate calls them "models of ONE shader
+      #   compiler rather than checks on vkML", and `requires_radv` guards only
+      #   on the device NAME containing RADV, not on the compiler version behind
+      #   it. This container ships Mesa 25.2.8 and the development host runs
+      #   26.1.5, so here they measure Mesa rather than vkml. Issue #35.
+      #
+      #   --deselect on sign is a real divergence, not a modelling artefact:
+      #   sign returns -0.0 for +0.0 and NaN on Mesa 25.2.8 and +0.0 on 26.1.5,
+      #   from a shader whose source says `return 0.0`. vkml is not choosing
+      #   this. Issue #36 carries it; deselected by NAME so a second failure in
+      #   the same file still fails the job.
+      - name: Suite on the discrete GPU
+        run: |
+          VKML_TEST_DEVICE=$VKML_DISCRETE python -m pytest tests/python -q -m "not slow" \
+            --deselect "tests/python/test_nan_semantics.py::test_sign_matches_torch_including_the_zeros[vulkan]"
+
+      - name: Suite on the integrated GPU
+        # always(), so a failure on the discrete card does not hide the result
+        # for the other one. Two AMD parts that differ where this project's bugs
+        # live -- 36 compute units against 6, and a subgroup size controllable
+        # over 32..64 against one fixed at 64 -- which is the whole reason for
+        # running both rather than picking the faster.
+        if: always()
+        run: |
+          VKML_TEST_DEVICE=$VKML_INTEGRATED python -m pytest tests/python -q -m "not slow" \
+            --deselect "tests/python/test_nan_semantics.py::test_sign_matches_torch_including_the_zeros[vulkan]"
+
   manylinux:
     name: Linux / redistributable wheel (manylinux)
     runs-on: ubuntu-latest
