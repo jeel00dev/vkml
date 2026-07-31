@@ -37,6 +37,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         python3-dev \
         python3-pip \
         python3-venv \
+        python-is-python3 \
         sudo \
         unzip \
         vulkan-tools \
@@ -50,6 +51,13 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # no-ops -- which keeps this change to hosting and environment rather than
 # rewriting nine jobs at the same time.
 RUN echo 'Defaults!/usr/bin/apt-get env_keep += "DEBIAN_FRONTEND"' > /etc/sudoers.d/apt-noninteractive
+
+# `python`, not just `python3`. On a hosted runner actions/setup-python puts a
+# `python` on PATH, and the workflow steps were written against that -- the
+# layering gate failed here with "python: not found" until this was added.
+# Providing the alias keeps the nine jobs' commands unchanged, which is the
+# whole approach: match the environment the workflow already expects rather than
+# rewrite the workflow to match a new environment.
 
 # PEP 668 marks the system Python as externally managed, so plain `pip install`
 # refuses. CI *wants* to install into the system interpreter -- the container is
