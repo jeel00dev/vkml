@@ -1,7 +1,7 @@
 """Reduction and creation operators.
 
 Written after reading shaders/reduce.comp, src/backend/cpu/kernels_reduce.cpp,
-src/backend/cpu/philox.h and iterate.h. Where the source states a reason -- and
+src/backend/cpu/philox.h and reduce.h. Where the source states a reason -- and
 for this family it usually does -- the reason is repeated here rather than
 paraphrased into something vaguer.
 """
@@ -15,7 +15,7 @@ R["sum"] = {
     "summary": "Sum every element of a tensor.",
     "detail": "Reduces to a 0-d tensor.\n\n"
               "The fold is **pairwise**, not sequential: `pairwise_sum` in "
-              "`src/backend/cpu/iterate.h` recurses until a run is at most "
+              "`src/backend/cpu/reduce.h` recurses until a run is at most "
               "`kPairwiseBlock = 32` elements and only then adds in order. The error grows "
               "as `O(log n)` in the element count rather than `O(n)`, which is what keeps a "
               "large reduction usable in float32 at all.\n\n"
