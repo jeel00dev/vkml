@@ -165,7 +165,14 @@ class Module:
                 raise V.ShapeError(
                     f"'{name}' expects shape {tuple(existing.shape)}, got {tuple(value.shape)}"
                 )
-            replacement = V.tensor(value, requires_grad=existing.requires_grad)
+            # device, like dtype and requires_grad above, is a property of the
+            # entry being REPLACED and not of the array replacing it. Omitting it
+            # sent every parameter to the default device, so loading into a
+            # module already moved to a GPU silently relocated the whole model to
+            # the CPU -- and the failure surfaced later, from matmul complaining
+            # its operands were on different devices, nowhere near the load.
+            replacement = V.tensor(value, requires_grad=existing.requires_grad,
+                                   device=existing.device)
             if name in params:
                 self._replace_param(name, replacement)
             else:

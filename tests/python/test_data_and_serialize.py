@@ -18,6 +18,11 @@ import pytest
 
 import vkml as V
 from vkml.data import ArrayDataset, DataLoader, split
+from vkvalidate import gpu_device, vulkan_ready
+
+#: Applied per test rather than to the file: the CPU direction of the
+#: device-preservation rule must still run in the three CPU-only CI jobs.
+requires_vulkan = pytest.mark.skipif(not vulkan_ready(), reason="no Vulkan device")
 
 
 # ---------------------------------------------------------------------------
@@ -598,3 +603,103 @@ def test_a_stored_uncompressed_archive_is_never_rejected(tmp_path):
     path = tmp_path / "stored.vkml"
     V.save(path, state, compress=False)
     V.load(path)
+
+
+# -- device preservation ----------------------------------------------------
+
+
+@requires_vulkan
+def test_load_state_dict_keeps_parameters_on_the_module_s_device(tmp_path):
+    """Loading into a module already on a device must not move it off.
+
+    THE ORDER IS THE TEST. Every other `load_state_dict` call in this suite
+    builds the module, loads, and *then* moves it to a device -- and that order
+    hid the defect completely, because the parameters were on the CPU at the
+    moment of the load anyway. The order here is the opposite one, which is what
+    resuming from a checkpoint actually looks like: you build the model, place
+    it, and only then restore the weights into it. `load_module` can only do it
+    this way round.
+
+    The replacement tensor was built without a device, so it landed on the
+    default one and silently relocated the whole model to the CPU. Nothing threw
+    at the load. The next forward pass did, from matmul, reporting operands on
+    different devices -- a message that names neither the load nor the parameter
+    that moved.
+
+    The forward pass at the end is the half that matters most: asserting on
+    `.device` alone would still pass if the tensors were on the right device but
+    unusable, and the cross-device error is the symptom a user actually meets.
+    """
+    dev = gpu_device()
+    model = V.nn.Sequential(V.nn.Linear(6, 4), V.nn.ReLU()).to(dev)
+    path = tmp_path / "m.vkml"
+    V.save_module(path, model)
+
+    restored = V.nn.Sequential(V.nn.Linear(6, 4), V.nn.ReLU()).to(dev)
+    V.load_module(path, restored)
+
+    for name, p in restored.named_parameters():
+        assert str(p.device) == str(dev), f"parameter '{name}' moved to {p.device}"
+    for name, b in restored.named_buffers():
+        assert str(b.device) == str(dev), f"buffer '{name}' moved to {b.device}"
+
+    x = V.tensor(np.arange(12, dtype=np.float32).reshape(2, 6), device=dev)
+    got = restored(x).numpy()
+    want = model(x).numpy()
+    assert np.array_equal(got, want), "restored module computes a different result"
+
+
+def test_load_state_dict_keeps_parameters_on_the_cpu(tmp_path):
+    """The inverse direction, so the fix cannot become a GPU special case.
+
+    THIS ONE DOES NOT FAIL AGAINST THE ORIGINAL DEFECT, and saying so is the
+    point: the missing argument sent parameters to the DEFAULT device, which on
+    CPU is where they already belonged, so the bug was invisible here. Checked by
+    reverting the fix -- the two GPU cases go red and this stays green.
+
+    It is kept as a directional guard rather than a regression test. The fix
+    could be wrong in the other direction -- pinning a device rather than
+    carrying the existing one -- and that mistake would pass both GPU cases while
+    breaking every CPU user. This is also the only one of the three that runs in
+    the three CPU-only CI jobs, which build without Vulkan at all.
+    """
+    model = V.nn.Sequential(V.nn.Linear(6, 4), V.nn.ReLU())
+    path = tmp_path / "m.vkml"
+    V.save_module(path, model)
+
+    restored = V.nn.Sequential(V.nn.Linear(6, 4), V.nn.ReLU())
+    V.load_module(path, restored)
+
+    for name, p in restored.named_parameters():
+        assert str(p.device) == "cpu", f"parameter '{name}' moved to {p.device}"
+
+    x = V.tensor(np.arange(12, dtype=np.float32).reshape(2, 6))
+    assert np.array_equal(restored(x).numpy(), model(x).numpy())
+
+
+@requires_vulkan
+def test_load_state_dict_preserves_dtype_and_requires_grad_with_the_device(tmp_path):
+    """All three properties belong to the entry being replaced, not to the array.
+
+    device was the one that was dropped; dtype and requires_grad were already
+    handled. Pinned together because they are one rule -- the next person adding
+    a fourth property should see the whole set in one place rather than
+    discovering it the way this was discovered.
+
+    BatchNorm2d carries the awkward cases: a trained affine pair that must keep
+    requires_grad, running statistics that must not gain it, and an integral
+    `num_batches_tracked` counter that must stay int64 rather than becoming f32.
+    """
+    dev = gpu_device()
+    model = V.nn.BatchNorm2d(3).to(dev)
+    path = tmp_path / "bn.vkml"
+    V.save_module(path, model)
+
+    restored = V.nn.BatchNorm2d(3).to(dev)
+    before = {n: (str(t.device), t.dtype, t.requires_grad)
+              for n, t in [*restored.named_parameters(), *restored.named_buffers()]}
+    V.load_module(path, restored)
+    after = {n: (str(t.device), t.dtype, t.requires_grad)
+             for n, t in [*restored.named_parameters(), *restored.named_buffers()]}
+
+    assert after == before, f"a property changed across the load: {before} -> {after}"
