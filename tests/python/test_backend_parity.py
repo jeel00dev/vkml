@@ -178,3 +178,56 @@ def test_the_declined_set_is_known():
         "f16-contiguous": ["prod"],
         "f16-strided": ["max_pool2d", "prod"],
     }, f"the set of operators Vulkan declines changed: {declined}"
+
+
+@pytest.mark.parametrize("dtype,name", [(np.float32, "f32"), (np.float16, "f16")])
+def test_max_pool2d_addresses_planes_by_dtype_not_by_four_bytes(dtype, name):
+    """More than one plane, in both dtypes. Single-plane images cannot catch this.
+
+    `max_pool2d.comp` located each plane with `plane * H * W * 4`, a hardcoded
+    four-byte element. For f16 that advances twice as far as it should, so plane
+    0 was correct and every later plane read unwritten memory as zeros — silent
+    wrong numbers on a configuration the declined-set test lists as SUPPORTED.
+
+    Every existing max_pool2d test used a (1, 1, 4, 4) image. With `plane == 0`
+    the stride is multiplied by zero, so the wrong constant could not show. The
+    shapes here have several planes precisely so that it can, and both dtypes
+    because f32 is right either way.
+
+    The backward pass had the same expression for the original input it reloads
+    to recover the argmax, so it is checked too.
+    """
+    rng = np.random.default_rng(11)
+    image = rng.random((2, 3, 8, 8)).astype(dtype)
+
+    cpu = V.max_pool2d(V.tensor(image, device=V.cpu), (2, 2)).numpy().astype(np.float32)
+    gpu = V.max_pool2d(V.tensor(image, device=gpu_device()), (2, 2)).numpy().astype(np.float32)
+
+    assert np.array_equal(gpu, cpu), (
+        f"max_pool2d {name}: the backends disagree on a multi-plane image; "
+        f"plane 0 max diff {np.abs(gpu[0] - cpu[0]).max()}, "
+        f"plane 1 max diff {np.abs(gpu[1] - cpu[1]).max()}"
+    )
+    assert (gpu != 0).any(), "every output is zero, which is the shape of the plane-stride bug"
+
+
+@pytest.mark.parametrize("dtype,name", [(np.float32, "f32"), (np.float16, "f16")])
+def test_max_pool2d_backward_addresses_planes_by_dtype(dtype, name):
+    """The adjoint reloads the original input to recover each window's argmax.
+
+    It carried the same hardcoded element size, so a gradient could be routed
+    from a plane read at the wrong address — which lands it on the wrong input
+    element rather than merely producing a wrong value.
+    """
+    rng = np.random.default_rng(12)
+    image = rng.random((2, 3, 8, 8)).astype(dtype)
+
+    grads = []
+    for device in (V.cpu, gpu_device()):
+        t = V.tensor(image, device=device, requires_grad=True)
+        V.sum(V.max_pool2d(t, (2, 2)), [0, 1, 2, 3]).backward()
+        grads.append(t.grad.numpy().astype(np.float32))
+
+    assert np.array_equal(grads[0], grads[1]), (
+        f"max_pool2d backward {name}: the gradients differ across backends"
+    )

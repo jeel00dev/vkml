@@ -44,7 +44,13 @@ layout(push_constant, scalar) uniform Params {
 /// Row-major scan with a strict `>`, so the FIRST maximum wins -- matching
 /// torch, and matching the CPU kernel it is validated against. `>=` would
 /// select the last, moving the gradient whenever a window contains a tie.
-int argmax_in_window(uint64_t plane_base, int oh, int ow) {
+/// `plane_first` is an ELEMENT index, not a byte offset. The earlier form took a
+/// byte address computed as `plane * H * W * 4`, which hardcoded a 4-byte
+/// element and so walked past the end of the buffer for f16: plane 0 was right
+/// and every later plane read unwritten memory as zeros. Silent wrong numbers,
+/// on a configuration listed as supported. Letting `load_f` do the indexing
+/// keeps the arithmetic dtype-agnostic, as it is in every other kernel.
+int argmax_in_window(uint64_t buf, uint plane_first, int oh, int ow) {
     float best = -1.0 / 0.0;   // -infinity
     int best_offset = -1;
 
@@ -56,7 +62,7 @@ int argmax_in_window(uint64_t plane_base, int oh, int ow) {
             const int x = ow * p.stride_w - p.pad_w + kj * p.dilation_w;
             if (x < 0 || x >= p.image_w) { continue; }
 
-            const float v = load_f(plane_base, h * p.image_w + x, DTYPE);
+            const float v = load_f(buf, plane_first + uint(h * p.image_w + x), DTYPE);
             if (v > best) {
                 best = v;
                 best_offset = ki * p.kernel_w + kj;
@@ -72,12 +78,12 @@ void forward(uint i) {
     const int oh    = (int(i) / p.out_w) % p.out_h;
     const int plane = int(i) / positions;
 
-    const uint64_t base = p.src + uint64_t(plane) * uint64_t(p.image_h * p.image_w) * 4ul;
-    const int offset = argmax_in_window(base, oh, ow);
+    const uint plane_first = uint(plane) * uint(p.image_h * p.image_w);
+    const int offset = argmax_in_window(p.src, plane_first, oh, ow);
 
     const int h = oh * p.stride_h - p.pad_h + (offset / p.kernel_w) * p.dilation_h;
     const int x = ow * p.stride_w - p.pad_w + (offset % p.kernel_w) * p.dilation_w;
-    store_f(p.dst, i, load_f(base, h * p.image_w + x, DTYPE), DTYPE);
+    store_f(p.dst, i, load_f(p.src, plane_first + uint(h * p.image_w + x), DTYPE), DTYPE);
 }
 
 void backward(uint i) {
@@ -86,7 +92,7 @@ void backward(uint i) {
     const int h     = (int(i) / p.image_w) % p.image_h;
     const int plane = int(i) / pixels;
 
-    const uint64_t base = p.image + uint64_t(plane) * uint64_t(pixels) * 4ul;
+    const uint plane_first = uint(plane) * uint(pixels);
 
     // Pull, do not push: with a stride below the kernel extent one input
     // position can be the maximum of several windows. Pulling makes this
@@ -106,7 +112,7 @@ void backward(uint i) {
             if (ow >= p.out_w) { continue; }
 
             // Only the window's first maximum receives its gradient.
-            if (argmax_in_window(base, oh, ow) == ki * p.kernel_w + kj) {
+            if (argmax_in_window(p.image, plane_first, oh, ow) == ki * p.kernel_w + kj) {
                 acc += load_f(p.src, (plane * p.out_h + oh) * p.out_w + ow, DTYPE);
             }
         }
