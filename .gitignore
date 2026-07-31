@@ -55,3 +55,6 @@ third_party/reference/
 # the project. Ignored so `git status` stays readable and, more importantly, so
 # a `git clean -xfd` does not delete a runner that is mid-job.
 actions-runner/
+
+# Generated documentation site. Rebuild with `python web/build.py`.
+web/_site/
