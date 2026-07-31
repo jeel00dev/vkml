@@ -186,9 +186,12 @@ infinities. Twenty-six values found a bug that a million random ones would not.
 
 - **#2 / #19** — three push-constant blocks over the 128-byte guarantee. Decided
   in `docs/adr/0009`, not implemented; blocks MNIST on a minimum-spec device.
-- **#21** — every pipeline requests a 256-invocation workgroup against a
-  guaranteed floor of 128. Unfixed: halving it moves occupancy and the GEMM tile
-  geometry is tuned around the current width, so it needs a benchmark.
+- **#21** — every pipeline requests a 256-invocation workgroup against a floor
+  that is 128 for Vulkan Core and 256 for Vulkan 1.4 / Roadmap 2022. **Deferred
+  with a trigger**, not merely unfixed: the benchmark was run and showed clamping
+  costs essentially nothing, but clamping alone leaves such a device without
+  `matmul`, so real support needs adaptive GEMM selection. `docs/adr/0009` §4a
+  has the analysis and the revisit conditions.
 - **#27** — NaN semantics for `relu`, `amax`/`amin` and `sign` are a policy
   decision, not a defect to be patched.
 - **#25** — `prod` and non-contiguous `max_pool2d` have no Vulkan kernel.

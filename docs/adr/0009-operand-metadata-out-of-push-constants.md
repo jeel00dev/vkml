@@ -195,10 +195,28 @@ take `wg`, is the second half and is architectural rather than a constant change
 Shared memory is fine: the largest request is 8192 bytes against a guaranteed
 16384 (32768 only from Roadmap 2026).
 
-**Not fixed here.** The change that follows from this analysis is adaptive
+**Deferred, not fixed.** The change that follows from this analysis is adaptive
 clamping plus a device-aware GEMM fallback, which is a different and larger
-change than the width constant this section originally proposed. Recorded rather
-than silently carried (P7).
+change than the width constant this section originally proposed.
+
+Clamping alone was considered and rejected. It is cheap and safe, but it would
+leave a minimum-spec device running the twelve general kernels with no `matmul`
+— the appearance of support without the ability to train, which is worse than a
+clear refusal because it moves the failure from pipeline creation to a user's
+first model.
+
+**Revisit when either of these appears** (P7 — a deferral needs a trigger, or it
+is just silence):
+
+1. A supported device is observed reporting `maxComputeWorkGroupInvocations` under
+   256. Every device seen so far reports 1024 — both development GPUs and, by
+   inference, the Windows device in issue #2, which got far enough to fail on push
+   constants instead.
+2. A user is blocked by it.
+
+Until then the failure is a named `DeviceError` at pipeline creation
+(`vk_pipeline.cpp`), which is the correct behaviour for a device vkml cannot
+serve. Tracked as issue #21.
 
 ## 5. Verification this must carry
 
