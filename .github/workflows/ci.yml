@@ -23,7 +23,12 @@ jobs:
     # mutation of a workstation on a self-hosted one. Running inside the image
     # answers both, and setup-python is dropped because the image pins 3.12.
     container:
-      image: vkml-ci:local
+      # A registry on the runner's own host, NOT a local image tag: the runner
+      # runs `docker pull` before creating the container and fails the job if it
+      # cannot, even when the image is already present. localhost:5000 keeps
+      # this self-contained -- no registry credentials to expire, no network,
+      # and the pull is a loopback copy. Rebuild with scripts/ci_image.sh.
+      image: localhost:5000/vkml-ci:latest
     steps:
       - uses: actions/checkout@v5
 
