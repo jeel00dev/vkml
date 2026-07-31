@@ -351,8 +351,15 @@ jobs:
         # (issue #13). A job that passes because it does not compile the target is
         # not covering it, so this now builds what the instructions tell a user to
         # build. It needs no GPU: the failure was a compile error.
+        #
+        # WERROR ON, matching the Linux C++ job. It could not be adopted while
+        # eighteen C4996s fired from std::getenv (issue #23); those now go
+        # through one helper in src/util/env.cpp with a scoped suppression, and
+        # a full -DVKML_WERROR=ON build of this configuration produces zero
+        # warnings. Without this the compiler most likely to find something is
+        # the one job allowed to ignore what it finds.
         run: |
-          cmake -B build/msvc -DVKML_BUILD_PYTHON=OFF
+          cmake -B build/msvc -DVKML_BUILD_PYTHON=OFF -DVKML_WERROR=ON
           cmake --build build/msvc --config Release --parallel
           ctest --test-dir build/msvc -C Release --output-on-failure
 
