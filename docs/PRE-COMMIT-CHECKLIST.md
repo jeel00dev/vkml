@@ -142,6 +142,17 @@ read past — macOS was the last one and it now lives in
 (`gh workflow run macos-moltenvk.yml`). If something in `ci.yml` is red, it is
 telling you something.
 
+**A green job is only evidence about what it compiled.** Both Windows jobs used
+to pass `-DVKML_BUILD_BENCH=OFF`, so `bench/cpp` was the one directory MSVC
+never saw. `harness.h` used GCC inline asm for months: the build README.md
+documents failed on a clean checkout while CI stayed green, because the job was
+not building the target the instructions name (issue #13, then #16).
+
+So when a job turns an option off, that option's code is untested rather than
+tested-and-fine. Before trusting a green run, check that the flags it passes
+still match the ones the documentation tells a contributor to use — and if a job
+must diverge, another job should cover what it drops.
+
 ---
 
 ## When something gets through anyway
