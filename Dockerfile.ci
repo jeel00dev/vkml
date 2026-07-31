@@ -25,6 +25,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         ca-certificates \
         clang \
         clang-tidy \
+        libclang-rt-18-dev \
         cmake \
         curl \
         git \
@@ -67,6 +68,15 @@ RUN echo 'Defaults!/usr/bin/apt-get env_keep += "DEBIAN_FRONTEND"' > /etc/sudoer
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_ROOT_USER_ACTION=ignore
+
+# Ubuntu's pip comes from apt WITHOUT a RECORD file, so pip cannot uninstall
+# itself and the jobs' first line -- `python -m pip install --upgrade pip` --
+# dies with "Cannot uninstall pip 24.0, RECORD file not found". Installing a
+# pip-managed pip over it, with --ignore-installed so no uninstall is attempted,
+# puts one in /usr/local that shadows the apt copy and makes the jobs' existing
+# upgrade line a no-op. Same principle as `python-is-python3` and `sudo`: adjust
+# the image so the workflow's own commands work, rather than edit the workflow.
+RUN python3 -m pip install --no-cache-dir --ignore-installed pip
 
 # PINNED, and deliberately not from apt -- the reason is in ci.yml's own comment:
 # apt gives whatever clang-format the image ships that week, so the gate's
