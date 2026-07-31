@@ -24,11 +24,13 @@ a visible "not written yet" marker rather than being quietly skipped.
 from __future__ import annotations
 
 from .elementwise import E as _ELEMENTWISE
+from .reduction import R as _REDUCTION
 from .guide import PAGES
 from .prose import PROSE
 
 # Group files are merged in, so prose can be split by subject rather than
 # accumulating in one file that nobody wants to open.
 PROSE.update(_ELEMENTWISE)
+PROSE.update(_REDUCTION)
 
 __all__ = ["PAGES", "PROSE"]
