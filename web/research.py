@@ -394,3 +394,81 @@ def cpu_kernel_doc(name: str) -> dict | None:
             if not t.startswith("//"):
                 doc = []
     return None
+
+
+# ------------------------------------------------------- shader internals ---
+
+# vkML binds NO descriptor sets. All 24 shaders take their buffers as
+# `uint64_t` device addresses inside the push-constant block, which is why
+# bufferDeviceAddress is a REQUIRED feature (vk_device.cpp) and why the
+# 128-byte push budget is tight: every operand costs 8 bytes before any
+# metadata. Verified by counting -- 0/24 shaders declare a binding.
+GLSL_SCALAR_BYTES = {
+    "float": 4, "int": 4, "uint": 4, "bool": 4,
+    "uint64_t": 8, "int64_t": 8, "double": 8,
+    "vec2": 8, "vec4": 16, "uvec2": 8, "uvec4": 16, "ivec4": 16,
+    "Operand": 32,          # 4 extents + 4 strides, uint each
+}
+
+
+def push_block(path: Path) -> dict | None:
+    """The push-constant struct: fields, types, comments and total bytes.
+
+    The byte total is computed from the declared types under `scalar` layout,
+    which is what every shader here requests. It is an ESTIMATE and is labelled
+    as one on the page -- the authority is the C++ struct the host packs, and
+    where the two disagree the C++ side wins.
+    """
+    text = path.read_text()
+    m = re.search(r"layout\(push_constant[^)]*\)\s*uniform\s+\w+\s*\{(.*?)\}\s*(\w+)\s*;",
+                  text, re.S)
+    if not m:
+        return None
+    fields, total = [], 0
+    for line in m.group(1).split("\n"):
+        line = line.strip()
+        if not line or line.startswith("//"):
+            continue
+        fm = re.match(r"([\w:]+)\s+(\w+)\s*(\[\s*(\d+)\s*\])?\s*;\s*(?://\s*(.*))?", line)
+        if not fm:
+            continue
+        ctype, fname, count = fm.group(1), fm.group(2), int(fm.group(4) or 1)
+        size = GLSL_SCALAR_BYTES.get(ctype, 4) * count
+        total += size
+        fields.append({"type": ctype, "name": fname, "bytes": size,
+                       "comment": (fm.group(5) or "").strip()})
+    return {"name": m.group(2), "fields": fields, "bytes": total}
+
+
+def shader_detail(path: Path) -> dict:
+    """Everything structural about one shader."""
+    text = path.read_text()
+    shared = re.findall(r"^\s*shared\s+(\w+)\s+(\w+)\s*\[([^\]]+)\]", text, re.M)
+    return {
+        "path": rel(path),
+        "url": src_link(path),
+        "lines": text.count("\n") + 1,
+        # The workgroup width is NOT a literal in any shader. common.glsl
+        # declares `layout(local_size_x_id = 0) in;` once and every shader
+        # inherits it, so the size is a SPECIALISATION CONSTANT resolved at
+        # pipeline creation. That is the mechanism the host uses to clamp to
+        # min(256, maxComputeWorkGroupInvocations) on a minimum-spec device
+        # without recompiling GLSL (issue #21).
+        "workgroup": ("specialisation constant 0"
+                      if re.search(r"local_size_x_id\s*=\s*(\d+)", text)
+                      or "common.glsl" in text
+                      else (re.search(r"local_size_x\s*=\s*(\w+)", text) or [None, None])[1]),
+        "spec_constants": re.findall(
+            r"layout\(constant_id\s*=\s*(\d+)\)\s*const\s+(\w+)\s+(\w+)\s*=\s*([^;]+);", text),
+        "push": push_block(path),
+        "shared_mem": [{"type": t, "name": n, "extent": e.strip()} for t, n, e in shared],
+        "barriers": len(re.findall(r"\bbarrier\s*\(", text)),
+        "subgroup_ops": sorted(set(re.findall(r"\b(subgroup\w+)\s*\(", text))),
+        "ops": sorted(set(re.findall(r"#define\s+(OP_\w+)\s", text))),
+        "bindings": len(re.findall(r"layout\([^)]*binding\s*=", text)),
+        "functions": shader_functions(path),
+    }
+
+
+def all_shader_details() -> dict[str, dict]:
+    return {s.stem: shader_detail(s) for s in SHADERS}
