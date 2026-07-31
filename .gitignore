@@ -50,3 +50,8 @@ third_party/reference/
 # the code does not explain on its own, they are worth having on every machine
 # the project is developed from, and a document only one laptop holds is one
 # nobody can cite. Nothing in docs/ is ignored.
+
+# Self-hosted Actions runner. Lives here for convenience; it is NOT part of
+# the project. Ignored so `git status` stays readable and, more importantly, so
+# a `git clean -xfd` does not delete a runner that is mid-job.
+actions-runner/

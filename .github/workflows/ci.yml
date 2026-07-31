@@ -15,7 +15,9 @@ jobs:
   # after a full toolchain build.
   static:
     name: Linux / layering + format
-    runs-on: ubuntu-latest
+    # First job moved off GitHub-hosted runners. Hosting only -- no container
+    # yet -- so that if this fails, the cause is the runner and nothing else.
+    runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
