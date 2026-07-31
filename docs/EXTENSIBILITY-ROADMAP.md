@@ -142,6 +142,130 @@ Ordered by *what unblocks what*, not by the stage numbering. Each phase names th
 already cloned under `third_party/reference/`, so the work starts from someone else's
 solved problem.
 
+---
+
+## 4a. Performance — measured, and reordered because of it
+
+An earlier draft of this document treated performance as one phase and deferred the rest to
+`M3_ROADMAP.md`. That was wrong twice over: `M3_ROADMAP.md` is **sixteen items, all GEMM** —
+it says nothing about convolution, elementwise bandwidth, the optimiser, or the dispatch
+layer — and the end-to-end gap turns out not to be a kernel problem at all.
+
+### The number this section exists for
+
+Same architecture, same batch, same optimiser, measured 2026-08-01 on the development
+machine (`build_cnn` against `build_torch_cnn` from `examples/cifar100/train.py`):
+
+| | ms/step |
+|---|---|
+| PyTorch, **CPU**, 8 threads | **34.26** |
+| vkML, **discrete GPU**, 36 CU | **35.77** |
+
+**vkML on a 36-compute-unit discrete GPU is 4% slower than PyTorch on the CPU.** Since torch
+on a GPU would be many times faster than torch on a CPU, the real distance to parity is not
+the ~1× this table shows — it is that whole multiple, and it is the reason this section comes
+before the feature phases.
+
+### Where it goes: starvation, not slow kernels
+
+Batch scaling separates fixed cost from arithmetic. If time per sample falls as the batch
+grows, the device was idle waiting for work:
+
+| batch | ms/step | ms/sample | vs batch 64 |
+|---|---|---|---|
+| 64 | 34.45 | 0.538 | 1.00× |
+| 128 | **26.23** | 0.205 | 0.38× |
+| 256 | 39.39 | 0.154 | 0.29× |
+| 512 | 70.29 | 0.137 | **0.26×** |
+
+Per-sample cost falls **3.9×**. The strongest single line is batch 128: it does twice the work
+of batch 64 in *less wall time*, which only happens when fixed per-step cost dominates
+arithmetic.
+
+**At the batch size the examples use, roughly three quarters of a training step is overhead.**
+
+Three independent observations agree:
+
+- MNIST trains at 4.41 s/epoch on a 36-CU discrete card and 4.35 s/epoch on a 6-CU integrated
+  one. Six times the compute, no difference — the workload never reaches the arithmetic.
+- Issue #33 measures a submission at ~105 µs against ~9 µs for a dispatch.
+- Issue #32 finds the optimiser is 62.7% of an MLP step across 12 submissions.
+
+`M3_ROADMAP`'s sixteen GEMM items are real work aimed at the ~26% that is arithmetic. They
+were correctly researched and are wrongly sequenced: tuning kernels that run for a quarter of
+the step cannot fix a step that is three-quarters overhead.
+
+### P0 — Attribution *(before any optimisation)*
+
+**Nothing here can be prioritised properly, because vkML cannot currently say which kernel
+costs what.** `vulkan_last_profile` returns submission-level `('submit', ms)` tuples; there is
+no per-dispatch breakdown. The evidence above is all indirect — batch scaling, device
+substitution, submission counting — which is enough to locate the problem and not enough to
+close it.
+
+`vulkan_timestamps_supported` is already true, so the mechanism exists. What is missing is
+writing timestamps around each dispatch and aggregating them by kernel name.
+
+**Reference.** llama.cpp's Vulkan backend keeps per-op timing behind a build flag; the same
+query-pool-per-dispatch structure applies here. `VK_EXT_debug_utils` labels make the result
+readable in RenderDoc and RGP as well.
+
+**Exit criterion.** A CIFAR step prints a per-kernel table summing to the measured wall time,
+with the unaccounted remainder shown explicitly rather than hidden — the remainder *is* the
+overhead being hunted.
+
+### P1 — Dispatch and submission overhead *(the measured 74%)*
+
+The single largest win available, already partly diagnosed in #32 and #33.
+
+Candidates, in the order the evidence supports:
+
+1. **One submission per step**, not twelve. The optimiser is the worst offender and is
+   embarrassingly batchable — every parameter's update is independent.
+2. **Command buffer reuse.** A training step re-records an identical sequence every iteration;
+   the shapes do not change between steps.
+3. **Fewer dispatches per operation** — the elementwise chain in an optimiser step is a
+   sequence of tiny kernels, each paying full dispatch cost.
+
+**Reference.** vkML's own `BACKWARD-PERF-INVESTIGATION.md` and `PERFORMANCE-MODEL.md`; and for
+the pattern, llama.cpp's `ggml-vulkan` builds one command buffer per graph rather than per
+node, which is precisely the structural difference.
+
+**Exit criterion.** The discrete and integrated GPUs stop tying on MNIST. That cannot be
+produced by measurement noise, which a percentage improvement can.
+
+### P2 — Convolution
+
+CIFAR is a CNN and `M3_ROADMAP` does not mention convolution once. vkML exposes `im2col` and
+`col2im` as operators, which implies convolution is lowered to explicit im2col followed by
+GEMM — materialising a K×N expansion of the input in memory before any arithmetic happens.
+**Verify this before designing around it.**
+
+If confirmed, the options in ascending order of effort are implicit GEMM (fuse the im2col
+addressing into the GEMM's operand load, so the expansion is never written), direct
+convolution for small channel counts, and Winograd for 3×3.
+
+**Reference.** CUTLASS — already cloned — is the reference architecture for implicit GEMM;
+ncnn implements direct and Winograd paths for exactly this GPU class.
+
+### P3 — Kernel tuning (`M3_ROADMAP`, unchanged)
+
+The existing sixteen items, now correctly placed: they address the arithmetic that remains
+after P1 removes the overhead around it. Items 1 (GEMV) and 3 (autotuning) stay the
+highest-value entries.
+
+### A free result worth taking first
+
+At batch 512 the per-sample cost is 0.137 ms against 0.538 ms at batch 64. Nothing in the
+library changes — the examples simply run at a batch size that starves the device less. This
+is not an optimisation and should not be reported as one, but it does mean the current
+example timings understate the hardware by roughly 4×, and any future comparison should state
+its batch size.
+
+---
+
+## 4b. Feature phases
+
 ### Phase 0 — Operator declaration and generation *(the foundation)*
 
 **Goal.** One declaration per operator; generate the op enum, the public API, the binding,
