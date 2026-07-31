@@ -188,9 +188,11 @@ You need three things:
    This includes the headers, the loader and `glslc`, so it covers everything
    else vkML needs.
 
-The Vulkan SDK installer sets the `VULKAN_SDK` environment variable, which is how
-CMake finds it. **Open a new terminal after installing**, or the variable will
-not be set in your current one.
+The Vulkan SDK installer normally sets the `VULKAN_SDK` environment variable,
+which is how CMake finds it. **Open a new terminal after installing**, or the
+variable will not be set in your current one. It is not guaranteed to be set at
+all — see [Troubleshooting](#troubleshooting) if CMake cannot find Vulkan
+afterwards.
 
 Then run the install from a *Developer Command Prompt for VS 2022* — that is the
 shell that has the MSVC compiler on its PATH.
@@ -199,12 +201,15 @@ shell that has the MSVC compiler on its PATH.
 > CPU-only build, because the CI runners have no GPU.
 >
 > The Windows build *with Vulkan enabled* has now been run on an AMD GPU, and it
-> found real bugs — which is exactly what that kind of report is for. The build
-> and packaging problems are fixed, as is an `f32 → f16` rounding difference that
-> made results driver-dependent. **One is outstanding:** three kernels declare
-> more push constants than Vulkan's guaranteed 128-byte minimum, and on a device
-> that reports exactly 128 those pipelines cannot be created, so parts of the
-> suite fail and MNIST cannot train there. The cause and the chosen fix are in
+> found real bugs — which is exactly what that kind of report is for. All of them
+> are fixed: the build and packaging problems, an `f32 → f16` rounding difference
+> that made results driver-dependent, and the three kernels that declared more
+> push constants than Vulkan's guaranteed 128-byte minimum. That last one meant
+> those pipelines could not be created on a device reporting exactly 128, so much
+> of the suite failed and MNIST could not train there.
+>
+> **The full suite now passes on that hardware, and both examples train.** How
+> each kernel was brought inside the guarantee is in
 > [`docs/adr/0009`](docs/adr/0009-operand-metadata-out-of-push-constants.md).
 >
 > Reports from other Windows GPUs are still very welcome — see
@@ -337,8 +342,9 @@ device=vkml.cpu)`, or open an issue if you need 'prod' on this backend.
 Splitting a graph across devices means copying intermediates through host memory
 at every split, which we measured at roughly **three times the cost of the
 arithmetic being carried**. Doing that silently would turn a working model into
-a mysteriously slow one. Two operators are affected today: `prod`, and
-`max_pool2d` given a non-contiguous input.
+a mysteriously slow one. One operator is affected today: `prod`. (`max_pool2d`
+on a non-contiguous input was the other until its shader learned to address
+planes through the same index mapping the CPU uses.)
 
 The reasoning is written up in
 [`docs/adr/0008-backend-selection-and-cpu-fallback.md`](docs/adr/0008-backend-selection-and-cpu-fallback.md).
@@ -394,6 +400,15 @@ variables** select debug output and tuning experiments at run time —
 `VKML_VULKAN_DEBUG=1` traces every dispatch, `VKML_EAGER=1` realizes each
 operation as it is built, `VKML_COVERAGE=<path>` records an operator-coverage
 table.
+
+`VKML_MIN_SPEC=1` is worth knowing about even if you never tune anything. It
+makes your device report the **Vulkan 1.3 guaranteed minimums** — 128 workgroup
+invocations, 16 KiB of shared memory, 128 bytes of push constants — instead of
+what it actually offers, and runs the whole stack against them. Every
+portability defect this project has had was a limit written against one machine,
+and this is the cheapest way to find the next one without owning the hardware.
+It only ever reports *less* than your GPU has, so anything that works under it
+genuinely works.
 
 **They are read once, at first use, and cached for the life of the process.**
 They are configuration, not a control interface: changing one after vkML has
@@ -454,8 +469,29 @@ The backend needs exactly three Vulkan features: `bufferDeviceAddress`,
 one instead of crashing. Run `python scripts/hardware_report.py` for the details.
 
 **CMake cannot find Vulkan on Windows**
-The `VULKAN_SDK` environment variable is set by the SDK installer, but only for
-terminals opened afterwards. Close your terminal, open a new one and try again.
+The `VULKAN_SDK` environment variable is normally set by the SDK installer, but
+only for terminals opened afterwards — so first close your terminal, open a new
+one and try again.
+
+If that does not help, check whether it is set at all:
+
+```powershell
+[Environment]::GetEnvironmentVariable('VULKAN_SDK', 'Machine')
+[Environment]::GetEnvironmentVariable('VULKAN_SDK', 'User')
+```
+
+On at least one Windows 10 machine with a working SDK at
+`C:\VulkanSDK\1.4.357.0`, both come back empty — the installer had not set it at
+either scope, and "open a new terminal" is advice that cannot succeed. Set it
+yourself and add the SDK's `Bin` to `PATH` so `glslc` is found too:
+
+```powershell
+$env:VULKAN_SDK = "C:/VulkanSDK/1.4.357.0"
+$env:PATH = "$env:VULKAN_SDK/Bin;$env:PATH"
+```
+
+CMake's own error message names the SDK it found and the variable to set, so
+read it before guessing — it is more specific than this page can be.
 
 ---
 
@@ -501,13 +537,49 @@ you if you forget.
 
 If the archive is missing, the script tells you exactly where to put it.
 
+### What these cost on the hardware we have
+
+Not a benchmark — one run each, on one machine, at a tenth of the CIFAR-100
+training set. It is here to set expectations before you start something that
+takes an hour, not to make a claim about vkML against anything else. The rules
+real measurements follow are in
+[`docs/MEASUREMENT-AUDIT.md`](docs/MEASUREMENT-AUDIT.md).
+
+CIFAR-100 CNN, 10 epochs, `--train-size 5000`, batch 64, run one at a time so
+nothing competed:
+
+| Where | Total | Per epoch | Test accuracy |
+|---|---|---|---|
+| RX 5600M (discrete, RADV) | 24 s | 1.46 s | 6.03% |
+| Radeon integrated (RENOIR) | 104 s | 6.16 s | 6.03% |
+| PyTorch 2.13 on CPU, 6 threads | 51 s | 2.57 s | 5.30%¹ |
+| vkML on CPU | *not completed* | 298 s | — |
+
+The two GPUs agree to the last digit, which is the determinism contract holding
+across different hardware rather than a coincidence.
+
+**The CPU row is the one to read carefully.** vkML's CPU backend is the
+correctness oracle — a naive triple loop, no blocking, no vectorisation and
+**no threading at all** — and that is a deliberate decision, written down at
+`src/backend/cpu/kernels_matmul.cpp`. It makes the oracle obviously correct and
+it makes it roughly 100× slower than a tuned CPU framework. A 10-epoch run did
+not finish in a sitting, so the row is honest about that rather than
+extrapolated. If you have no usable Vulkan device, read
+[issue #31](https://github.com/jeel00dev/vkml/issues/31) before planning around
+the CPU backend.
+
+¹ The PyTorch run seeds its own weights rather than starting from vkML's, so
+this column is not a like-for-like accuracy comparison. The example's built-in
+comparison is what checks the numbers agree, and it does — see
+[How we check correctness](#how-we-check-correctness).
+
 ---
 
 ## What is included
 
 | Module | What it provides |
 |---|---|
-| `vkml` | Tensors, 65 operators, dtypes, devices, lazy evaluation |
+| `vkml` | Tensors, 66 operators, dtypes, devices, lazy evaluation |
 | `vkml.nn` | `Module`, Linear, Conv2d, MaxPool2d, AvgPool2d, BatchNorm2d, LayerNorm, Dropout, Embedding, MultiheadAttention, TransformerEncoderLayer, activations, and the MSE, cross-entropy, BCE-with-logits, KL-divergence and Huber losses |
 | `vkml.optim` | SGD (with momentum), Adam, AdamW, RMSProp |
 | `vkml.data` | `Dataset`, `ArrayDataset`, `DataLoader`, reproducible shuffling, `split` |
@@ -595,10 +667,16 @@ RNG that is a pure function of its seed and index.
 from two cards plus whatever CI can reach, and it does not cover everything a
 mature framework does.
 
-**What works.** The MNIST MLP and CNN train end to end on the GPU and agree with
-PyTorch well inside tolerance. 65 operators across both backends. 1,219 Python
-tests and 96 C++ cases, run against three Vulkan drivers, with CI on Linux and
-Windows. macOS is not in the push pipeline — see below.
+**What works.** The MNIST MLP and CNN and a CIFAR-100 CNN train end to end on the
+GPU and agree with PyTorch well inside tolerance. 66 operators across both
+backends. 1,403 Python tests and 115 C++ cases, run against three Vulkan
+drivers, with CI on Linux and Windows. macOS is not in the push pipeline — see
+below.
+
+The suite also passes with every device limit clamped to the **Vulkan 1.3
+guaranteed minimum** (`VKML_MIN_SPEC=1`), which is a stronger statement than
+passing on the hardware we happen to own: a conformant device may report no more
+than that, and until recently 592 tests failed under it.
 
 **What does not.** Listed plainly, because you should find out here rather than
 half an hour in:
@@ -627,7 +705,7 @@ half an hour in:
 - **Vulkan is all-or-nothing**, by design rather than by omission — see
   [Choosing a device](#choosing-a-device). If the GPU cannot run an operator,
   vkML raises instead of silently moving that work to the CPU. Two cases exist
-  today: `prod`, and `max_pool2d` with a non-contiguous input. It is listed here
+  today: `prod`. It is listed here
   as well as there because it is a real limit on what vkML can run, whatever the
   reasoning behind it.
 - **Missing layers:** Conv1d, Conv3d, gradient checkpointing.
