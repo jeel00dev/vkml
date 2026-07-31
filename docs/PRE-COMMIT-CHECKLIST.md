@@ -125,12 +125,32 @@ have caused one (`docs/adr/0006` §7).
 
 ```sh
 python scripts/check_layering.py
+python scripts/check_push_constants.py
+python scripts/check_docs_references.py
+python scripts/check_docs_examples.py     # needs a built extension
 
 # POSIX shells, including Git Bash on Windows. CONTRIBUTING.md sec8 has the
 # PowerShell equivalent -- `find` and `xargs` do not exist there.
 find include src tests/cpp bench/cpp bindings -name '*.h' -o -name '*.cpp' \
   | xargs clang-format --dry-run --Werror
 ```
+
+`check_push_constants.py` reads the GLSL and fails if any push-constant block
+exceeds the 128 bytes Vulkan guarantees. It is the cheapest gate here -- no
+compiler, no Vulkan, no device -- and it guards the defect class of issue #2,
+where three blocks over the limit produced 19 failing tests on a driver
+reporting exactly 128 and nothing at all on a development GPU reporting 256.
+The C++ structs carry `static_assert`s against the same bound; this covers the
+shader side, and the two can drift apart.
+
+`check_docs_references.py` verifies that every file, `path:line` and constant
+the documentation cites still exists. It was written after a page claimed
+`pairwise_sum` lives in `iterate.h` when it lives in `reduce.h` -- the page
+rendered, the links resolved, the examples ran, and the sentence was false.
+
+`check_docs_examples.py` executes every `>>>` transcript in `web/content/` and
+compares the printed output to what the page claims. It needs a built
+extension, so run it after building rather than before.
 
 `mutation_check.py` needs to know where your build is when it rebuilds a mutated
 kernel. It defaults to `build/release`, so on Windows point it at the build the

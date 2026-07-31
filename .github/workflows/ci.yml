@@ -53,6 +53,21 @@ jobs:
           find include src tests/cpp bench/cpp bindings -name '*.h' -o -name '*.cpp' \
             | xargs clang-format --dry-run --Werror
 
+      # Push-constant budget. This one guards the CODE, not the documentation.
+      #
+      # Issue #2 was three blocks over the 128 bytes Vulkan guarantees, and the
+      # symptom was not a warning -- it was 19 failing tests on a driver
+      # reporting exactly 128, invisible on a development GPU reporting 256.
+      # Reading the GLSL needs no compiler, no Vulkan and no device, so it
+      # belongs in the cheapest job rather than behind a build.
+      - name: Push-constant budget
+        run: python scripts/check_push_constants.py
+
+      # The documentation gates. They import vkml only for the example runner,
+      # which is why that one lives in the Python job instead of here.
+      - name: Documentation references
+        run: python scripts/check_docs_references.py
+
   cpp:
     name: Linux / C++ (${{ matrix.preset }})
     runs-on: [self-hosted, Linux]
@@ -113,6 +128,14 @@ jobs:
         run: |
           cmake --preset release -DVKML_BUILD_PYTHON=ON
           cmake --build build/release -j$(nproc)
+
+      # Every >>> example in web/content/ is executed and compared against what
+      # the page claims. Its first run found 17 mismatches, all of them invented
+      # rather than measured -- .shape printed as a list when it returns a
+      # tuple, log(e) written as 1.0 when float32 gives 0.99999994. Needs the
+      # built extension, so it runs here rather than in the static job.
+      - name: Documentation examples
+        run: python scripts/check_docs_examples.py
 
       - name: Run validation suite
         # Coverage is recorded on the same run: it costs nothing measurable and
