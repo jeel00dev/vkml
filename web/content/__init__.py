@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from .elementwise import E as _ELEMENTWISE
 from .reduction import R as _REDUCTION
+from .linalg import L as _LINALG
 from .guide import PAGES
 from .prose import PROSE
 
@@ -32,5 +33,6 @@ from .prose import PROSE
 # accumulating in one file that nobody wants to open.
 PROSE.update(_ELEMENTWISE)
 PROSE.update(_REDUCTION)
+PROSE.update(_LINALG)
 
 __all__ = ["PAGES", "PROSE"]
