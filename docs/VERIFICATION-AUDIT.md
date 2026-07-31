@@ -234,7 +234,7 @@ integers raise.
 | Backward rules never fired | **5** of 47 | **0** (the last needed f16, §2) |
 | Operators never given a strided input | **15** | **3** (2 impossible, 1 blocked) |
 | Operators never run across workgroups | **9** | **0** |
-| Operators on one backend only | 1 | 1 (`prod`, §4) |
+| Operators on one backend only | 1 | 1 (`prod`, §4 — a recorded decision, not a gap) |
 
 111 tests added: 1,009 → 1,120.
 
@@ -371,15 +371,27 @@ it is a separate CI job rather than a flag on the existing one.
 
 Each cost real time, and none was predictable from reading code.
 
-**The backends disagree about what they accept, visibly to users.**
-`VulkanBackend::supports` requires a contiguous `src[0]` for `MaxPool2d` and
-`MaxPool2dBackward`; the CPU kernel has no such requirement. An unsupported op
-raises rather than falling back, so `max_pool2d(x.transpose(2, 3))` **computes on
-the CPU and hard-fails on the GPU**. This is a concrete instance of the open
-question carried since Milestone B — fall back by splitting the graph, or state
-that Vulkan is all-or-nothing — and it now has a one-line reproduction
-(`test_strided_max_pool2d_is_refused_on_vulkan`). A silent divergence between
-backends is the worst of the available answers.
+**The backends disagreed about what they accept, visibly to users. CLOSED.**
+`VulkanBackend::supports` required a contiguous `src[0]` for `MaxPool2d`, which
+the CPU kernel never did, so `max_pool2d(x.transpose(2, 3))` computed on the CPU
+and hard-failed on the GPU. It failed loudly rather than silently — the
+all-or-nothing answer ADR 0008 chose — but the divergence itself is now gone:
+the shader maps each image position through an `Operand`, mirroring the CPU's
+`linear_to_offset`, so both backends take the same operands. `PoolPush` grew
+80 → 112 bytes, inside the 128 Vulkan guarantees.
+
+The **adjoint** still requires both operands packed, and that is a precondition
+rather than a gap: autograd takes `grad.contiguous()` and `input.contiguous()`
+before constructing the node, so a strided operand cannot reach it. The check
+pins that.
+
+Verified structurally as well as numerically. `CONTIGUOUS` is a specialisation
+constant, so the contiguous pipeline compiles to the same machine code it always
+did — vgpr 9, sgpr 24, 232 instructions, 1156 bytes, identical before and after.
+That matters because the wall-clock comparison could not settle it: a control
+that added 32 bytes of padding and nothing else moved one benchmark by −6.5 %,
+which no padding can cause, so the instrument cannot resolve an effect this
+small on a kernel this cheap.
 
 **Covering a path on one backend says nothing about the other, and the report
 hid that.** The first version of the layout tests ran on the CPU only. A mutation

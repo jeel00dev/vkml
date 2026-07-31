@@ -293,6 +293,10 @@ struct PoolPush {
     int32_t dilation_h, dilation_w;
     int32_t image_h, image_w;
     int32_t out_h, out_w;
+    /// Layout of the operand whose windows are scanned: `src` going forward,
+    /// `image` coming back. Read only when the CONTIGUOUS specialisation
+    /// constant is false.
+    GpuOperand image_op;
 };
 
 static_assert(sizeof(PoolPush) <= kGuaranteedPushConstantBytes,
@@ -931,11 +935,15 @@ bool VulkanBackend::supports(const Node& node) const {
         case OpKind::Col2Im:
             return is_floating(node.dtype) && node.src[0] != nullptr &&
                    node.src[0]->dtype == node.dtype;
-        // The shaders index planes directly rather than through an Operand, so
-        // both operands must be contiguous as well as F32.
+        // Forward accepts a strided input: the shader maps each image position
+        // through `image_op`, mirroring the CPU's linear_to_offset.
         case OpKind::MaxPool2d:
             return is_floating(node.dtype) && node.src[0] != nullptr &&
-                   node.src[0]->dtype == node.dtype && node.src[0]->shape.is_contiguous();
+                   node.src[0]->dtype == node.dtype;
+        // The adjoint still requires both operands packed, and that is not a
+        // gap: autograd takes grad.contiguous() and input.contiguous() before
+        // building this node, so a strided operand cannot reach it. The check
+        // pins that precondition rather than restricting a caller.
         case OpKind::MaxPool2dBackward:
             return is_floating(node.dtype) && node.src[0] != nullptr &&
                    node.src[0]->dtype == node.dtype && node.src[0]->shape.is_contiguous() &&
@@ -1277,9 +1285,19 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 push.out_h = static_cast<int32_t>(pooled.dim(2));
                 push.out_w = static_cast<int32_t>(pooled.dim(3));
 
+                // Only the scanned image can be strided, and only going
+                // forward: the backward rule takes grad.contiguous() and
+                // input.contiguous() before constructing the adjoint, so both
+                // of its operands arrive packed. Deriving the flag from the
+                // operand itself rather than from `backward` keeps that a fact
+                // about the data instead of an assumption about the caller.
+                const bool image_contiguous = image.shape.is_contiguous();
+                push.image_op = to_gpu_operand(image.shape, dtype_size(node->dtype));
+
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg, backward ? 1U : 0U, spec_dtype(node->dtype)};
+                cfg.spec_constants = {wg, backward ? 1U : 0U, spec_dtype(node->dtype),
+                                      image_contiguous ? 1U : 0U};
 
                 if (debug_dispatch_enabled()) {
                     trace_dispatch(*node, "max_pool2d", cfg, sizeof(PoolPush),

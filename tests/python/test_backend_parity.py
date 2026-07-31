@@ -159,10 +159,14 @@ def test_the_declined_set_is_known():
 
     `prod` has no Vulkan kernel at all -- a product's fold order decides when it
     overflows, so a lane-strided GPU fold would give a different answer, not a
-    rounding difference (test_prod_folds_in_index_order). `max_pool2d` requires
-    a contiguous input, which its shader indexes planes directly to justify.
-    Implementing either makes this fail, which is the prompt to widen the set
-    above deliberately.
+    rounding difference (test_prod_folds_in_index_order). That is a recorded,
+    binding decision (VERIFICATION-AUDIT.md sec4), not a gap awaiting work.
+
+    `max_pool2d` used to appear here for strided inputs too. Its shader now maps
+    each image position through an Operand, so it accepts what the CPU accepts
+    and has left the set -- which is exactly what this test is for: implementing
+    something makes it fail, and widening the set is then a deliberate edit
+    rather than a silent drift.
     """
     declined = {}
     for dtype, strided in ((np.float32, False), (np.float32, True),
@@ -174,9 +178,9 @@ def test_the_declined_set_is_known():
 
     assert declined == {
         "f32-contiguous": ["prod"],
-        "f32-strided": ["max_pool2d", "prod"],
+        "f32-strided": ["prod"],
         "f16-contiguous": ["prod"],
-        "f16-strided": ["max_pool2d", "prod"],
+        "f16-strided": ["prod"],
     }, f"the set of operators Vulkan declines changed: {declined}"
 
 
@@ -231,3 +235,39 @@ def test_max_pool2d_backward_addresses_planes_by_dtype(dtype, name):
     assert np.array_equal(grads[0], grads[1]), (
         f"max_pool2d backward {name}: the gradients differ across backends"
     )
+
+
+@pytest.mark.parametrize("dtype,name", [(np.float32, "f32"), (np.float16, "f16")])
+@pytest.mark.parametrize("axes,layout", [((2, 3), "HW-swapped"), ((0, 1), "NC-swapped")])
+def test_max_pool2d_strided_and_multi_plane(dtype, name, axes, layout):
+    """Strided AND several planes, which neither existing sweep covers together.
+
+    `test_vulkan_results_match_the_cpu_oracle` sweeps strided layouts but its
+    image is (1, 1, 4, 4) — a single plane, where the plane offset is zero and
+    cannot be wrong. The multi-plane cases above are contiguous, where the
+    strides are the packed ones and cannot be wrong either. A defect in the
+    strided PLANE offset needs both at once, so it would sit in the gap between
+    them.
+
+    Swapping (0, 1) as well as (2, 3) matters: the first makes the plane axes
+    themselves non-contiguous, so `plane * H * W` no longer walks planes in
+    memory order, while the second leaves the plane stride packed and only
+    disturbs the rows.
+    """
+    rng = np.random.default_rng(13)
+    image = rng.random((2, 3, 8, 6)).astype(dtype)
+
+    outs = {}
+    for device, where in ((V.cpu, "cpu"), (gpu_device(), "gpu")):
+        outs[where] = V.max_pool2d(
+            V.tensor(image, device=device).transpose(*axes), (2, 2)
+        ).numpy().astype(np.float32)
+
+    # CPU-against-Vulkan only, which is this file's half of the chain. The
+    # CPU-against-PyTorch half for a strided max_pool2d lives in
+    # test_layout_and_scale.py::test_max_pool2d_over_a_strided_input, which now
+    # runs on both devices.
+    assert np.array_equal(outs["gpu"], outs["cpu"]), (
+        f"max_pool2d {name} {layout}: the backends disagree on a strided multi-plane image"
+    )
+    assert (outs["gpu"] != 0).any(), "an all-zero result is the shape of a bad plane offset"

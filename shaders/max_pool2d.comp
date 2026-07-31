@@ -25,6 +25,12 @@ layout(constant_id = 1) const bool BACKWARD = false;
 // argmax the backward pass recovers is an index, so it is unaffected.
 layout(constant_id = 2) const uint DTYPE = T_F32;
 
+// Set when the IMAGE operand is contiguous, in which case a flat index is
+// already the element offset and `image_op` is never read. Default false: a
+// caller that forgets to set it gets the correct-but-slower path rather than
+// wrong addresses, which is the same default unary.comp and where.comp use.
+layout(constant_id = 3) const bool CONTIGUOUS = false;
+
 layout(push_constant, scalar) uniform Params {
     uint64_t src;      // forward: input.  backward: incoming gradient.
     uint64_t image;    // backward only: the original input, for the argmax.
@@ -36,7 +42,23 @@ layout(push_constant, scalar) uniform Params {
     int   dilation_h, dilation_w;
     int   image_h, image_w;
     int   out_h, out_w;
+    // Layout of the operand whose windows are scanned -- `src` going forward,
+    // `image` coming back. Only that one can be strided: the backward rule
+    // takes grad.contiguous() and input.contiguous() before building the
+    // adjoint node, so the gradient and the original input always arrive packed.
+    Operand image_op;
 } p;
+
+/// Element offset for a flat logical position within the image.
+///
+/// The flat index is `plane * H * W + h * W + x`, which is the row-major index
+/// over (N, C, H, W) -- so decomposing it through the operand's extents and
+/// strides is exactly what the CPU's `load<T>(in, linear)` does via
+/// `linear_to_offset`. Mirroring that is what keeps the two backends agreeing
+/// on a transposed input rather than merely on a packed one.
+uint image_index(uint logical) {
+    return CONTIGUOUS ? logical : offset_from(logical, p.image_op.ne, p.image_op.nb);
+}
 
 /// Flat offset of the first maximum within one window's kernel grid, or -1 when
 /// the window lies entirely in the padding.
@@ -62,7 +84,7 @@ int argmax_in_window(uint64_t buf, uint plane_first, int oh, int ow) {
             const int x = ow * p.stride_w - p.pad_w + kj * p.dilation_w;
             if (x < 0 || x >= p.image_w) { continue; }
 
-            const float v = load_f(buf, plane_first + uint(h * p.image_w + x), DTYPE);
+            const float v = load_f(buf, image_index(plane_first + uint(h * p.image_w + x)), DTYPE);
             if (v > best) {
                 best = v;
                 best_offset = ki * p.kernel_w + kj;
@@ -83,7 +105,8 @@ void forward(uint i) {
 
     const int h = oh * p.stride_h - p.pad_h + (offset / p.kernel_w) * p.dilation_h;
     const int x = ow * p.stride_w - p.pad_w + (offset % p.kernel_w) * p.dilation_w;
-    store_f(p.dst, i, load_f(p.src, plane_first + uint(h * p.image_w + x), DTYPE), DTYPE);
+    store_f(p.dst, i, load_f(p.src, image_index(plane_first + uint(h * p.image_w + x)), DTYPE),
+            DTYPE);
 }
 
 void backward(uint i) {

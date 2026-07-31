@@ -194,4 +194,8 @@ infinities. Twenty-six values found a bug that a million random ones would not.
   has the analysis and the revisit conditions.
 - **#27** — NaN semantics for `relu`, `amax`/`amin` and `sign` are a policy
   decision, not a defect to be patched.
-- **#25** — `prod` and non-contiguous `max_pool2d` have no Vulkan kernel.
+- **#25** — non-contiguous `max_pool2d` now has a Vulkan kernel. `prod` does
+  not, and will not: its fold order decides when the product overflows, so a
+  lane-strided GPU fold gives a different answer rather than a rounding
+  difference. That is a recorded decision with a revisit trigger
+  (`VERIFICATION-AUDIT.md` §4), not outstanding work.

@@ -146,37 +146,44 @@ def test_col2im_over_a_strided_input(device):
                  torch.nn.functional.fold(t, (4, 4), (3, 3)), REDUCE_TOL, inputs=[base])
 
 
-def test_max_pool2d_over_a_strided_input():
-    """CPU only. See test_strided_max_pool2d_is_refused_on_vulkan."""
-    v, t, base = transposed_pair((1, 2, 4, 6), seed=2022, device="cpu", axes=(2, 3))
+@pytest.mark.parametrize("device", ["cpu", "gpu"])
+def test_max_pool2d_over_a_strided_input(device):
+    """Both backends now, which is the whole point of the change.
+
+    This ran on the CPU alone while Vulkan refused a strided input; the two
+    accepting the same operands is what closed that divergence.
+    """
+    if device == "gpu" and not vulkan_ready():
+        pytest.skip("no Vulkan device available")
+    v, t, base = transposed_pair((1, 2, 4, 6), seed=2022, device=device, axes=(2, 3))
 
     assert_close("max_pool2d(strided)", V.max_pool2d(v, (2, 2)),
                  torch.nn.functional.max_pool2d(t, (2, 2)), inputs=[base])
 
 
 @pytest.mark.skipif(not vulkan_ready(), reason="no Vulkan device available")
-def test_strided_max_pool2d_is_refused_on_vulkan():
-    """The backends disagree about what they accept, and the difference is
-    visible to users.
+def test_strided_max_pool2d_agrees_across_backends():
+    """Vulkan used to REFUSE this, and the refusal is what this test pinned.
 
-    `VulkanBackend::supports` requires `src[0]->shape.is_contiguous()` for
-    MaxPool2d and MaxPool2dBackward; the CPU kernel has no such requirement. An
-    unsupported op raises rather than falling back (`executor.cpp`), so the same
-    expression computes on the CPU and hard-fails on the GPU.
+    `VulkanBackend::supports` required a contiguous `src[0]` because the shader
+    indexed planes directly, so `max_pool2d(x.transpose(2, 3))` computed on the
+    CPU and hard-failed on the GPU -- a divergence in what the two backends
+    ACCEPT rather than in what they compute. Failing loudly was the least-bad
+    answer available then; removing the divergence is the right one.
 
-    Found by running this file on both backends after a coverage report showed
-    the Vulkan strided path was untested. Pinned rather than worked around: it
-    is a concrete instance of a question carried since the operator set was
-    completed -- fall back by splitting the graph, or state that Vulkan is
-    all-or-nothing -- and a silent divergence between backends is the worst of
-    the available answers.
+    The shader now maps each image position through `image_op`, mirroring the
+    CPU's `linear_to_offset`, so both backends take the same operands. Kept as a
+    named test rather than folded into the parametrised one above because it is
+    the case that used to raise, and a reader following the history should find
+    it answered here.
     """
     x = V.tensor(make_input((1, 2, 6, 4), seed=2025), device=gpu_device())
+    cpu_x = V.tensor(make_input((1, 2, 6, 4), seed=2025), device=V.cpu)
 
-    V.max_pool2d(x, (2, 2)).numpy()  # contiguous: fine
+    gpu = V.max_pool2d(x.transpose(2, 3), (2, 2)).numpy()
+    cpu = V.max_pool2d(cpu_x.transpose(2, 3), (2, 2)).numpy()
 
-    with pytest.raises(V.NotImplementedError_, match="cannot evaluate op 'max_pool2d'"):
-        V.max_pool2d(x.transpose(2, 3), (2, 2)).numpy()
+    assert np.array_equal(gpu, cpu), "the backends disagree on a strided max_pool2d"
 
 
 def test_max_pool2d_backward_through_a_strided_forward():
