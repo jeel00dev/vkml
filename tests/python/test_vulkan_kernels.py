@@ -446,12 +446,20 @@ def test_where_selects_rather_than_blends():
 
 
 def test_gelu_negative_tail_is_relatively_accurate():
-    """The reason gelu is computed through erfc rather than erf.
+    """The two backends AGREE in the tail, which is a weaker claim than it reads.
 
     At x = -3, gelu is -4.1e-3, but `1 + erf(x/sqrt2)` forms it by cancelling
     1.0 against -0.9973 and loses most of the significand. Asserted directly
     because the layout sweep draws from a uniform distribution over [-3, 3] and
     would rarely land deep enough in the tail to notice.
+
+    What this CANNOT show is that either backend is right. It compares them
+    against each other, per this file's role, and both cancelled the same way
+    until #26 fixed the shader -- so it passed for as long as they were wrong
+    together, then failed once only the GPU had been fixed, blaming the accurate
+    backend. Whether the values are actually correct is pinned against an exact
+    double-precision reference in test_invariants.py, which needs no GPU because
+    the defect was in the oracle (#28).
     """
     x = np.linspace(-6.0, -3.0, 512, dtype=np.float32)
 

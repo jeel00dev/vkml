@@ -36,13 +36,30 @@ namespace {
 
 /// Exact GELU, matching torch.nn.functional.gelu(approximate='none').
 ///
-/// 0.5x(1 + erf(x/sqrt(2))). PyTorch's default is the erf form, not the tanh
+/// 0.5x*erfc(-x/sqrt(2)). PyTorch's default is the erf form, not the tanh
 /// approximation, and the two differ by up to ~1e-3 -- far outside the 1e-5
 /// gate. Using the approximation here would produce a persistent mismatch that
 /// looks like a bug.
+///
+/// Written with erfc rather than the more familiar 0.5x(1 + erf(x/sqrt(2))).
+/// The two agree mathematically but not in fp32: as x goes negative erf(x/sqrt2)
+/// approaches -1, so the sum cancels 1.0 against it and keeps only what is left
+/// of the significand. At x = -5.506849 that leaves 5.96e-08 where erfc gives
+/// 3.65e-08, and further out it reaches zero -- 102 of 512 samples on [-6, -3],
+/// on a domain where the true value never is (min |gelu| = 5.9e-09). erfc
+/// evaluates the same quantity directly and never forms the difference.
+///
+/// This matters more here than it would in a kernel: the CPU backend is the
+/// oracle the GPU is checked against (skill 1.4), and unary.comp has computed
+/// gelu through erfc_pos since issue #26 -- so the instrument was the less
+/// accurate of the two instruments (issue #28).
+///
+/// Behaviour at the extremes is unchanged, checked value by value: +/-inf, NaN,
+/// +/-0.0 and +/-1e38 all give bit-identical results to the previous form,
+/// including the sign of the zeros.
 [[nodiscard]] float gelu(float x) noexcept {
     constexpr float kInvSqrt2 = 0.70710678118654752440F;
-    return 0.5F * x * (1.0F + std::erf(x * kInvSqrt2));
+    return 0.5F * x * std::erfc(-x * kInvSqrt2);
 }
 
 [[nodiscard]] float silu(float x) noexcept { return x * sigmoid(x); }

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import math
 import os
 import subprocess
 import sys
@@ -32,6 +33,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python"))
 
 import vkml as V  # noqa: E402
+from conftest import TOLERANCES  # noqa: E402
 from vkvalidate import (VULKAN_DEVICE, gpu_device, requires_radv,  # noqa: E402
                         requires_vulkan)
 
@@ -1059,4 +1061,81 @@ def test_multi_root_realize_uses_one_submission():
     assert used <= 2, (
         f"{used} submissions for 4 tensors realized together; the point of "
         f"multi-root realize is that they share one"
+    )
+
+
+def test_gelu_keeps_relative_accuracy_in_its_negative_tail():
+    """gelu's tail has to survive in RELATIVE terms, on the CPU, with no GPU here.
+
+    WHAT WAS BELIEVED. That gelu's accuracy was pinned, because three separate
+    tests covered it and all three passed.
+
+    WHAT TURNED OUT TO BE TRUE. All three were vacuous on this domain, each for
+    a different reason, while the CPU kernel was catastrophically wrong (#28):
+
+      - test_vulkan_kernels.py compares the GPU against the CPU. Both formed
+        gelu as 0.5x(1 + erf(x/sqrt2)), so they cancelled identically and
+        agreed with each other about the wrong answer.
+      - test_extreme_values.py holds the CPU kernel as the oracle by
+        construction, so a wrong CPU kernel is its definition of correct.
+      - test_ops_vs_torch.py compares against torch, which forms gelu the same
+        way and flushes 78 of these same 512 samples to zero itself. Measured,
+        not assumed: torch's own max relative error here is 1.0.
+
+    And the tolerance shape hid what was left. The central transcendental gate
+    is Tol(atol=1e-5, rtol=1e-5), applied as atol + rtol*|want|. gelu(-5.5) is
+    1e-7, so the absolute term alone admits ANY answer on the deep tail --
+    including exactly zero, which is what the kernel returned for 102 of these
+    512 inputs.
+
+    So the bound below is the central RELATIVE tolerance with atol pinned to
+    zero. That is not a new number chosen at a call site: it is the policy's own
+    rtol, applied in the only form that says anything where every value is two
+    orders of magnitude below the policy's atol.
+
+    And the reference is neither backend, and not torch: it is the exact value
+    in double precision, which is the only thing on this domain that is right.
+
+    Deliberately CPU-only. The defect was in the oracle, and every existing test
+    that could have caught it needed a GPU -- so it could not fail in the
+    CPU-only configuration three CI jobs build.
+    """
+    x = np.linspace(-6.0, -3.0, 512, dtype=np.float32)
+    got = V.gelu(V.tensor(x, device=V.cpu)).numpy().astype(np.float64)
+
+    # 0.5x*erfc(-x/sqrt2) in double precision. erfc rather than 1 + erf for the
+    # same reason the kernel now uses it: the sum is the thing that cancels.
+    exact = np.array([0.5 * float(v) * math.erfc(-float(v) / math.sqrt(2.0)) for v in x])
+
+    rtol = TOLERANCES["transcendental"].rtol
+
+    # The true value never reaches zero here, so a returned zero is total loss
+    # of significance rather than rounding. Asserted rather than recalled,
+    # because it is what makes the relative bound below well posed at all.
+    assert np.abs(exact).min() > 0.0, "domain reaches a true zero; rel. error is undefined"
+    zeros = int(np.count_nonzero(got == 0.0))
+    assert zeros == 0, (
+        f"gelu returned exactly zero for {zeros} of {x.size} inputs on [-6, -3], "
+        f"where the smallest true magnitude is {np.abs(exact).min():.3e}"
+    )
+
+    rel = np.abs(got - exact) / np.abs(exact)
+    worst = int(np.argmax(rel))
+    assert rel.max() <= rtol, (
+        f"gelu lost the tail: max relative error {rel.max():.3e} > {rtol:.0e} at "
+        f"x = {x[worst]:.6f} (got {got[worst]:.6e}, exact {exact[worst]:.6e})"
+    )
+
+    # This test carries its own mutant, because a test that cannot fail is worse
+    # than none (skill 10) and this one replaces three that could not. Below is
+    # exactly the expression the kernel used before #28, in fp32. It must NOT
+    # clear the bound above -- if it ever does, the domain has drifted out of
+    # the cancelling regime and the test has stopped covering anything.
+    inv_sqrt2 = np.float32(0.70710678118654752440)
+    erf_f32 = np.array([math.erf(float(v)) for v in (x * inv_sqrt2)], dtype=np.float32)
+    cancelling = (np.float32(0.5) * x * (np.float32(1.0) + erf_f32)).astype(np.float64)
+    mutant = np.abs(cancelling - exact) / np.abs(exact)
+    assert mutant.max() > rtol, (
+        f"the pre-#28 cancelling form now passes at {mutant.max():.3e}, so this "
+        f"domain no longer exercises the loss of significance the test exists for"
     )
