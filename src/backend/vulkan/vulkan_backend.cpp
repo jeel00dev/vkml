@@ -182,7 +182,7 @@ struct WherePush {
 };
 
 static_assert(sizeof(WherePush) <= kGuaranteedPushConstantBytes,
-              "WherePush exceeds even the development GPU's budget");
+              "WherePush exceeds the push-constant size Vulkan guarantees");
 
 struct TriPush {
     uint64_t src;
@@ -362,7 +362,7 @@ struct SoftmaxPush {
 };
 
 static_assert(sizeof(SoftmaxPush) <= kGuaranteedPushConstantBytes,
-              "SoftmaxPush exceeds even the development GPU's budget");
+              "SoftmaxPush exceeds the push-constant size Vulkan guarantees");
 
 struct GemmPush {
     uint64_t a;

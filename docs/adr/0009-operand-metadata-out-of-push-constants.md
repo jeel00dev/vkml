@@ -30,7 +30,15 @@ contract. Three blocks are over the real minimum:
 | `CatPush` | 144 | 16 | still over; extents genuinely differ |
 
 On a device that reports 128 — AMD's Windows driver on the reporting machine —
-those pipelines cannot be created. 104 tests fail and MNIST cannot train.
+those pipelines cannot be created. When this was written that meant 104 failing
+tests and no MNIST training.
+
+**Measured again after the repack, against a simulated 128-byte device** (the
+reported limit clamped in `vk_device.cpp`, so the whole stack runs as it would
+there): **1315 of 1334 tests pass, and MNIST trains to its usual 96.12%.** All 19
+remaining failures are `cat`. Nothing else in either example workload exceeds the
+guarantee — the largest block MNIST and CIFAR-100 touch is `binary` at exactly
+128, with `cat` never appearing in either.
 
 The size is dominated by `Operand`, which is 32 bytes (`uvec4 ne` + `uvec4 nb`)
 and appears once per tensor. `where` has four.
