@@ -781,6 +781,28 @@ derived up front from the reduction length (see §3, Fork 5):
 Any failure is investigated as a bug first. If a tolerance genuinely needs to change, the
 change must come with the error analysis that justifies it, recorded in the test.
 
+**NaN follows PyTorch, on both backends.** This was unwritten until issue #27,
+which is why it had drifted: `relu(nan)` returned 0 while `maximum(x, 0)` and
+`clamp_min(x, 0)` — the same function spelled differently — returned NaN, and the
+Vulkan `amax`/`amin` reductions dropped NaN where the CPU propagated it. A tolerance
+cannot express any of this: NaN is not *far from* a number, it is a different kind
+of answer.
+
+The rule is that torch is the reference, because a user should get the same answer
+from vkml as from torch, and the same answer from either backend. Where torch and
+numpy disagree — `sign(nan)` is +0.0 in torch and NaN in numpy — torch wins.
+
+One mechanism explains every case, and is worth stating once: **every comparison
+against NaN is false.** So `x > 0 ? x : 0` falls through to 0 and destroys a NaN,
+while `x <= 0 ? 0 : x` falls through to `x` and keeps it. The two are identical on
+numbers. Choosing between them is not a matter of style, and the same choice
+appears in `relu`'s gradient, whose mask is `x <= 0` for exactly this reason.
+Comparison alone cannot make a min/max reduction propagate NaN at all, which is
+why both backends test for it explicitly.
+
+Pinned by `tests/python/test_nan_semantics.py`, which checks every claim against
+torch on both backends.
+
 **f32 → f16 narrowing rounds to nearest, ties to even, on every backend and every driver.**
 This was implicit and therefore untrue for a while. SPIR-V leaves `OpFConvert`'s rounding mode
 implementation-defined, so `float16_t(x)` in a shader meant whatever the driver chose: RADV

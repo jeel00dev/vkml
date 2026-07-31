@@ -362,7 +362,17 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             return;
 
         case OpKind::Relu:
-            accumulate(grads, a, where(greater(ta(), zeros_like(ta())), grad, zeros_like(grad)));
+            // The mask is `x <= 0`, not `x > 0`, and the branches are swapped to
+            // match. On numbers the two are identical; they differ only on NaN,
+            // which satisfies NEITHER comparison and so lands in the else branch
+            // of whichever form is used. Written this way the else branch is
+            // `grad`, so a NaN input passes the gradient through, as torch does
+            // (measured: torch gives 1 there, vkml gave 0).
+            //
+            // Needed for the forward fix in issue #27 to mean anything: a relu
+            // that propagates NaN forward while zeroing it in the backward pass
+            // still hides a diverged model, just one pass later.
+            accumulate(grads, a, where(less_equal(ta(), zeros_like(ta())), zeros_like(grad), grad));
             return;
 
         case OpKind::Gelu: {

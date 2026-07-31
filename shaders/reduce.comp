@@ -90,7 +90,18 @@ void main() {
 
         for (uint k = lane; k < p.n_red; k += WG) {
             const float v = load_f(p.src, base + operand_offset(k, p.reduced), DTYPE);
-            if (OP == OP_MAX || OP == OP_ARGMAX) {
+            // A NaN anywhere in the row makes the whole reduction NaN, matching
+            // torch and the CPU backend's explicit isnan check in k_max/k_min.
+            // Comparison alone cannot do this: every comparison against NaN is
+            // false, so `v > acc` skips it and the NaN vanishes -- which is why
+            // the GPU returned 2 where the CPU returned nan (issue #27).
+            //
+            // Absorbing once set: with acc = NaN, every later `v > acc` is false
+            // too, so the NaN survives the rest of the lane's slice.
+            if (isnan(v)) {
+                acc = v;
+                acc_idx = k;
+            } else if (OP == OP_MAX || OP == OP_ARGMAX) {
                 // Strict > keeps the FIRST extremum, matching torch.argmax and
                 // the CPU backend. >= would silently return the last.
                 if (v > acc || acc_idx == 0xFFFFFFFFu) {
@@ -141,7 +152,15 @@ void main() {
         if (lane < stride) {
             const float other = s_val[lane + stride];
             const uint  oidx  = s_idx[lane + stride];
-            if (OP == OP_MAX || OP == OP_ARGMAX) {
+            if (is_minmax() && isnan(other)) {
+                // The lane fold above makes NaN absorbing WITHIN a lane, but a
+                // NaN arriving from the partner lane would be dropped by the
+                // comparisons below for the same reason. Both halves are needed:
+                // fixing only the fold leaves a NaN in any lane but this one
+                // invisible.
+                s_val[lane] = other;
+                s_idx[lane] = oidx;
+            } else if (OP == OP_MAX || OP == OP_ARGMAX) {
                 if (other > s_val[lane]) { s_val[lane] = other; s_idx[lane] = oidx; }
                 else if (other == s_val[lane] && oidx < s_idx[lane]) { s_idx[lane] = oidx; }
             } else if (OP == OP_MIN || OP == OP_ARGMIN) {

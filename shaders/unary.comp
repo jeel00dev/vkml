@@ -169,18 +169,38 @@ float gelu_op(float x) {
     return 0.5 * x * w;
 }
 
-/// sign, preserving -0.0 and NaN as torch.sign does. GLSL's built-in sign()
-/// maps -0.0 to +0.0 and is undefined for NaN; the tolerance for this op is
-/// EXACT, so returning x itself in the fall-through is not a detail.
+/// relu, written so that NaN survives it.
+///
+/// `x <= 0.0 ? 0.0 : x`, NOT `x > 0.0 ? x : 0.0`. The two agree on every number
+/// and differ on NaN, which fails BOTH comparisons: the first form falls through
+/// to x and propagates, the second falls through to 0 and destroys it. torch
+/// propagates, as do maximum(x, 0) and clamp_min(x, 0) -- the same function
+/// spelled differently, which vkml already got right. relu was the odd one out
+/// (issue #27), and a NaN silently becoming 0 mid-network hides a diverged model
+/// rather than announcing it.
+float relu_op(float x) {
+    return x <= 0.0 ? 0.0 : x;
+}
+
+/// sign, matching torch on every input including the ones that surprise.
+///
+/// The fall-through returns +0.0, covering +0.0, -0.0 AND NaN, none of which
+/// satisfies either comparison. It used to return `x`, with a comment claiming
+/// that matched torch. Measured, torch agrees with neither half: torch.sign(-0.0)
+/// is +0.0 and torch.sign(nan) is +0.0. numpy differs from torch on NaN but
+/// agrees on -0.0, so the old behaviour matched neither reference (issue #27).
+///
+/// GLSL's built-in sign() would give the right answer for -0.0 and is undefined
+/// for NaN, so the comparisons are still written out.
 float sign_op(float x) {
     if (x > 0.0) { return 1.0; }
     if (x < 0.0) { return -1.0; }
-    return x;
+    return 0.0;
 }
 
 float apply_op(float x) {
     switch (OP) {
-        case OP_RELU:       return x > 0.0 ? x : 0.0;
+        case OP_RELU:       return relu_op(x);
         case OP_NEG:        return -x;
         case OP_ABS:        return abs(x);
         case OP_EXP:        return exp(x);

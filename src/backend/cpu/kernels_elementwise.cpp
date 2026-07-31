@@ -47,6 +47,14 @@ namespace {
 
 [[nodiscard]] float silu(float x) noexcept { return x * sigmoid(x); }
 
+/// sign, matching torch on every input including the ones that surprise.
+///
+/// The fall-through returns +0.0, which covers +0.0, -0.0 AND NaN, because none
+/// of them satisfies either comparison. It used to return `x`, with a comment
+/// claiming that matched torch. Measured, torch agrees with neither half of that
+/// claim: `torch.sign(-0.0)` is +0.0 (bits 0x00000000) and `torch.sign(nan)` is
+/// +0.0. numpy differs from torch on NaN but agrees on -0.0, so the old
+/// behaviour matched neither reference (issue #27).
 [[nodiscard]] float sign(float x) noexcept {
     if (x > 0.0F) {
         return 1.0F;
@@ -54,7 +62,7 @@ namespace {
     if (x < 0.0F) {
         return -1.0F;
     }
-    return x;  // preserves -0.0 and NaN, as torch.sign does
+    return 0.0F;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +200,13 @@ void k_sigmoid(Node& o) {
 }
 
 void k_relu(Node& o) {
-    unary_float(o, [](float x) { return x > 0.0F ? x : 0.0F; });
+    // `x <= 0 ? 0 : x`, NOT `x > 0 ? x : 0`. The two agree on every number and
+    // differ on NaN: NaN fails BOTH comparisons, so the first form falls through
+    // to x and propagates it, while the second falls through to 0 and destroys
+    // it. torch propagates, and so do maximum(x, 0) and clamp_min(x, 0), which
+    // are the same function spelled differently -- relu was the odd one out
+    // (issue #27).
+    unary_float(o, [](float x) { return x <= 0.0F ? 0.0F : x; });
 }
 
 void k_gelu(Node& o) {
