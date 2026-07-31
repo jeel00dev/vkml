@@ -489,6 +489,23 @@ def api_entry(name: str) -> tuple[str, bool, str]:
         hdr = header_doc(facts)
         if hdr:
             out.append(hdr)
+        # The GPU kernel's own reasoning. For the element-wise family this is
+        # the most valuable prose in the repository -- why tanh clamps, why gelu
+        # goes through erfc, why relu is spelled the way it is -- written next
+        # to the code by whoever hit the bug it prevents.
+        if facts.glsl:
+            g = facts.glsl
+            out.append(f"<h4>In the Vulkan kernel</h4>"
+                       f'<div class="decl">{highlight(g["returns"] + " " + name)}'
+                       f'_op({highlight(g["args"])})'
+                       f'<span class="where">— <a href="{g["url"]}">'
+                       f'{g["path"]}:{g["line"]}</a></span></div>'
+                       + paragraphs(g["doc"]))
+        if facts.cpu_doc:
+            c = facts.cpu_doc
+            out.append(f"<h4>In the CPU kernel</h4>" + paragraphs(c["doc"])
+                       + f'<p class="lede"><a href="{c["url"]}">'
+                       f'{c["path"]}:{c["line"]}</a></p>')
         out.append(impl_table(facts))
 
     if p.get("see"):

@@ -257,6 +257,8 @@ class OpFacts:
     grad_line: int | None = None
     on_vulkan: bool = True
     tests: list[tuple[str, str]] = field(default_factory=list)
+    glsl: dict | None = None          # the `///` block on the GLSL function
+    cpu_doc: dict | None = None       # the `///` block on the CPU kernel
 
 
 def snake_to_camel(s: str) -> str:
@@ -276,6 +278,8 @@ def gather(names: list[str]) -> dict[str, OpFacts]:
         for c in info["ops"]:
             by_op_const.setdefault(c[3:].lower(), stem)
 
+    glsl_fns = all_shader_functions()
+
     out = {}
     for n in names:
         kind = snake_to_camel(n)
@@ -290,6 +294,10 @@ def gather(names: list[str]) -> dict[str, OpFacts]:
             grad_line=grads.get(kind),
             on_vulkan=(kind in vk) if kind in kinds else True,
             tests=tests.get(n, []),
+            # A GLSL helper is named `<op>_op` by convention; fall back to the
+            # bare name for the ones that are not element-wise.
+            glsl=glsl_fns.get(f"{n}_op") or glsl_fns.get(n),
+            cpu_doc=cpu_kernel_doc(n),
         )
     return out
 
@@ -326,3 +334,63 @@ if __name__ == "__main__":
     print(f"  {st['cpp_lines']} lines C++, {st['glsl_lines']} lines GLSL @ {st['rev']}")
     d = all_decls()
     print(f"  {sum(len(v) for v in d.values())} documented declarations")
+
+
+# ------------------------------------------------- GLSL function doc blocks --
+
+def shader_functions(path: Path) -> dict[str, dict]:
+    """`///` blocks attached to GLSL functions.
+
+    The shaders carry the same house style as the headers, and for the
+    element-wise family they carry the BEST prose in the repository: why tanh
+    clamps its input, why gelu goes through erfc, why relu is written as
+    `x <= 0 ? 0 : x` and not `x > 0 ? x : 0`. That reasoning was written by
+    whoever hit the bug it prevents, and it belongs in the reference.
+    """
+    out: dict[str, dict] = {}
+    lines = path.read_text().split("\n")
+    doc: list[str] = []
+    for i, raw in enumerate(lines):
+        t = raw.strip()
+        if t.startswith("///"):
+            doc.append(t[3:].lstrip())
+            continue
+        m = re.match(r"^(\w[\w ]*?)\s+(\w+)\s*\(([^)]*)\)\s*\{", t)
+        if m and doc:
+            out[m.group(2)] = {
+                "returns": m.group(1),
+                "args": m.group(3),
+                "doc": "\n".join(doc).strip(),
+                "line": i + 1,
+                "path": rel(path),
+                "url": src_link(path, i + 1),
+            }
+        if not t.startswith("//"):
+            doc = []
+    return out
+
+
+def all_shader_functions() -> dict[str, dict]:
+    out = {}
+    for s in SHADERS + sorted((ROOT / "shaders").glob("*.glsl")):
+        for name, info in shader_functions(s).items():
+            out.setdefault(name, info)
+    return out
+
+
+def cpu_kernel_doc(name: str) -> dict | None:
+    """The comment block above a `k_<name>` CPU kernel, if it has one."""
+    for f in CPU_KERNELS:
+        lines = f.read_text().split("\n")
+        doc: list[str] = []
+        for i, raw in enumerate(lines):
+            t = raw.strip()
+            if t.startswith("///"):
+                doc.append(t[3:].lstrip())
+                continue
+            if re.search(rf"\bk_{re.escape(name)}\s*\(", t) and doc:
+                return {"doc": "\n".join(doc).strip(), "line": i + 1,
+                        "path": rel(f), "url": src_link(f, i + 1)}
+            if not t.startswith("//"):
+                doc = []
+    return None

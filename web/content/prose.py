@@ -27,8 +27,9 @@ PROSE["tensor"] = {
 >>> import numpy as np, vkml
 >>> x = vkml.tensor(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
 >>> x.shape
-[2, 2]
+(2, 2)
 >>> vkml.init_vulkan(0)
+'vulkan:0'
 >>> g = vkml.tensor(np.zeros((4, 4), dtype=np.float32), device=vkml.device("vulkan:0"))
 >>> g.device
 device('vulkan:0')
@@ -105,7 +106,8 @@ PROSE["gelu"] = {
     "example": """
 >>> x = vkml.tensor(np.array([-6.0, -1.0, 0.0, 1.0], dtype=np.float32))
 >>> vkml.gelu(x).numpy()
-array([-6.1e-09, -1.6e-01,  0.0e+00,  8.4e-01], dtype=float32)
+array([-5.9195355e-09, -1.5865526e-01,  0.0000000e+00,  8.4134471e-01],
+      dtype=float32)
 """,
     "see": ["erf", "erfc", "silu", "relu"],
 }
@@ -224,7 +226,7 @@ PROSE["matmul"] = {
 >>> a = vkml.tensor(np.random.rand(64, 128).astype(np.float32))
 >>> b = vkml.tensor(np.random.rand(128, 32).astype(np.float32))
 >>> vkml.matmul(a, b).shape
-[64, 32]
+(64, 32)
 """,
     "see": ["conv2d", "im2col"],
 }
@@ -263,7 +265,7 @@ PROSE["conv2d"] = {
 >>> x = vkml.tensor(np.random.rand(8, 3, 32, 32).astype(np.float32))
 >>> w = vkml.tensor(np.random.rand(16, 3, 3, 3).astype(np.float32))
 >>> vkml.conv2d(x, w, stride=[1, 1], padding=[1, 1]).shape
-[8, 16, 32, 32]
+(8, 16, 32, 32)
 """,
     "see": ["max_pool2d", "avg_pool2d", "im2col", "matmul"],
 }
@@ -286,7 +288,7 @@ PROSE["cross_entropy"] = {
 >>> logits = vkml.tensor(np.random.rand(4, 10).astype(np.float32))
 >>> target = vkml.tensor(np.array([1, 0, 4, 9], dtype=np.int64))
 >>> vkml.cross_entropy(logits, target).shape
-[]
+()
 """,
     "see": ["log_softmax", "binary_cross_entropy_with_logits", "kl_div"],
 }
@@ -348,6 +350,7 @@ PROSE["save"] = {
     ],
     "note": "The path comes first, and the payload is NumPy arrays rather than tensors.",
     "example": """
+>>> w = vkml.tensor(np.zeros((4, 4), dtype=np.float32))
 >>> vkml.save("ckpt.vkml", {"w": w.numpy()}, metadata={"epoch": 3})
 >>> ck = vkml.load("ckpt.vkml")
 >>> ck.metadata["epoch"]
@@ -370,8 +373,10 @@ PROSE["load_module"] = {
                "against it cannot guard the load. To decide whether to load at all, call "
                "`load` first, inspect, then `load_state_dict` yourself.",
     "example": """
+>>> dev = vkml.device("vulkan:0")
 >>> model = vkml.nn.Linear(16, 8).to(dev)
->>> ck = vkml.load_module("ckpt.vkml", model)
+>>> vkml.save_module("m.vkml", model)
+>>> ck = vkml.load_module("m.vkml", model)
 >>> next(iter(model.named_parameters()))[1].device      # unchanged by the load
 device('vulkan:0')
 """,
@@ -395,6 +400,7 @@ PROSE["init_vulkan"] = {
                "of device.",
     "example": """
 >>> vkml.init_vulkan(0)
+'vulkan:0'
 >>> vkml.vulkan_device_names()
 ['AMD Radeon RX 5600M (RADV NAVI10)', 'AMD Radeon Graphics (RADV RENOIR)']
 """,
@@ -405,10 +411,12 @@ PROSE["best_device"] = {
     "summary": "Pick the most capable available device, preferring discrete Vulkan hardware.",
     "returns": "A `(device, reason)` pair. The reason names the device and why it was chosen, "
                "so it can be logged rather than guessed at.",
+    # No literal output: the device index, name and driver version all differ per
+    # machine, which is the very instability this function exists to absorb.
     "example": """
 >>> dev, why = vkml.best_device()
->>> print(why)
-using Vulkan device 1: AMD Radeon RX 5600M (RADV NAVI10) (discrete, Vulkan 1.4.318, driver radv)
+>>> print(why)                          # doctest: +SKIP
+using Vulkan device 0: AMD Radeon RX 5600M (RADV NAVI10) (discrete, Vulkan 1.4.354, driver radv)
 """,
     "see": ["init_vulkan", "available_devices", "vulkan_device_reports"],
 }
