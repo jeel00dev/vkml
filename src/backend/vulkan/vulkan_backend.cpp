@@ -103,6 +103,30 @@ strides_sharing_extents(const GpuOperand& op, const std::array<uint32_t, 4>& ne,
     return op.nb;
 }
 
+/// The same, for `cat`, whose operands agree everywhere EXCEPT the joined axis.
+///
+/// The shader rebuilds this operand's extents as `ne` with `axis` replaced by
+/// `extent`, so what has to hold is that the operand really is that. Checked
+/// here for the same reason its sibling above is: the invariant comes from a
+/// shape check in ops.cpp, and if that ever loosened, nothing would fail -- the
+/// shader would decompose indices against the wrong extents and quietly read
+/// the wrong elements.
+///
+/// `axis` indexes the padded array, matching what goes into the push block.
+[[nodiscard]] std::array<uint32_t, 4>
+strides_sharing_extents_off_axis(const GpuOperand& op, const std::array<uint32_t, 4>& ne,
+                                 size_t axis, uint32_t extent, const char* what) {
+    std::array<uint32_t, 4> expected = ne;
+    expected[axis] = extent;
+    VKML_CHECK(op.ne == expected, ShapeError,
+               "{} has extents [{} {} {} {}] but cat derives [{} {} {} {}] from the output's "
+               "extents with axis {} set to {}; only the concatenated axis may differ "
+               "(docs/adr/0009 sec2)",
+               what, op.ne[0], op.ne[1], op.ne[2], op.ne[3], expected[0], expected[1], expected[2],
+               expected[3], axis, extent);
+    return op.nb;
+}
+
 /// What Vulkan actually guarantees for `maxPushConstantsSize`.
 ///
 /// The whole block-size question below is a PORTABILITY question, not a
@@ -117,16 +141,10 @@ strides_sharing_extents(const GpuOperand& op, const std::array<uint32_t, 4>& ne,
 /// machine, including the ones that would otherwise never reproduce it.
 inline constexpr size_t kGuaranteedPushConstantBytes = 128;
 
-/// The budget for blocks that do not fit the guarantee yet.
-///
-/// Three do: WherePush, SoftmaxPush and CatPush, all dominated by a 32-byte
-/// GpuOperand per tensor. Moving that metadata into a device buffer is decided
-/// but not implemented (docs/adr/0009); until then they are pinned here rather
-/// than silently asserted against a number that means nothing.
-///
-/// Every OTHER block asserts against the guarantee, so a newly added kernel
-/// cannot join this list by accident -- which is the property that was missing.
-inline constexpr size_t kOverBudgetPushConstantBytes = 256;
+// A second budget for blocks that did not fit the guarantee used to live here,
+// holding WherePush, SoftmaxPush and CatPush at 256. All three now fit 128 and
+// assert against kGuaranteedPushConstantBytes with the rest, so there is one
+// budget again and no way to opt out of it (docs/adr/0009 sec2, sec2a).
 
 struct FillPush {
     uint64_t dst;
@@ -199,6 +217,29 @@ struct TriPush {
 static_assert(sizeof(TriPush) <= kGuaranteedPushConstantBytes,
               "TriPush exceeds the push-constant size Vulkan guarantees");
 
+/// cat, with the operand extents DERIVED rather than sent three times.
+///
+/// ADR 0009 sec2 measured whether the operands share extents -- 22/22 differ,
+/// because concatenation is the one thing that changes an extent -- and
+/// concluded the extents-once repack that saved `where` and `softmax` does not
+/// apply here. That is true and it is the wrong question. The extents do not
+/// have to MATCH, only to be RECONSTRUCTIBLE, and cat's are:
+///
+///   - `ops.cpp` rejects operands that differ on any axis but the joined one
+///     ("only the concatenated axis may differ"), so a, b and the output agree
+///     everywhere else;
+///   - on the joined axis their extents are `a_extent`, `b_extent` and
+///     `out_extent`, all three of which this block already carried.
+///
+/// So `a_op.ne` and `b_op.ne` were 32 bytes restating what `out_op.ne` plus
+/// three scalars already said. Sending the joined axis instead, and rebuilding
+/// them in the shader, takes the block from 144 bytes to 112 -- inside the
+/// guarantee, with room to spare (issue #2).
+///
+/// `axis` is an index into the PADDED extent array, not into the tensor's dims:
+/// `to_gpu_operand` right-pads to rank 4, so a rank-2 tensor's axis 0 lives at
+/// index 2. Packing the tensor-space axis here would silently address the wrong
+/// component for every operand of rank < 4.
 struct CatPush {
     uint64_t a;
     uint64_t b;
@@ -208,14 +249,14 @@ struct CatPush {
     uint32_t out_extent;
     uint32_t a_extent;
     uint32_t b_extent;
-    GpuOperand a_op;
-    GpuOperand b_op;
+    uint32_t axis;
     GpuOperand out_op;
+    std::array<uint32_t, 4> a_nb;
+    std::array<uint32_t, 4> b_nb;
 };
 
-// Over the guarantee: tracked by issue #2 / docs/adr/0009.
-static_assert(sizeof(CatPush) <= kOverBudgetPushConstantBytes,
-              "CatPush exceeds even the development GPU's budget");
+static_assert(sizeof(CatPush) <= kGuaranteedPushConstantBytes,
+              "CatPush exceeds the push-constant size Vulkan guarantees");
 
 /// Shared by index_select and scatter_add: the two are adjoints and remap the
 /// same axis, so they need the same description of it.
@@ -1428,9 +1469,18 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 push.out_extent = static_cast<uint32_t>(node->shape.dim(axis));
                 push.a_extent = static_cast<uint32_t>(a.shape.dim(axis));
                 push.b_extent = static_cast<uint32_t>(b.shape.dim(axis));
-                push.a_op = to_gpu_operand(a.shape, esz);
-                push.b_op = to_gpu_operand(b.shape, esz);
                 push.out_op = to_gpu_operand(node->shape, esz);
+
+                // Padded index, because to_gpu_operand right-pads to rank 4.
+                const size_t padded_axis =
+                    static_cast<size_t>(kMaxDims - node->shape.ndim() + axis);
+                push.axis = static_cast<uint32_t>(padded_axis);
+                push.a_nb = strides_sharing_extents_off_axis(to_gpu_operand(a.shape, esz),
+                                                             push.out_op.ne, padded_axis,
+                                                             push.a_extent, "cat's first operand");
+                push.b_nb = strides_sharing_extents_off_axis(to_gpu_operand(b.shape, esz),
+                                                             push.out_op.ne, padded_axis,
+                                                             push.b_extent, "cat's second operand");
 
                 if (debug_dispatch_enabled()) {
                     trace_dispatch(*node, "cat", cfg, sizeof(CatPush), (n_elems + wg - 1) / wg,

@@ -123,20 +123,28 @@ This is why f32→f16 narrowing is done in software rather than left to
 
 ## Where the work is
 
-Current: 102 C++ test cases, ~1266 Python tests, 11 CI jobs green.
+Current: 115 C++ test cases, ~1402 Python tests, 11 CI jobs green.
 
 Open, in rough priority:
 
-1. **Issue #2 — push constants exceed Vulkan's guaranteed 128 bytes.**
-   `WherePush`, `SoftmaxPush` and `CatPush` are over. Decided and specified in
-   `docs/adr/0009`, **not implemented**. This is what blocks MNIST on AMD
-   Windows. The ADR records three implementation hazards that are not obvious
-   from the decision.
-2. **Workgroup width.** Every pipeline requests 256 invocations; the Vulkan spec
-   gives a minimum of 128. If that floor is right the blast radius exceeds #2 —
-   no pipeline at all on a minimum-spec device. Unconfirmed and unfixed;
-   `docs/adr/0009` §4a. Needs a benchmark, not a patch.
+1. **Workgroup width.** Every pipeline requests 256 invocations; Vulkan 1.3's
+   core floor is 128, and vkML requests 1.3. A 1.4 or Roadmap-2022 device
+   guarantees 256, so the exposure is narrower than it first looked but real.
+   Clamping alone is not the fix — the GEMM paths do not take `wg` and would
+   leave a 128-device with every elementwise operator and still no `matmul`.
+   Issue #21, `docs/adr/0009` §4a. Needs a benchmark, not a patch.
+2. **Issue #29 — a rebuild does not necessarily reach `import vkml`.** After
+   `pip install -e .`, `_vkml_core` resolves from site-packages while
+   `cmake --build` writes `python/vkml`. `check_cpu_only_build.py` cannot pass,
+   and a rebuild can silently not take effect. Needs a decision on which of the
+   three options in the issue to take.
 3. Deferred performance work — see `docs/M3_ROADMAP.md`.
+
+**Issue #2 is closed.** Every push-constant block now fits the guaranteed 128
+bytes, by per-op repacking rather than ADR 0009 §3's device buffer: `where` and
+`softmax` store shared extents once, `cat` derives its operands' extents from
+the output's. §3 stays unimplemented and un-needed — see `docs/adr/0009` §2a for
+why that is a reprieve rather than a solution to the general problem.
 
 Development happens on RADV (AMD, Mesa). **Reports from other drivers are the
 main way device-specific assumptions get found**, and most recent portability

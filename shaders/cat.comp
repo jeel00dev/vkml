@@ -34,10 +34,29 @@ layout(push_constant, scalar) uniform Params {
     uint     out_extent;  // joined axis extent of the output
     uint     a_extent;    // joined axis extent of the first operand
     uint     b_extent;    // and of the second
-    Operand  a_op;
-    Operand  b_op;
+    uint     axis;        // joined axis, indexing the PADDED extent array
     Operand  out_op;
+    uvec4    a_nb;        // strides only: the extents are derived below
+    uvec4    b_nb;
 } p;
+
+/// The operand's extents, rebuilt from the output's.
+///
+/// cat rejects operands that differ on any axis but the joined one, so an
+/// input's extents are the output's with `axis` replaced by its own share of
+/// that axis. Sending them outright cost 16 bytes each and put this block over
+/// the 128 Vulkan guarantees; deriving them is what brings it under (issue #2,
+/// docs/adr/0009 sec2). The host re-checks the invariant every dispatch.
+///
+/// `axis` is uniform across the workgroup, so the dynamic component index is a
+/// scalar operation rather than a per-lane one.
+Operand operand_along(uint extent, uvec4 nb) {
+    Operand op;
+    op.ne = p.out_op.ne;
+    op.ne[p.axis] = extent;
+    op.nb = nb;
+    return op;
+}
 
 void main() {
     const uint i = global_index();
@@ -55,10 +74,12 @@ void main() {
     const uint di = CONTIGUOUS ? i : operand_offset(i, p.out_op);
 
     if (from_a) {
-        const uint si = CONTIGUOUS ? linear : operand_offset(linear, p.a_op);
+        const uint si =
+            CONTIGUOUS ? linear : operand_offset(linear, operand_along(p.a_extent, p.a_nb));
         store_f(p.dst, di, load_f(p.a, si, DTYPE), DTYPE);
     } else {
-        const uint si = CONTIGUOUS ? linear : operand_offset(linear, p.b_op);
+        const uint si =
+            CONTIGUOUS ? linear : operand_offset(linear, operand_along(p.b_extent, p.b_nb));
         store_f(p.dst, di, load_f(p.b, si, DTYPE), DTYPE);
     }
 }

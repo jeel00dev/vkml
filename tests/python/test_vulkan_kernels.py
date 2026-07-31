@@ -357,6 +357,47 @@ def test_cat_of_strided_operands_on_gpu():
     compare(ctx, run(gpu_device()), run(V.cpu))
 
 
+@pytest.mark.parametrize("axis", [1, 2])
+def test_cat_of_strided_operands_on_a_trailing_axis(axis):
+    """Strided, and NOT joined on the leading axis -- which the test above cannot
+    distinguish.
+
+    cat's shader derives each operand's extents from the output's, replacing the
+    joined axis, because sending all three sets put the push block over the 128
+    bytes Vulkan guarantees (issue #2). Getting that axis wrong is the obvious
+    way to break it, and a mutation writing the extent to a fixed component
+    instead of the joined one SURVIVED the whole suite.
+
+    It survives an axis-0 join for an arithmetic reason worth stating, since it
+    is why one more case was needed rather than a stricter tolerance. Joining
+    two (3, 4) operands on axis 0 gives `outer = i / (inner * out_extent) = 0`
+    for every element, so the decomposition never divides past the joined axis
+    and a wrong extent there is indistinguishable from the right one. Joining on
+    a trailing axis makes `outer` vary, and the wrong extent immediately
+    addresses the wrong element.
+
+    Both operands are transposed, so this also keeps two independent stride sets
+    in play -- the derived extents must combine with each operand's OWN strides,
+    not with the output's.
+    """
+    rng = np.random.default_rng(SEED + axis)
+    # transpose(1, 2) swaps the last two axes, so b's PRE-transpose shape has to
+    # vary on the axis that lands on `axis` afterwards -- 2 for a join on 1, and
+    # 1 for a join on 2. Only the joined axis may differ, or cat rejects it.
+    a = make_data(rng, (2, 5, 3), "any")
+    b = make_data(rng, (2, 5, 4) if axis == 1 else (2, 7, 3), "any")
+
+    def run(dev):
+        # (2, 5, 3) -> (2, 3, 5): strided, and the join is not the leading axis.
+        ta = V.tensor(a, device=dev).transpose(1, 2)
+        tb = V.tensor(b, device=dev).transpose(1, 2)
+        return V.cat([ta, tb], axis).numpy()
+
+    ctx = Context(op="cat", layout=Layout((2, 5, 3), "transpose", (1, 2)),
+                  dtype="f32", seed=SEED + axis, inputs=[a, b])
+    compare(ctx, run(gpu_device()), run(V.cpu))
+
+
 # ---------------------------------------------------------------------------
 # Triangular masks
 # ---------------------------------------------------------------------------

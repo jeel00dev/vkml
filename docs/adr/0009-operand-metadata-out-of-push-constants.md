@@ -1,9 +1,12 @@
 # ADR 0009 — Operand metadata moves out of push constants
 
-**Status:** accepted; **partially superseded** — the extents-once repack in §2 is
-implemented for `where` and `softmax`, which now fit the guarantee. Only `cat`
-still needs the device-buffer decision in §3, and it is deferred until its cost
-is demonstrated.
+**Status:** accepted; **superseded in practice** — every block now fits the 128
+bytes Vulkan guarantees, by the per-operand repacking of §2 rather than the
+device buffer of §3. `where` and `softmax` were fixed by storing shared extents
+once; `cat` by DERIVING its operands' extents instead (§2a). §3 is therefore
+unimplemented and no longer has a caller waiting on it: it remains the right
+answer if a future op needs metadata that cannot be derived, or if rank ever
+exceeds 4, and its §4 hazards stay recorded for that day.
 **Date:** 2026-07-30
 **Covers:** issue #2 (Windows: push constants exceed the 128-byte guaranteed
 minimum), and the shape of the per-dispatch metadata path in general.
@@ -92,6 +95,53 @@ STRUCTURAL rather than observed — which is what made them safe to do:
 `strides_sharing_extents()` re-checks it per dispatch anyway, because a
 guarantee nothing verifies decays: a later change to broadcasting would not
 break a test, it would silently index with the wrong extents.
+
+## 2a. `cat`, and the question the measurement above asked wrongly
+
+The table in §2 asked whether `cat`'s operands SHARE extents, measured 22/22
+differing, and concluded the repack does not apply. The measurement is right and
+the conclusion does not follow: the extents never had to match, only to be
+**reconstructible**, and `cat`'s are.
+
+`ops.cpp` rejects operands differing on any axis but the joined one — *"only the
+concatenated axis may differ"* — so a, b and the output agree everywhere else.
+On the joined axis their extents are `a_extent`, `b_extent` and `out_extent`,
+and the block already carried all three for the index arithmetic. So the two
+input `ne` arrays were 32 bytes restating what was already present.
+
+Sending the joined axis instead, and rebuilding the extents in the shader:
+
+```
+CatPush before                      144 B      CatPush after           112 B
+  3x uint64 addresses                24          3x uint64 addresses     24
+  5x uint32 n/inner/extents          20          6x uint32 (+ axis)      24
+  3x Operand (ne + nb)               96          out Operand             32
+                                                 2x uvec4 nb             32
+```
+
+Measured, not computed: a live dispatch traces `push=112B`.
+
+The axis packed is the index into the PADDED extent array, since
+`to_gpu_operand` right-pads to rank 4 — a rank-2 tensor's axis 0 lives at index
+2. Packing the tensor-space axis would address the wrong component for every
+operand of rank < 4, and would do it silently.
+
+`strides_sharing_extents_off_axis()` re-checks the derivation every dispatch,
+for the same reason its sibling does.
+
+**This does not rescue §2's general argument.** Three ops have now each needed a
+different trick — shared extents, shared extents, derived extents — which is
+exactly the "every future kernel re-derives its own budget" cost §2 names. What
+it does is remove the last caller for §3, so the device buffer can be built when
+something genuinely needs it rather than to unblock a platform.
+
+**A mutation the existing suite did not kill.** Writing the derived extent to a
+fixed component instead of the joined one passed all 62 cat tests. The reason is
+arithmetic and worth recording: joining on axis 0 makes
+`outer = i / (inner * out_extent)` zero for every element, so the decomposition
+never divides past the joined axis and a wrong extent there is unobservable. The
+one strided cat test joined on axis 0. `test_cat_of_strided_operands_on_a_trailing_axis`
+covers the trailing-axis case and kills it.
 
 ## 3. Decision
 
