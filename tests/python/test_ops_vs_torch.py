@@ -150,6 +150,38 @@ def test_comparison(name, vf, tf):
     assert np.array_equal(got.numpy(), want.numpy()), f"{name}: boolean mismatch"
 
 
+@pytest.mark.parametrize("name,vf,tf", COMPARE, ids=[c[0] for c in COMPARE])
+def test_comparison_across_more_than_one_workgroup(name, vf, tf):
+    """The same operators at a size that crosses a workgroup boundary.
+
+    The case above uses 20 elements, so it only ever exercises a single group.
+    Multi-group coverage for `greater` used to arrive INCIDENTALLY, from relu's
+    backward rule, which computed its mask as `greater(x, 0)` over whatever the
+    training tests happened to be running. When that mask was rewritten to
+    `less_equal` for NaN propagation (issue #27), the coverage moved to
+    `less_equal` and `greater` silently lost it -- the coverage gate caught it,
+    which is the gate doing its job.
+
+    Coverage that comes from an unrelated implementation detail is coverage that
+    disappears when that detail changes. Every comparison operator is swept here
+    deliberately so it no longer depends on how a gradient happens to be spelled.
+
+    408 elements, chosen so the last group is RAGGED: a bounds check that is
+    wrong only for the partial tail passes at any exact multiple of the width.
+    """
+    a = np.round(make_input((24, 17), seed=11) * 2) / 2
+    b = np.round(make_input((24, 17), seed=12) * 2) / 2
+    va, ta = pair(a)
+    vb, tb = pair(b)
+
+    got = vf(va, vb)
+    want = tf(ta, tb)
+
+    assert_shape(name, got, want)
+    assert_dtype(name, got, want)
+    assert np.array_equal(got.numpy(), want.numpy()), f"{name}: boolean mismatch at 408 elements"
+
+
 # ---------------------------------------------------------------------------
 # Reductions
 # ---------------------------------------------------------------------------
