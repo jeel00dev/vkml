@@ -649,3 +649,27 @@ footer.page { max-width: none; margin-top: 2.5rem; padding-top: 1.1rem;
                      margin-left: .35rem; }
 .sidenav .nav-count { float: right; font-size: var(--fs-1); color: var(--fg-muted);
                       opacity: .7; font-variant-numeric: tabular-nums; }
+
+/* --------------------------------------------------- capability reasons -- */
+
+/* A limit that says WHY is a different signal from one that just says no. The
+   badge carries the category, so a reader can tell "we decided not to" from
+   "we have not got to it yet" without reading the paragraph -- those say very
+   different things about a project. Neutral by default; only the two that mean
+   "this will not change" carry a hue. */
+.rz { display: inline-block; padding: .1rem .5rem; border-radius: 999px;
+      border: 1px solid var(--border-strong); background: var(--bg-panel);
+      color: var(--fg-muted); font: var(--fw-medium) var(--fs-1) var(--sans);
+      white-space: nowrap; vertical-align: middle; }
+.rz-by-design { border-color: var(--note-edge); color: var(--note-fg); }
+.rz-guarantee { border-color: var(--tip-edge); color: var(--tip-fg); }
+
+dl.legend { display: grid; grid-template-columns: auto 1fr; gap: var(--s-2) var(--s-4);
+            align-items: baseline; margin: 0 0 var(--s-6); }
+dl.legend dt { margin: 0; }
+dl.legend dd { margin: 0; color: var(--fg-muted); font-size: var(--fs-4); }
+
+.limit { padding: var(--s-4) 0; border-top: 1px solid var(--border); }
+.limit h3 { margin-top: 0; display: flex; align-items: center; gap: var(--s-3);
+            flex-wrap: wrap; }
+.limit .src { margin: 0; font-size: var(--fs-3); }

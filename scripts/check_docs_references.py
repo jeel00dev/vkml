@@ -106,6 +106,7 @@ def main() -> int:
     problems += headings_without_ids()
     problems += oversized_site_files()
     problems += oversized_sidebar()
+    problems += capability_reasons_match_the_code()
     if problems:
         print(f"  {len(problems)} problems:")
         for p in problems:
@@ -272,6 +273,7 @@ def unrendered_markup():
     # tag. Text is taken between tags so a match cannot be an attribute value.
     body_em = _re.compile(r">([^<]*?)<")
     em_span = _re.compile(r"(?<!\*)\*(?!\s|\*)([^*<>]{2,40}?)(?<!\s)\*(?!\*)")
+    code_span = _re.compile(r"`([^`\n]{1,60})`")
     meta_md = _re.compile(r'<meta[^>]*name="description"[^>]*content="([^"]*)"')
 
     for page in sorted(site.glob("*.html")):
@@ -285,6 +287,16 @@ def unrendered_markup():
             if hit:
                 out.append(f"{page.name}: unrendered emphasis in the body: "
                            f"*{hit.group(1)[:40]}*")
+                break
+            # Backticks too. The first version of this check looked only for
+            # emphasis, so a generated page rendered a heading as
+            # "A lazy `detach()`" with the backticks intact and the gate passed.
+            # Same defect class, different delimiter -- authored markup reaching
+            # the reader unrendered.
+            code = code_span.search(chunk)
+            if code:
+                out.append(f"{page.name}: unrendered code span in the body: "
+                           f"`{code.group(1)[:40]}`")
                 break
     return out
 
@@ -412,6 +424,56 @@ def oversized_sidebar():
                 f"{MAX_VISIBLE_NAV_LINKS} budget -- group them, or collapse a "
                 f"section that is not the one being read"]
     return []
+
+
+def capability_reasons_match_the_code():
+    """Every extracted gap needs a declared reason, and every reason a real gap.
+
+    BOTH DIRECTIONS, and the second is the one that matters over time.
+
+    Forward: an operator that loses Vulkan support, or an OpKind added without a
+    gradient rule, must not appear on the limitations page as a bare row with no
+    explanation -- an unexplained gap is the thing that makes a project look
+    unaware of its own surface.
+
+    Backward: a reason declared for a gap that no longer exists is worse. It is
+    the site telling a reader that something is unsupported after somebody
+    implemented it, in a table that looks machine-generated and therefore
+    trustworthy. Nothing else in this repository would catch that: the tests
+    would pass, the page would build, and the sentence would be false.
+
+    This is the same shape as the C++/Python parity allow-list and the tolerance
+    policy -- facts extracted, exceptions declared, and a check that fails when
+    they disagree.
+    """
+    sys.path.insert(0, str(ROOT / "python"))
+    try:
+        import research as R
+        from content.capabilities import BACKEND_REASONS, GRADIENT_REASONS
+        import build as B
+    except Exception as e:                      # noqa: BLE001
+        return [f"cannot load the capability data: {type(e).__name__}: {e}"]
+
+    out = []
+    kinds = R.op_kinds()
+    ruled = set(R.autograd_rules())
+    no_rule = {k for k in kinds if k not in ruled}
+
+    for k in sorted(no_rule - set(GRADIENT_REASONS)):
+        out.append(f"OpKind `{k}` has no gradient rule and no declared reason; "
+                   f"add one to web/content/capabilities.py")
+    for k in sorted(set(GRADIENT_REASONS) - no_rule):
+        out.append(f"web/content/capabilities.py explains why `{k}` has no gradient "
+                   f"rule, but it HAS one now -- the limitations page is telling "
+                   f"readers something untrue; remove the entry")
+
+    cpu_only = {n for n, f in B.FACTS.items() if not f.on_vulkan}
+    for n in sorted(cpu_only - set(BACKEND_REASONS)):
+        out.append(f"`{n}` does not run on Vulkan and has no declared reason")
+    for n in sorted(set(BACKEND_REASONS) - cpu_only):
+        out.append(f"web/content/capabilities.py explains why `{n}` is CPU-only, "
+                   f"but it runs on Vulkan now; remove the entry")
+    return out
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -688,7 +688,8 @@ def class_slug(name: str) -> str:
 # is promoted out of "Guide" because those seven pages are the ones a systems
 # programmer comes for.
 NAV_SECTIONS: list[tuple[str, list[str]]] = [
-    ("Learn", ["get-started", "concepts"]),
+    ("Learn", ["get-started", "concepts", "compatibility"]),
+    ("Capabilities", ["capabilities", "limitations"]),
     ("Architecture", ["arch-tensor", "arch-graph", "arch-autograd", "arch-cpu",
                       "arch-vulkan", "arch-shaders", "arch-numerics"]),
     ("Project", ["performance", "testing", "contributing", "reference-env"]),
@@ -1111,6 +1112,185 @@ SITE_JS = """/* Behaviour for the vkML docs. No framework: the whole site is fou
 """
 
 
+# ------------------------------------------------------------ capabilities --
+
+def capability_pages() -> list[tuple[str, str, str]]:
+    """Three pages built from what the build extracts, joined to declared reasons.
+
+    Nothing here is a list a person maintains. The operator inventory, backend
+    coverage, gradient rules, dtypes and the torch equivalences all come from
+    the tree; `content/capabilities.py` supplies only the WHY, which no
+    extractor can know. `check_docs_references.py` fails if the two disagree in
+    either direction.
+    """
+    from content.capabilities import (BACKEND_REASONS, FEATURE_NOTES,
+                                      GRADIENT_REASONS, REASON_LABELS)
+
+    kinds = R.op_kinds()
+    ruled = set(R.autograd_rules())
+    no_rule = [k for k in kinds if k not in ruled]
+    torch_eq = R.torch_equivalents()
+    on_gpu = [n for n, f in FACTS.items() if f.on_vulkan]
+    cpu_only = sorted(n for n, f in FACTS.items() if not f.on_vulkan)
+    shaders = R.shader_index()
+
+    def badge(kind: str) -> str:
+        label, _ = REASON_LABELS[kind]
+        return f'<span class="rz rz-{kind}">{html.escape(label)}</span>'
+
+    # ---------------------------------------------------------- capabilities --
+    rows = "".join(
+        f"<tr><td><code>{html.escape(g)}</code></td><td>{len(names)}</td>"
+        f'<td>{sum(1 for n in names if FACTS.get(n) and FACTS[n].on_vulkan)}</td></tr>'
+        for g, names in GROUPS)
+    cap = f"""
+<p class="lede">What vkML does today, counted from the tree at build time. Every
+number on this page is generated; none of it is typed.</p>
+
+<div class="lstats" style="max-width:none">
+  <div class="lstat"><b>{len(FACTS)}</b><span>operators</span></div>
+  <div class="lstat"><b>{len(on_gpu)}</b><span>run on Vulkan</span></div>
+  <div class="lstat"><b>{len(ruled)}</b><span>gradient rules</span></div>
+  <div class="lstat"><b>{len(shaders)}</b><span>compute shaders</span></div>
+  <div class="lstat"><b>{len(CLASSES)}</b><span>documented classes</span></div>
+</div>
+
+<h2 id="operators">Operators by category</h2>
+<div class="table-scroll"><table>
+<thead><tr><th>Category</th><th>Operators</th><th>On Vulkan</th></tr></thead>
+<tbody>{rows}</tbody></table></div>
+
+<h2 id="dtypes">Data types</h2>
+<p>Five, on both backends: <code>float32</code>, <code>float16</code>,
+<code>int32</code>, <code>int64</code> and <code>bool</code>. f32&rarr;f16
+narrowing is done in software rather than left to <code>OpFConvert</code>, whose
+rounding mode SPIR-V leaves implementation-defined &mdash; so a narrowed value is
+the same bits on every driver.</p>
+
+<h2 id="devices">Devices</h2>
+<p>Any device exposing Vulkan 1.3 compute, plus the CPU backend. The CPU one is
+the correctness oracle the GPU is checked against, not a fallback: it is always
+built, always available, and every Vulkan result is compared against it.</p>
+
+<h2 id="autograd">Autograd</h2>
+<p>{len(ruled)} of {len(kinds)} graph operations carry a gradient rule. The
+remaining {len(no_rule)} are listed on
+<a href="limitations.html#gradients">Current limitations</a> with the reason for
+each &mdash; most of them are leaves or comparisons, where a gradient is not a
+thing that exists.</p>
+
+<h2 id="serialization">Serialization</h2>
+<p>Checkpoints are a zip of NumPy arrays plus a JSON manifest, loaded with
+<code>allow_pickle=False</code>, written to a temporary file and renamed so an
+interrupted save cannot leave a half-written checkpoint in place. A PyTorch
+<code>state_dict</code> loads without translation.</p>
+"""
+
+    # ---------------------------------------------------------- compatibility --
+    eq_rows = "".join(
+        f'<tr><td><code>{html.escape(", ".join(t))}</code></td>'
+        f'<td><a href="{PAGE_OF[v]}.html#{v}"><code>{html.escape(v)}</code></a></td></tr>'
+        if v in PAGE_OF else
+        f'<tr><td><code>{html.escape(", ".join(t))}</code></td>'
+        f"<td><code>{html.escape(v)}</code></td></tr>"
+        for v, t in sorted(torch_eq.items()))
+    compat = f"""
+<p class="lede">vkML follows PyTorch's names and shapes deliberately, so code
+ports without translation. The table below is not a claim &mdash; it is extracted
+from the test suite, where every pair is an assertion that the two agree within a
+declared tolerance.</p>
+
+<h2 id="verified">Verified equivalences</h2>
+<p>{len(torch_eq)} operators are tested directly against their torch
+counterpart. If a row is here, a test compares them on every run.</p>
+<div class="table-scroll"><table>
+<thead><tr><th>PyTorch</th><th>vkML</th></tr></thead>
+<tbody>{eq_rows}</tbody></table></div>
+
+<h2 id="conventions">Conventions that carry over</h2>
+<ul>
+<li><strong>Layout is row-major</strong>, as NumPy, PyTorch and DLPack.
+<code>shape()[0]</code> is the outermost axis.</li>
+<li><strong>A <code>state_dict</code> loads directly.</strong> <code>Linear</code>
+stores its weight as <code>(out_features, in_features)</code> and transposes in
+<code>forward</code>, exactly as PyTorch does, so the tensors line up.</li>
+<li><strong>Reductions take <code>dim</code> and <code>keepdim</code></strong>
+with torch's meanings.</li>
+</ul>
+
+<h2 id="divergences">Where it deliberately differs</h2>
+<ul>
+<li><strong><code>.size</code> is the element count</strong>, following NumPy
+rather than PyTorch, and it is a property: <code>x.size()</code> raises. Use
+<code>x.shape</code>.</li>
+<li><strong>Shape arguments are sequences</strong>: <code>x.reshape([3, 2])</code>,
+not <code>x.reshape(3, 2)</code>.</li>
+<li><strong><code>max</code> and <code>min</code> return values, not
+<code>(values, indices)</code></strong>, and are spelled <code>amax</code> and
+<code>amin</code> to say so.</li>
+<li><strong><code>to()</code> converts dtype, not device.</strong> Placement
+happens at creation: <code>V.tensor(x, device=dev)</code>.</li>
+<li><strong>Seeds do not match.</strong> <code>manual_seed</code> mirrors torch in
+spirit, not in stream &mdash; the two draw from different generators, so equal
+seeds give different weights.</li>
+</ul>
+"""
+
+    # ------------------------------------------------------------ limitations --
+    grad_rows = "".join(
+        f"<tr><td><code>{html.escape(k)}</code></td><td>{badge(GRADIENT_REASONS[k][0])}</td>"
+        f"<td>{inline(GRADIENT_REASONS[k][1])}</td></tr>"
+        for k in no_rule if k in GRADIENT_REASONS)
+    backend_rows = "".join(
+        f"<tr><td><code>{html.escape(n)}</code></td><td>{badge(BACKEND_REASONS[n][0])}</td>"
+        f"<td>{inline(BACKEND_REASONS[n][1])}</td></tr>"
+        for n in cpu_only if n in BACKEND_REASONS)
+    notes = "".join(
+        f'<div class="limit"><h3>{inline(f["title"])} {badge(f["reason"])}</h3>'
+        f'{paragraphs(f["text"])}'
+        + (f'<p class="src"><a href="{R.REPO_URL}/{f["see"][0]}">{html.escape(f["see"][0])}</a></p>'
+           if f.get("see") else "")
+        + "</div>"
+        for f in FEATURE_NOTES)
+    legend = "".join(
+        f'<dt>{badge(k)}</dt><dd>{html.escape(v[1])}</dd>'
+        for k, v in REASON_LABELS.items())
+
+    n_real = sum(1 for k in no_rule
+                 if GRADIENT_REASONS.get(k, ("", ""))[0] != "by-design")
+    limits = f"""
+<p class="lede">What vkML does not do, and why. Each entry says whether the
+limit is a decision, a consequence of a guarantee the project keeps, or work
+that has not happened yet &mdash; those are different things, and a reader
+deciding whether to adopt this needs to tell them apart.</p>
+
+<dl class="legend">{legend}</dl>
+
+<h2 id="gradients">Operations without a gradient rule</h2>
+<p>{len(ruled)} of {len(kinds)} graph operations carry one. Of the
+{len(no_rule)} that do not, {len(no_rule) - n_real} are cases where a gradient is
+not a thing that exists &mdash; a leaf has no input, a comparison returns
+<code>Bool</code> &mdash; and <strong>{n_real}</strong> are genuine gaps.</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Operation</th><th>Why</th><th></th></tr></thead>
+<tbody>{grad_rows}</tbody></table></div>
+
+<h2 id="backends">Operators that do not run on Vulkan</h2>
+<p>{len(on_gpu)} of {len(FACTS)} run on the GPU.</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Operator</th><th>Why</th><th></th></tr></thead>
+<tbody>{backend_rows}</tbody></table></div>
+
+<h2 id="features">Features</h2>
+{notes}
+"""
+    return [
+        ("capabilities", "What vkML supports", cap),
+        ("compatibility", "Coming from PyTorch", compat),
+        ("limitations", "Current limitations", limits),
+    ]
+
+
 def build() -> int:
     if OUT.exists():
         shutil.rmtree(OUT)
@@ -1255,7 +1435,7 @@ def build() -> int:
               toc=toc_for(ctoc), crumb=crumbs(("Classes", None), (cname, None)),
               page=slug, index_json=index_json)
 
-    for slug, title, body in PAGES:
+    for slug, title, body in list(PAGES) + capability_pages():
         body = with_heading_ids(body)
         heads = [
             (m.group(1), re.sub(r"<[^>]+>", "", m.group(2)), 2)

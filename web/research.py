@@ -879,3 +879,62 @@ def cmake_options() -> list[dict]:
     for m in re.finditer(r'option\(\s*(VKML_\w+)\s+"([^"]*)"\s+(\w+)\s*\)', text):
         out.append({"name": m.group(1), "help": m.group(2), "default": m.group(3)})
     return out
+
+
+# ------------------------------------------------------- torch equivalences --
+
+TESTS_DIR = ROOT / "tests" / "python"
+
+
+def torch_equivalents() -> dict[str, list[str]]:
+    """vkML name -> the torch functions its tests are checked against.
+
+    NOT written down anywhere by hand, and deliberately not extracted from
+    prose. The test suite states the correspondence and then PROVES it: every
+    pair below is an assertion that vkml's output matches torch's within a
+    declared tolerance. Prose mentions torch fourteen times; the suite pairs 85.
+
+    Parsed with `ast` rather than imported, because PyTorch is a TEST-ONLY
+    dependency -- the documentation says so on its own pages -- and importing
+    the test modules to build the site would quietly make it a build dependency
+    too.
+
+    Reads any tuple literal that contains both a `V.<name>` and a `torch.<name>`
+    attribute, which is the shape every table in the suite uses:
+
+        ("add", V.add, torch.add, "any")
+        ("less", V.less, torch.lt)
+    """
+    import ast
+
+    out: dict[str, set[str]] = {}
+    for path in sorted(TESTS_DIR.glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Tuple, ast.List)):
+                continue
+            ours: list[str] = []
+            theirs: list[str] = []
+            for el in node.elts:
+                if not isinstance(el, ast.Attribute):
+                    continue
+                root, parts = el, []
+                while isinstance(root, ast.Attribute):
+                    parts.append(root.attr)
+                    root = root.value
+                if not isinstance(root, ast.Name):
+                    continue
+                dotted = ".".join(reversed(parts))
+                if root.id == "V":
+                    ours.append(dotted)
+                elif root.id == "torch":
+                    theirs.append(f"torch.{dotted}")
+            # One of each: a pair. More than one of either is a table row that
+            # happens to mention several, and guessing which maps to which would
+            # invent a correspondence the tests do not make.
+            if len(ours) == 1 and len(theirs) == 1:
+                out.setdefault(ours[0], set()).add(theirs[0])
+    return {k: sorted(v) for k, v in sorted(out.items())}
