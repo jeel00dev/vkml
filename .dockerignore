@@ -1,0 +1,21 @@
+# Dockerfile.ci has no COPY and no ADD -- it builds from `ubuntu:24.04` with apt
+# and pip and never reads the context at all. So everything here is excluded and
+# `*` is the honest expression of that.
+#
+# This is not only a speed matter, though it is that: the context was over a
+# gigabyte, almost all of it `actions-runner/` (933M), and every byte was sent to
+# the daemon and discarded.
+#
+# It also stopped the build working. The self-hosted runner's own directory
+# contains `actions-runner/_work/_temp/_github_home/.cache`, which is mode 0700
+# and owned by root, so the daemon cannot stat it while packing the context and
+# `scripts/ci_image.sh` fails with
+#
+#     checking context: can't stat '.../actions-runner/_work/_temp/_github_home/.cache'
+#
+# an error about the CI image that has nothing to do with the CI image.
+#
+# If a future Dockerfile here does need to COPY something, add an un-ignore for
+# exactly that path (`!path/to/thing`) rather than narrowing this rule -- the
+# default should stay "the context is not used".
+*

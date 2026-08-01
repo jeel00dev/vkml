@@ -61,6 +61,22 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # rewriting nine jobs at the same time.
 RUN echo 'Defaults!/usr/bin/apt-get env_keep += "DEBIAN_FRONTEND"' > /etc/sudoers.d/apt-noninteractive
 
+# The jobs run this container with `--user`, so that the artifacts it writes
+# into the bind-mounted workspace belong to the host user rather than to root.
+# Running as root left 551 root-owned files in the working tree, and the first
+# symptom was `pip install -e .` failing with "Could not open file for write ...
+# No such file or directory" -- a permission error reported as a missing file,
+# which points nowhere near the cause.
+#
+# UID 1000 is the image's own `ubuntu` account, so the user resolves and has a
+# home and a shell. What it does NOT have is sudo, and the nine jobs still run
+# `sudo apt-get install`, so without this grant every one of them fails on its
+# first step. Granting it keeps those commands working unchanged, which is the
+# same principle as `sudo`, `python-is-python3` and the pip-over-pip install
+# above: adjust the image so the workflow's existing commands work.
+RUN echo 'ubuntu ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/ubuntu-nopasswd \
+    && chmod 0440 /etc/sudoers.d/ubuntu-nopasswd
+
 # `python`, not just `python3`. On a hosted runner actions/setup-python puts a
 # `python` on PATH, and the workflow steps were written against that -- the
 # layering gate failed here with "python: not found" until this was added.

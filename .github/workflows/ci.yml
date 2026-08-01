@@ -29,6 +29,7 @@ jobs:
       # this self-contained -- no registry credentials to expire, no network,
       # and the pull is a loopback copy. Rebuild with scripts/ci_image.sh.
       image: localhost:5000/vkml-ci:latest
+      options: --user 1000:1000
     steps:
       - uses: actions/checkout@v5
 
@@ -82,11 +83,23 @@ jobs:
       - name: Documented versions
         run: python scripts/check_versions.py
 
+      # LAST, deliberately: it checks what the steps above just wrote. While this
+      # container ran as root it left root-owned build output in the bind-mounted
+      # workspace -- 551 files accumulated -- and the first symptom was a
+      # host-side `pip install -e .` failing with "Could not open file for write
+      # ... No such file or directory", a permission error reported as a missing
+      # file. `--user` on every container here is the fix; this is the proof it
+      # held, checked where it can still be acted on rather than discovered
+      # weeks later on someone's workstation.
+      - name: Workspace file ownership
+        run: python scripts/check_file_ownership.py
+
   cpp:
     name: Linux / C++ (${{ matrix.preset }})
     runs-on: [self-hosted, Linux]
     container:
       image: localhost:5000/vkml-ci:latest
+      options: --user 1000:1000
     strategy:
       fail-fast: false
       matrix:
@@ -124,6 +137,7 @@ jobs:
     runs-on: [self-hosted, Linux]
     container:
       image: localhost:5000/vkml-ci:latest
+      options: --user 1000:1000
     steps:
       - uses: actions/checkout@v5
 
@@ -190,6 +204,7 @@ jobs:
     runs-on: [self-hosted, Linux]
     container:
       image: localhost:5000/vkml-ci:latest
+      options: --user 1000:1000
     steps:
       - uses: actions/checkout@v5
 
@@ -235,6 +250,7 @@ jobs:
     runs-on: [self-hosted, Linux]
     container:
       image: localhost:5000/vkml-ci:latest
+      options: --user 1000:1000
     steps:
       - uses: actions/checkout@v5
 
@@ -272,6 +288,7 @@ jobs:
     runs-on: [self-hosted, Linux]
     container:
       image: localhost:5000/vkml-ci:latest
+      options: --user 1000:1000
     steps:
       - uses: actions/checkout@v5
 
@@ -303,6 +320,7 @@ jobs:
     runs-on: [self-hosted, Linux]
     container:
       image: localhost:5000/vkml-ci:latest
+      options: --user 1000:1000
     steps:
       - uses: actions/checkout@v5
       - name: Install toolchain
@@ -352,7 +370,11 @@ jobs:
       # memory hierarchy. The bugs this project actually ships are the ones a
       # real driver finds: the 128-byte push-constant limit, the 65535 workgroup
       # ceiling, f16 rounding. None of those are reachable without hardware.
-      options: --device /dev/dri
+      #
+      # `--user` for the reason given on every other job here; it shares one
+      # `options` key with the device flag because YAML would take the second of
+      # two and silently drop the first.
+      options: --device /dev/dri --user 1000:1000
     steps:
       - uses: actions/checkout@v5
 
