@@ -792,12 +792,16 @@ SHELL = """<!doctype html>
     <a class="{apicls}" href="api.html">API reference</a>
   </nav>
   <span class="spacer"></span>
-  <div class="search">
-    <span class="mag">⌕</span>
+  <button class="icon-btn" id="search-open" aria-label="Search"
+          aria-expanded="false" aria-controls="search">⌕</button>
+  <div class="search" id="search" role="search">
+    <span class="mag" aria-hidden="true">⌕</span>
     <input id="q" type="search" placeholder="Search the docs …" autocomplete="off"
            spellcheck="false" aria-label="Search">
-    <kbd>/</kbd>
-    <div class="results" id="results"></div>
+    <kbd aria-hidden="true">/</kbd>
+    <button class="icon-btn search-close" id="search-close"
+            aria-label="Close search">✕</button>
+    <div class="results" id="results" role="listbox" aria-label="Search results"></div>
   </div>
   <button class="icon-btn" id="theme-toggle" aria-label="Toggle theme" title="Light / dark">◐</button>
   <a class="icon-btn" href="https://github.com/jeel00dev/vkml" title="GitHub" aria-label="GitHub">⌂</a>
@@ -968,18 +972,35 @@ SITE_JS = """/* Behaviour for the vkML docs. No framework: the whole site is fou
     q.addEventListener('input', function () {
       var v = q.value.trim().toLowerCase();
       if (!v) { box.classList.remove('open'); return; }
-      var starts = [], has = [], desc = [];
-      idx.forEach(function (e) {
+      /* Ranked, not just filtered. The index carries qualified member names
+         like `Tensor.numpy`, so a plain substring test put `from_numpy` above
+         `Tensor.numpy` for the query "numpy" -- both merely contain it. What a
+         reader means is almost always the thing whose OWN name begins with what
+         they typed, and for a member that is the part after the dot.
+
+         Ties break on the shorter name, which prefers the more specific entry:
+         `Adam` over `AdamW` for "adam". */
+      function score(e) {
         var n = e.n.toLowerCase();
-        if (n.indexOf(v) === 0) starts.push(e);
-        else if (n.indexOf(v) !== -1) has.push(e);
-        else if ((e.d || '').toLowerCase().indexOf(v) !== -1) desc.push(e);
+        var tail = n.slice(n.lastIndexOf('.') + 1);
+        if (n === v || tail === v) return 0;
+        if (n.indexOf(v) === 0) return 1;
+        if (tail.indexOf(v) === 0) return 2;
+        if (n.indexOf(v) !== -1) return 3;
+        if ((e.d || '').toLowerCase().indexOf(v) !== -1) return 4;
+        return 9;
+      }
+      var hits = [];
+      idx.forEach(function (e) {
+        var s = score(e);
+        if (s < 9) hits.push([s, e.n.length, e]);
       });
-      render(starts.concat(has, desc));
+      hits.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+      render(hits.map(function (h) { return h[2]; }));
     });
     q.addEventListener('keydown', function (e) {
       var items = box.querySelectorAll('a');
-      if (e.key === 'Escape') { box.classList.remove('open'); q.blur(); }
+      if (e.key === 'Escape') { closeSearch(); }
       else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         if (!items.length) return;
@@ -989,11 +1010,46 @@ SITE_JS = """/* Behaviour for the vkML docs. No framework: the whole site is fou
       } else if (e.key === 'Enter' && sel >= 0) { items[sel].click(); }
     });
     addEventListener('keydown', function (e) {
-      if (e.key === '/' && document.activeElement !== q) { e.preventDefault(); q.focus(); }
+      if (e.key === '/' && document.activeElement !== q) {
+        e.preventDefault(); openSearch();
+      }
     });
     addEventListener('click', function (e) {
-      if (!e.target.closest('.search')) box.classList.remove('open');
+      if (!e.target.closest('.search') && !e.target.closest('#search-open')) {
+        box.classList.remove('open');
+      }
     });
+
+    /* On a phone the field is a sheet rather than a header input, so opening it
+       is an explicit act and focus has to be put in and given back. Without the
+       return, closing the sheet drops focus to the top of the document and a
+       keyboard or switch user loses their place in the header. */
+    var opener = document.getElementById('search-open');
+    var closer = document.getElementById('search-close');
+    var sheet = document.getElementById('search');
+    function openSearch() {
+      sheet.classList.add('open');
+      if (opener) opener.setAttribute('aria-expanded', 'true');
+      q.focus();
+    }
+    function closeSearch() {
+      /* Read this BEFORE hiding the sheet. Removing the class sets
+         display:none, which blurs whatever was focused inside it, so asking
+         afterwards always answers "not in the sheet" and focus is silently
+         dropped to the document -- measured: activeElement came back empty. */
+      var wasInside = sheet.contains(document.activeElement);
+      sheet.classList.remove('open');
+      box.classList.remove('open');
+      if (opener) {
+        opener.setAttribute('aria-expanded', 'false');
+        /* Only take focus back if it was in the sheet: if the reader followed a
+           result we are on a new page and must not steal it. */
+        if (wasInside) opener.focus();
+      }
+    }
+    if (opener) opener.onclick = openSearch;
+    if (closer) closer.onclick = closeSearch;
+
   }
 })();
 """
@@ -1032,13 +1088,53 @@ def build() -> int:
             toc.append((n, n, 3))
             ndoc += ok
             index.append(
-                {"n": n, "u": f"{group_slug(gname)}.html#{n}", "g": gname, "d": summary}
+                {"n": n, "u": f"{group_slug(gname)}.html#{n}", "g": gname, "d": plain(summary)}
             )
         documented += ndoc
         per_group.append((gname, names, frags, toc, ndoc))
 
     for slug, title, _ in PAGES:
         index.append({"n": title, "u": f"{slug}.html", "g": "Guide", "d": ""})
+
+    # CLASSES, and everything else the reader might type. This block used to sit
+    # further down, next to the loop that writes the class pages -- which is
+    # AFTER index_json was serialised, so 27 entries were appended to a list
+    # nobody read again. The effect was that searching "Adam" returned nothing,
+    # "DataLoader" returned nothing, and "Linear" returned two accidental
+    # substring hits in other operators' descriptions with `relu` at the top.
+    # Those are the first things a PyTorch user types.
+    for cname, spec in CLASSES.items():
+        index.append({"n": cname, "u": f"{class_slug(cname)}.html", "g": "Classes",
+                      "d": plain(spec.get("summary", ""))})
+        # Members too: a reader looking for `.numpy()` or `zero_grad` is looking
+        # for a method, and knowing which class it hangs off is the thing they
+        # do not know yet.
+        lang = spec.get("lang", "cpp")
+        symbol = spec.get("symbol", cname)
+        doc = (R.nanobind_class(symbol, tuple(spec.get("extra_members", ())))
+               if lang == "native" else
+               (R.all_classes() if lang == "cpp" else R.python_classes()).get(symbol))
+        if doc is None:
+            continue
+        # One entry per NAME, not per overload. `doc.public()` yields a Member
+        # for each C++ overload, so `Tensor::reshape` -- span and
+        # initializer_list -- produced three identical "Tensor.reshape" rows in
+        # the results, which reads as a broken index.
+        seen_members: set[str] = set()
+        for m in doc.public():
+            if m.name.startswith("_") or m.name in seen_members:
+                continue
+            seen_members.add(m.name)
+            index.append({"n": f"{cname}.{m.name}",
+                          "u": f"{class_slug(cname)}.html#m-{m.name}",
+                          "g": "Members", "d": plain(spec.get("members", {}).get(m.name, ""))})
+
+    # Environment switches, read from the C++ that consumes them. Searching
+    # VKML_GEMM_KERNEL returned nothing despite a whole reference page for it.
+    for name, meta in sorted(R.env_switches().items()):
+        index.append({"n": name, "u": f"reference-env.html#{name.lower().replace('_', '-')}",
+                      "g": "Environment", "d": plain(meta.get("doc", "")) if isinstance(meta, dict) else ""})
+
     index_json = json.dumps(index, separators=(",", ":"))
 
     # Overview: what is in the reference and how complete each part is.
@@ -1098,8 +1194,6 @@ def build() -> int:
     for cname, spec in CLASSES.items():
         cbody, ctoc = class_page(cname, spec)
         slug = class_slug(cname)
-        index.append({"n": cname, "u": f"{slug}.html", "g": "Classes",
-                      "d": spec.get("summary", "")})
         write(OUT / f"{slug}.html", title=f"{cname} — vkML",
               desc=spec.get("summary", cname), body=cbody, nav=sidenav(slug),
               toc=toc_for(ctoc), crumb=crumbs(("Classes", None), (cname, None)),

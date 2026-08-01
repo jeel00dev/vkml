@@ -576,3 +576,64 @@ footer.page { max-width: none; margin-top: 2.5rem; padding-top: 1.1rem;
     .lhero img { height: 5.5rem; }
     .lsec { padding: var(--s-5) var(--s-4); }
 }
+
+/* ------------------------------------------------------- search on a phone -- */
+
+/* At 390px the topbar carried seven controls -- hamburger, logo, wordmark,
+   version chip, search field, theme toggle and a GitHub link -- and the search
+   field is what gave way: it collapsed to about 130px, showing the placeholder
+   truncated to "S" and still rendering the "/" hint for a key the device has no
+   way to press.
+ 
+   Search is the fastest route through a 55-page reference, so below the tablet
+   breakpoint it becomes a trigger and a full-width sheet, which is what React,
+   Rust, Tailwind, Astro, Next.js and Stripe all do. The reason is the same
+   everywhere: a text input squeezed into a crowded header cannot show enough of
+   the query or enough of the results to be worth using, and a sheet gives the
+   query the whole screen. */
+
+#search-open, .search-close { display: none; }
+
+/* The "/" hint is a promise the device cannot keep without a keyboard. */
+@media (pointer: coarse) { .search kbd { display: none; } }
+
+@media (max-width: 48rem) {
+    /* Four controls, not seven. The version is on every page's footer and the
+       repository is linked from the landing page and the contents rail. */
+    .ver, .topbar > a.icon-btn[href] { display: none; }
+    #search-open { display: grid; }
+
+    .search {
+        position: fixed; inset: 0; z-index: 80;
+        display: none; width: auto;
+        padding: var(--s-4);
+        background: var(--bg);
+    }
+    .search.open { display: block; }
+    .search input {
+        width: 100%; height: 2.75rem;          /* >= 44px, a comfortable target */
+        padding-left: 2.4rem; font-size: var(--fs-5);
+    }
+    .search .mag { left: .85rem; top: 2.05rem; transform: none; }
+    .search-close {
+        display: grid; position: absolute;
+        right: var(--s-4); top: calc(var(--s-4) + .35rem);
+        width: 2.05rem; height: 2.05rem;
+    }
+    .search input { padding-right: 2.9rem; }
+
+    /* The sheet owns the screen, so results are a list rather than a dropdown. */
+    .results {
+        position: static; margin-top: var(--s-4);
+        max-height: calc(100vh - 5rem); border: 0; box-shadow: none;
+        background: none;
+    }
+    .results a { padding: .7rem .2rem; }
+    .results .r-name { font-size: var(--fs-5); }
+}
+
+/* The browser draws its own clear button inside `input[type=search]`, which sat
+   beside the sheet's close button on a phone: two crosses, different sizes,
+   different colours, one of them the platform's. */
+.search input::-webkit-search-cancel-button,
+.search input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
