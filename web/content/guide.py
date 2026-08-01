@@ -239,6 +239,9 @@ deliberate divergence exists it is stated on the operator's own page.</p>
 from .arch_autograd import PAGE as ARCH_AUTOGRAD  # noqa: E402
 from .arch_cpu import PAGE as ARCH_CPU  # noqa: E402
 from .arch_numerics import PAGE as ARCH_NUMERICS  # noqa: E402
+from .guide_contributing import PAGE as GUIDE_CONTRIBUTING  # noqa: E402
+from .guide_perf import PAGE as GUIDE_PERF  # noqa: E402
+from .guide_testing import PAGE as GUIDE_TESTING  # noqa: E402
 from .reference_env import PAGE as REFERENCE_ENV  # noqa: E402
 from .arch_shaders import PAGE as ARCH_SHADERS  # noqa: E402
 from .arch_vulkan import PAGE as ARCH_VULKAN  # noqa: E402
@@ -249,6 +252,9 @@ PAGES: list[tuple[str, str, str]] = [
     ("index", "vkML — machine learning on Vulkan", LANDING),
     ("get-started", "Get started", GET_STARTED),
     ("concepts", "Concepts", CONCEPTS),
+    ("performance", "Performance", GUIDE_PERF),
+    ("testing", "Testing and verification", GUIDE_TESTING),
+    ("contributing", "Adding an operator", GUIDE_CONTRIBUTING),
     ("arch-tensor", "Tensors, storage and views", ARCH_TENSOR),
     ("arch-graph", "The lazy graph and execution", ARCH_GRAPH),
     ("arch-autograd", "Autograd", ARCH_AUTOGRAD),
