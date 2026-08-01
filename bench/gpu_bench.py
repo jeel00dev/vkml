@@ -552,7 +552,16 @@ def main() -> int:
 
     if args.json:
         with open(args.json, "w") as f:
-            json.dump({"metadata": meta, "allocator": stats,
+            # The conditions, not just the numbers. A baseline that records a
+            # GPU model and no clock state, driver or commit cannot answer "is
+            # this still comparable" -- which is how a 38.6% clock artefact
+            # became a tracked regression.
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+            from check_baselines import stamp
+            recorded = stamp()
+            recorded["driver"] = meta.get("gpu", "unknown")
+            recorded["warmed"] = True     # measure() warms before every timing
+            json.dump({"recorded": recorded, "metadata": meta, "allocator": stats,
                        "samples": [asdict(s) for s in samples],
                        "pipelines": resources}, f, indent=2)
         print(f"\nwrote {args.json}")

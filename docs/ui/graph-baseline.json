@@ -1,4 +1,8 @@
 {
+ "recorded": {
+  "commit": "e7c5fd6",
+  "recorded_at": "2026-08-01T21:04:32+05:30"
+ },
  "orphans": [
   "arch-overview",
   "capabilities",

@@ -105,8 +105,13 @@ def main() -> int:
 
     if args.write_baseline:
         BASELINE.parent.mkdir(parents=True, exist_ok=True)
+        # Provenance from one definition, so the three recorders cannot each
+        # invent a different shape -- see docs/ENGINEERING-PRINCIPLES.md 4.
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from check_baselines import stamp
         BASELINE.write_text(json.dumps(
-            {"orphans": g["orphans"], "dead_ends": g["dead_ends"]}, indent=1) + "\n")
+            {"recorded": stamp(),
+             "orphans": g["orphans"], "dead_ends": g["dead_ends"]}, indent=1) + "\n")
         print(f"  wrote {BASELINE.relative_to(ROOT)}")
         return 0
 

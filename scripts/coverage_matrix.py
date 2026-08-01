@@ -370,9 +370,23 @@ GAP_LABELS = {
 }
 
 
+def _stamp() -> dict:
+    """Shared provenance, from check_baselines, so the recorders cannot drift."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from check_baselines import stamp
+    return stamp()
+
+
 def write_baseline(dump: Path, path: Path) -> None:
     a = analyse(dump)
     payload = {
+        # Commit and timestamp alongside the backend set this file already
+        # recorded. Its `backends` comment below had the right idea years
+        # earlier -- a recording is only comparable against one taken under the
+        # same conditions -- it just did not say WHICH revision "as of this
+        # revision" meant. See docs/ENGINEERING-PRINCIPLES.md 4.
+        "recorded": _stamp(),
         "comment": "Coverage gaps accepted as of this revision. A NEW gap fails the "
                    "gate; regenerate with --write-baseline to accept one deliberately.",
         # The backend set is part of the baseline, not decoration. Roughly a

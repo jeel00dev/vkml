@@ -90,6 +90,13 @@ jobs:
       - name: Design system
         run: python scripts/check_design_system.py
 
+      # A baseline is a claim that two measurements are comparable. Without the
+      # conditions that claim cannot be checked -- which is how a GPU parked at
+      # its idle clock became a tracked 38.6% regression against a baseline
+      # recorded warm.
+      - name: Baselines record their conditions
+        run: python scripts/check_baselines.py
+
       # The mutation campaign cannot notice its own decay. Each mutation is a
       # literal string lifted from the source, so a refactor silently stops it
       # applying -- and one already had: the strided-indexing mutation pointed
