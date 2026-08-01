@@ -38,11 +38,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The site imports vkml to derive signatures, the operator surface and the
-      # layer diagram from the real module — that is what makes the reference
-      # generated rather than typed. A CPU-only build is enough and needs no
-      # Vulkan SDK on the runner.
-      - name: Build vkml (CPU-only) and install
+      # VULKAN ON, though this runner has no GPU. web/build.py imports the real
+      # module to derive the reference, and its own gate rejected a CPU-only
+      # build with "listed but absent from the module: init_vulkan,
+      # vulkan_capabilities, ..." — the site documents the Vulkan surface, so a
+      # build without it produces an incomplete reference. Compiling needs only
+      # the loader and headers; nothing here executes a shader.
+      - name: Install the Vulkan toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan-dev glslang-tools
+
+      - name: Build vkml and install
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy nanobind scikit-build-core pillow
@@ -53,7 +60,7 @@ jobs:
           # failed exactly this way. An editable install makes the two paths
           # resolve to one extension -- the same reason CLAUDE.md warns that a
           # rebuild is not necessarily what `import vkml` gives you (#113).
-          pip install --verbose -e . -C cmake.define.VKML_VULKAN=OFF
+          pip install --verbose -e . -C cmake.define.VKML_VULKAN=ON
 
       - name: Build the site
         run: python web/build.py
