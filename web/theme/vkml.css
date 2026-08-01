@@ -244,7 +244,15 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
 
 /* ---------------------------------------------------------------- layout -- */
 
-.layout { display: flex; align-items: flex-start; }
+/* The WHOLE layout is capped and centred, not the content column alone.
+   Capping .content and centring it only moved the problem: measured at 1832px
+   wide the prose sat at 564..1316 with the contents panel at 1616, leaving
+   300px of dead space on BOTH sides instead of 600px on one. Slack belongs
+   outside the three columns, where it reads as a margin, rather than between
+   them, where it reads as a gap somebody forgot to close. */
+.layout { display: flex; align-items: flex-start;
+          max-width: calc(var(--nav-w) + var(--measure) + 6rem + var(--toc-w));
+          margin-inline: auto; }
 .sidenav, .toc { position: sticky; top: var(--topbar-h);
                  height: calc(100vh - var(--topbar-h)); overflow-y: auto;
                  overscroll-behavior: contain; }
@@ -302,7 +310,7 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
    of contents. Capping the box and centring it splits that slack evenly,
    which is what makes the column look deliberate rather than pushed left. */
 .content { flex: 1 1 auto; min-width: 0; padding: 1.6rem 3rem 5rem;
-           max-width: calc(var(--measure) + 6rem); margin-inline: auto; }
+           max-width: calc(var(--measure) + 6rem); }
 .content > * { max-width: var(--measure); }
 .content > .wide, .content > .hero, .content > .cards, .content > .pagenav { max-width: none; }
 
