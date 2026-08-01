@@ -39,7 +39,7 @@ sys.path.insert(0, str(WEB))
 
 import vkml as V  # noqa: E402
 import research as R  # noqa: E402
-from content import PAGES, PROSE  # noqa: E402
+from content import CLASSES, PAGES, PROSE  # noqa: E402
 
 GROUPS: list[tuple[str, list[str]]] = [
     (
@@ -516,6 +516,82 @@ def api_entry(name: str) -> tuple[str, bool, str]:
     return "\n".join(out), documented, first_line
 
 
+def class_page(name: str, spec: dict) -> tuple[str, list[tuple[str, str, int]]]:
+    """Render one class. Members come from the extractor; meaning from CLASSES.
+
+    A member with no written entry still appears, with its signature and a link
+    to its line. The mapping adds explanation; it does not decide what is
+    visible, because a reference that shows only the documented half of a class
+    misrepresents the class.
+    """
+    lang = spec.get("lang", "cpp")
+    doc = (R.all_classes() if lang == "cpp" else R.python_classes()).get(name)
+    if doc is None:
+        return f"<h1>{html.escape(name)}</h1>" + admon(
+            "warning", f"`{name}` was not found by the extractor."), []
+
+    body = [f"<h1><code>{html.escape(name)}</code></h1>",
+            f'<p class="lede">{inline(spec["summary"])}</p>']
+
+    decl = f"{doc.kind} {doc.name}" + (f" : {doc.bases}" if doc.bases else "")
+    body.append(f'<div class="decl">{highlight(decl)}'
+                f'<span class="where">— <a href="{doc.url}">{doc.path}:{doc.line}</a>'
+                f"</span></div>")
+
+    if spec.get("detail"):
+        body.append(paragraphs(spec["detail"]))
+    for kind in ("note", "warning", "tip"):
+        if spec.get(kind):
+            body.append(admon(kind, spec[kind]))
+
+    by_name: dict[str, list] = {}
+    for m in doc.public():
+        by_name.setdefault(m.name, []).append(m)
+
+    grouped = spec.get("groups") or [("Members", sorted(by_name))]
+    listed = {n for _, names in grouped for n in names}
+    ungrouped = sorted(set(by_name) - listed)
+    if ungrouped:
+        grouped = list(grouped) + [("Other members", ungrouped)]
+
+    toc = []
+    for gname, names in grouped:
+        gid = "m-" + re.sub(r"[^a-z0-9]+", "-", gname.lower()).strip("-")
+        body.append(f'<h2 id="{gid}">{html.escape(gname)}'
+                    f'<a class="anchor" href="#{gid}">¶</a></h2>')
+        toc.append((gid, gname, 2))
+        for mname in names:
+            overloads = by_name.get(mname)
+            if not overloads:
+                continue
+            mid = f"m-{mname}"
+            body.append(f'<h3 id="{mid}"><code>{html.escape(mname)}</code>'
+                        f'<a class="anchor" href="#{mid}">¶</a></h3>')
+            toc.append((mid, mname, 3))
+            for m in overloads:
+                body.append(f'<div class="decl">{highlight(m.signature)}'
+                            f'<span class="where">— <a href="'
+                            f'{R.src_link(doc.file, m.line)}">{doc.path}:{m.line}</a>'
+                            f"</span></div>")
+            written = spec.get("members", {}).get(mname)
+            if written:
+                body.append(paragraphs(written))
+            else:
+                own = next((m.doc for m in overloads if m.doc), "")
+                if own:
+                    body.append(paragraphs(own))
+    if spec.get("see"):
+        links = ", ".join(f'<a href="{PAGE_OF[t]}.html#{t}"><code>{t}</code></a>'
+                          for t in spec["see"] if t in PAGE_OF)
+        if links:
+            body.append(f"<p><strong>See also</strong> {links}</p>")
+    return "\n".join(body), toc
+
+
+def class_slug(name: str) -> str:
+    return "class-" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
 def sidenav(active: str) -> str:
     s = [
         '<aside class="sidenav" id="sidenav"><h2>Documentation</h2>',
@@ -525,6 +601,13 @@ def sidenav(active: str) -> str:
         cls = ' class="active"' if slug == active else ""
         s.append(f'<li><a{cls} href="{slug}.html">{html.escape(title)}</a></li>')
     s.append("</ol>")
+    if CLASSES:
+        s.append("<h3>Classes</h3><ol>")
+        for cname in CLASSES:
+            cslug = class_slug(cname)
+            ccls = ' class="active"' if cslug == active else ""
+            s.append(f'<li><a{ccls} href="{cslug}.html"><code>{cname}</code></a></li>')
+        s.append("</ol>")
     s.append("<h3>API reference</h3><ol>")
     s.append(
         f"<li><a{' class="active"' if active == 'api' else ''} "
@@ -910,6 +993,16 @@ def build() -> int:
             page=slug,
             index_json=index_json,
         )
+
+    for cname, spec in CLASSES.items():
+        cbody, ctoc = class_page(cname, spec)
+        slug = class_slug(cname)
+        index.append({"n": cname, "u": f"{slug}.html", "g": "Classes",
+                      "d": spec.get("summary", "")})
+        write(OUT / f"{slug}.html", title=f"{cname} — vkML",
+              desc=spec.get("summary", cname), body=cbody, nav=sidenav(slug),
+              toc=toc_for(ctoc), crumb=crumbs(("Classes", None), (cname, None)),
+              page=slug, index_json=index_json)
 
     for slug, title, body in PAGES:
         heads = [

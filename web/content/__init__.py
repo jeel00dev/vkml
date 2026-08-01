@@ -30,6 +30,7 @@ from .losses import LO as _LOSSES
 from .binary import B as _BINARY
 from .shape import S as _SHAPE
 from .runtime import RT as _RUNTIME
+from .classes import CLASSES
 from .guide import PAGES
 from .prose import PROSE
 
@@ -43,4 +44,4 @@ PROSE.update(_BINARY)
 PROSE.update(_SHAPE)
 PROSE.update(_RUNTIME)
 
-__all__ = ["PAGES", "PROSE"]
+__all__ = ["CLASSES", "PAGES", "PROSE"]

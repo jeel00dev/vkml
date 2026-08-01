@@ -645,7 +645,11 @@ def parse_classes(path: Path) -> list[ClassDoc]:
             # ...)` produced members called `dtype` and `device`, which exist
             # nowhere.
             joined, look = body, k
-            while (not joined.rstrip().endswith((";", "{"))
+            # `}` terminates too: an inline body -- `bool defined() const
+            # noexcept { return node_ != nullptr; }` -- ends with a brace, and
+            # without this the joiner ran on and SWALLOWED the next
+            # declaration. That is how shape() disappeared from Tensor.
+            while (not joined.rstrip().endswith((";", "{", "}"))
                    and look < len(lines) and look - k < 8):
                 joined += " " + lines[look].strip()
                 look += 1
@@ -665,13 +669,16 @@ def parse_classes(path: Path) -> list[ClassDoc]:
                                           access=access, line=k))
                 mdoc = []
                 continue
-            fm = re.search(r"(?:^|[\s*&])(\w+)\s*\(", body)
+            # `~` is allowed before the name so a DESTRUCTOR is matched.
+            # Without it `~Tensor();` was silently dropped -- the tilde is not
+            # a word character and was not in the preceding-character set.
+            fm = re.search(r"(?:^|[\s*&])(~?\w+)\s*\(", body)
             if fm:
                 name = fm.group(1)
                 if name in {"if", "for", "while", "switch", "return", "sizeof"}:
                     mdoc = []
                     continue
-                if name == cls.name:
+                if name == cls.name or name == f"~{cls.name}":
                     kind = "ctor"
                 elif name.startswith("operator"):
                     kind = "operator"
