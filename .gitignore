@@ -58,3 +58,9 @@ actions-runner/
 
 # Generated documentation site. Rebuild with `python web/build.py`.
 web/_site/
+
+# Checkpoints written by the documented examples when check_docs_examples.py
+# runs them. examples/*/.gitignore already covers the ones training writes;
+# this covers the repository root, where two were committed by accident before
+# the examples were changed to use a temporary directory.
+*.vkml

@@ -89,9 +89,11 @@ RT["save"] = {
                ("compress", "bool = False", "Deflate the payload. Off by default.")],
     "note": "The path comes **first**, and the payload is NumPy arrays rather than tensors.",
     "example": """
+>>> import tempfile, os
+>>> path = os.path.join(tempfile.mkdtemp(), "ckpt.vkml")
 >>> w = vkml.tensor(np.zeros((4, 4), dtype=np.float32))
->>> vkml.save("ckpt.vkml", {"w": w.numpy()}, metadata={"epoch": 3})
->>> ck = vkml.load("ckpt.vkml")
+>>> vkml.save(path, {"w": w.numpy()}, metadata={"epoch": 3})
+>>> ck = vkml.load(path)
 >>> ck.metadata["epoch"]
 3
 """,
@@ -146,10 +148,12 @@ RT["load_module"] = {
                "against it cannot guard the load. To decide whether to load at all, call "
                "`load` first, inspect, then `load_state_dict` yourself.",
     "example": """
+>>> import tempfile, os
+>>> path = os.path.join(tempfile.mkdtemp(), "m.vkml")
 >>> dev = vkml.device("vulkan:0")
 >>> model = vkml.nn.Linear(16, 8).to(dev)
->>> vkml.save_module("m.vkml", model)
->>> ck = vkml.load_module("m.vkml", model)
+>>> vkml.save_module(path, model)
+>>> ck = vkml.load_module(path, model)
 >>> next(iter(model.named_parameters()))[1].device      # unchanged by the load
 device('vulkan:0')
 """,
