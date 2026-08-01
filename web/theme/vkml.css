@@ -168,6 +168,13 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
 ::-webkit-scrollbar-corner { background: transparent; }
+/* The arrow buttons at each end. Themed by omission everywhere else in this
+   block, which is how they survived: the track, thumb and corner were all
+   given colours and the BUTTON was not, so the browser kept drawing its own
+   pale default at the foot of the sidebar -- against a dark panel, the one
+   unthemed element left on the page. Removed rather than coloured; a
+   scrollbar this thin has no room for a usable arrow. */
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 .sidenav::-webkit-scrollbar-thumb { border-color: var(--bg-nav); }
 pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
 
