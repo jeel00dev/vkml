@@ -128,6 +128,7 @@ python scripts/check_layering.py
 python scripts/check_push_constants.py
 python scripts/check_docs_references.py
 python scripts/check_docs_examples.py     # needs a built extension
+python scripts/check_versions.py
 
 # POSIX shells, including Git Bash on Windows. CONTRIBUTING.md sec8 has the
 # PowerShell equivalent -- `find` and `xargs` do not exist there.
@@ -151,6 +152,12 @@ rendered, the links resolved, the examples ran, and the sentence was false.
 `check_docs_examples.py` executes every `>>>` transcript in `web/content/` and
 compares the printed output to what the page claims. It needs a built
 extension, so run it after building rather than before.
+
+`check_versions.py` checks every version number stated in prose against the file
+that decides it -- the CMake minimum against `cmake_minimum_required`, the Python
+minimum against `requires-python`, and so on. It was written after the
+get-started page claimed CMake 3.24 while `CMakeLists.txt` required 3.25, with
+README stating the right figure and nothing noticing that the two disagreed.
 
 `mutation_check.py` needs to know where your build is when it rebuilds a mutated
 kernel. It defaults to `build/release`, so on Windows point it at the build the

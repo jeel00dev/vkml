@@ -68,6 +68,13 @@ jobs:
       - name: Documentation references
         run: python scripts/check_docs_references.py
 
+      # Version numbers stated in prose against the file that decides them.
+      # The get-started page said CMake 3.24 while CMakeLists.txt requires
+      # 3.25 -- a reader with 3.24 would have followed the docs and failed to
+      # configure, with an error naming CMake rather than the page.
+      - name: Documented versions
+        run: python scripts/check_versions.py
+
   cpp:
     name: Linux / C++ (${{ matrix.preset }})
     runs-on: [self-hosted, Linux]

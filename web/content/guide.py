@@ -91,11 +91,25 @@ GET_STARTED = """
 
 <h2>Requirements</h2>
 <ul>
-  <li>A C++20 compiler — GCC 12+, Clang 15+, or MSVC 19.3+</li>
-  <li>CMake 3.24+ and Ninja</li>
-  <li>The Vulkan SDK, for <code>glslc</code> or <code>glslangValidator</code></li>
-  <li>Python 3.10+ with NumPy</li>
+  <li><strong>A C++20 compiler with <code>&lt;format&gt;</code></strong>. 19 source files use
+  <code>std::format</code>, which is the strictest library feature the project needs — it
+  shipped in libstdc++ with GCC 13, in libc++ with LLVM 17, and in MSVC 19.29.</li>
+  <li><strong>CMake 3.25 or newer</strong> — the figure in
+  <code>cmake_minimum_required</code>, not an approximation of it — and Ninja.</li>
+  <li>The Vulkan SDK, for <code>glslc</code> or <code>glslangValidator</code>.</li>
+  <li>Python 3.10+ with NumPy, matching <code>requires-python</code> in
+  <code>pyproject.toml</code>.</li>
 </ul>
+
+<div class="admon note"><span class="label">ⓘ Note</span><div class="body">
+<p><strong>Only some of that is verified.</strong> The compiler versions above are the releases
+that shipped <code>&lt;format&gt;</code>, not versions this project has been built with. What is
+actually known to work is GCC 14.2.1 (the development machine), MSVC 19.51 (a Windows build
+with warnings as errors), and whatever <code>g++</code> and <code>clang++</code> the CI image
+ships — which is unpinned. If you build on an older toolchain, a report either way is
+useful.</p>
+</div></div>
+
 <p>PyTorch is a <strong>test-only</strong> dependency. It is the correctness oracle and is
 never needed at runtime.</p>
 
