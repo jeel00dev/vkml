@@ -102,6 +102,7 @@ def main() -> int:
     print(f"  {checked_paths} path references, {checked_consts} constant references")
     problems += unlisted_native_members()
     problems += stale_docs_references()
+    problems += unrendered_markup()
     if problems:
         print(f"  {len(problems)} problems:")
         for p in problems:
@@ -238,6 +239,51 @@ def unlisted_native_members():
                            f"-- add it to a group in web/content/classes.py")
     return out
 
+
+
+def unrendered_markup():
+    """No authored markup may survive into the built HTML.
+
+    Two ways it did, both invisible in ordinary use, which is why both lasted.
+
+    In the BODY, single-asterisk emphasis was never implemented. Authors wrote
+    it anyway -- `*GEMV*`, `*Split-K*`, `*Nesterov*` and five more -- so five API
+    pages printed literal asterisks mid-sentence, including in the paragraph
+    explaining how a matmul picks its kernel.
+
+    In the HEAD, `<meta name="description">` reused the same authored summary
+    the body renders, and nothing renders a meta tag. Seven pages described
+    themselves to search engines and link previews with the markdown still in
+    them. Nobody reads their own meta tags, so nobody saw it.
+
+    Deliberately checks the OUTPUT rather than the sources: the question is what
+    a reader receives, and it stays true whatever the renderer gains next.
+    """
+    import re as _re
+    site = ROOT / "web" / "_site"
+    if not site.exists():
+        return ["web/_site does not exist; run python web/build.py first"]
+
+    out = []
+    # A `*word*` span in text, but not `**bold**`, not `*args`, and not inside a
+    # tag. Text is taken between tags so a match cannot be an attribute value.
+    body_em = _re.compile(r">([^<]*?)<")
+    em_span = _re.compile(r"(?<!\*)\*(?!\s|\*)([^*<>]{2,40}?)(?<!\s)\*(?!\*)")
+    meta_md = _re.compile(r'<meta[^>]*name="description"[^>]*content="([^"]*)"')
+
+    for page in sorted(site.glob("*.html")):
+        text = page.read_text(errors="ignore")
+        for m in meta_md.finditer(text):
+            if "`" in m.group(1) or "**" in m.group(1):
+                out.append(f"{page.name}: meta description still contains markdown: "
+                           f"{m.group(1)[:60]!r}")
+        for chunk in body_em.findall(text):
+            hit = em_span.search(chunk)
+            if hit:
+                out.append(f"{page.name}: unrendered emphasis in the body: "
+                           f"*{hit.group(1)[:40]}*")
+                break
+    return out
 
 if __name__ == "__main__":
     sys.exit(main())

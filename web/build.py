@@ -284,6 +284,23 @@ def code_block(src: str, repl: bool = False) -> str:
 # ------------------------------------------------------------------ markup --
 
 
+def plain(text: str) -> str:
+    """Authored markdown reduced to the plain sentence inside it.
+
+    The page description reuses the same authored summary the body renders, and
+    a `<meta name="description">` is not rendered -- so seven pages were
+    advertising themselves to search engines and link previews as
+    `Adam with **decoupled** weight decay, matching \\`torch.optim.AdamW\\`.`
+    with the markup intact. Nobody sees that on the page, which is why it
+    survived.
+    """
+    t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)   # links -> their text
+    t = re.sub(r"`([^`]+)`", r"\1", t)
+    t = re.sub(r"\*\*([^*]+)\*\*", r"\1", t)
+    t = re.sub(r"\*(?!\s)([^*<>]+?)(?<!\s)\*", r"\1", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
 def inline(text: str, xref: bool = True) -> str:
     """The small markdown subset the content files use.
 
@@ -301,6 +318,18 @@ def inline(text: str, xref: bool = True) -> str:
 
     t = re.sub(r"`([^`]+)`", code, t)
     t = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", t)
+    # Single-asterisk emphasis, AFTER bold so `**x**` is already gone, and after
+    # code so a `*` inside backticks is inside a tag by now.
+    #
+    # Authors were already writing it -- `*GEMV*`, `*Split-K*`, `*Nesterov*` and
+    # five others -- and it rendered as literal asterisks on five API pages,
+    # including mid-sentence in the kernel-selection explanation.
+    #
+    # The character class excludes `<` and `>`, which is what keeps this from
+    # crossing a tag boundary and wrapping a generated <code> span. Requiring a
+    # non-space next to each delimiter is what leaves `a * b` and a trailing
+    # `Node*` alone.
+    t = re.sub(r"\*(?!\s)([^*<>]+?)(?<!\s)\*", r"<em>\1</em>", t)
     t = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', t)
     return t
 
@@ -755,7 +784,7 @@ def write(
     path.write_text(
         SHELL.format(
             title=html.escape(title),
-            desc=html.escape(desc),
+            desc=html.escape(plain(desc)),
             body=body,
             sidenav=nav,
             toc=toc,
