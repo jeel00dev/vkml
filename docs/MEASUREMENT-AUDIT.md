@@ -242,3 +242,39 @@ This nearly produced a false refutation of P1'' recorded as a cross-kernel failu
 9. When two independent calculations agree, that is not confirmation — it is a warning that the
    experiment cannot distinguish them (`PERFORMANCE-MODEL.md` §5e, corrected in M3-03).
 10. Check every correctness gate for **vacuity** before trusting a pass.
+
+## Warm-up is a precondition of each measurement, not a phase
+
+This machine parks at 400 MHz of a possible 1500 and raises clocks in response
+to load, so an unwarmed benchmark measures the clock policy rather than the
+code. On `dispatch 1 element`, the same binary in one process:
+
+    cold                            0.01052 ms
+    after sixty 1024-cubed matmuls  0.00572 ms
+
+A factor of 1.8 from clock state alone. That is not a correction to the signal,
+it IS the signal for anything small.
+
+Warming once at the start of a run does not work, and the failed attempt is the
+useful part -- a warm-up was added to the top of gpu_bench.py and the number did
+not move. The order test says why:
+
+    warm -> measure                 0.00612 ms
+    warm -> transfers -> measure    0.00932    the transfers undo it
+    transfers -> warm -> measure    0.00560
+
+The suite runs 1/4/16 MiB uploads and downloads before reaching the dispatch
+case. Those move memory without raising the compute clock and take long enough
+for it to fall back, so anything measured after them is measured cold whatever
+happened at the top of the run.
+
+`measure()` now warms immediately before timing, with the operands cached per
+device so allocating them does not become the thing being measured. Across the
+suite, run-to-run spread fell from a median of 50.2% to 10.2%, and the number of
+benchmarks whose own noise exceeded the 15% regression threshold fell from 22 of
+34 to 7.
+
+**What this cost before it was found.** An apparent 38.6% regression on
+`dispatch 1 element`, tracked, investigated, and entirely inside the clock range.
+The baseline recorded no clock or driver state, so nothing could rule it out --
+which is why a baseline without its measurement conditions is not a baseline.

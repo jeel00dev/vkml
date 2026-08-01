@@ -97,8 +97,10 @@ def _stats(values):
 _gpu_time = V.vulkan_submit_ms
 
 
-def measure(name, category, fn, reps=25, bytes_moved=0.0) -> Sample:
+def measure(name, category, fn, reps=25, bytes_moved=0.0, device=None) -> Sample:
     """Times `fn`, separating GPU execution from everything else."""
+    if device is not None:
+        warm_up(device)     # raise the clock, immediately before timing
     fn()  # warm up: pipeline creation and first-touch belong to setup
 
     gpu, wall = [], []
@@ -119,6 +121,51 @@ def measure(name, category, fn, reps=25, bytes_moved=0.0) -> Sample:
     if bytes_moved and s.transfer_ms > 0:
         s.gbps = bytes_moved / 1e9 / (s.transfer_ms / 1e3)
     return s
+
+
+_WARM: dict = {}
+
+
+def warm_up(device, rounds: int = 12) -> None:
+    """Drive the GPU hard IMMEDIATELY BEFORE a measurement.
+
+    WHY THIS IS NOT OPTIONAL HERE. This machine parks at 400 MHz of a possible
+    1500 and raises clocks in response to load, so an unwarmed benchmark
+    measures the clock policy rather than the code. Measured on `dispatch 1
+    element` in one process: 0.01052 ms cold against 0.00572 ms after sixty
+    1024-cubed matmuls -- a factor of 1.8 from clock state alone, with the same
+    binary.
+
+    That is not a subtlety, it is the whole signal for the small benchmarks. An
+    apparent 38.6% regression against a recorded baseline turned out to be
+    entirely inside this range, and the baseline recorded no clock or driver
+    state to rule it out.
+
+    WARM-UP IS A PRECONDITION OF EACH MEASUREMENT, NOT A PHASE. Warming once at
+    the top of the run does not work, and that was measured rather than assumed:
+
+        warm -> measure                 0.00612 ms
+        warm -> transfers -> measure    0.00932    the transfers undo it
+        transfers -> warm -> measure    0.00560
+
+    The suite runs 1/4/16 MiB uploads and downloads before it reaches the
+    dispatch case. Those move memory without raising the compute clock and take
+    long enough for it to fall back, so a warm-up at the start of the run had no
+    effect on the number by the time it mattered -- verified by adding one and
+    watching the figure not move.
+
+    The operands are cached per device, because allocating two megabyte tensors
+    before every measurement would itself become the thing being measured.
+    """
+    ab = _WARM.get(str(device))
+    if ab is None:
+        ab = (V.tensor(np.random.rand(1024, 1024).astype(np.float32), device=device),
+              V.tensor(np.random.rand(1024, 1024).astype(np.float32), device=device))
+        ab[0].realize()
+        ab[1].realize()
+        _WARM[str(device)] = ab
+    for _ in range(rounds):
+        V.matmul(ab[0], ab[1]).realize()
 
 
 def run_all(device) -> list[Sample]:
@@ -149,7 +196,7 @@ def run_all(device) -> list[Sample]:
     # -- dispatch overhead --------------------------------------------------
     tiny = V.tensor(np.ones((1,), dtype=np.float32), device=device)
     out.append(measure("dispatch 1 element", "overhead",
-                       lambda: V.relu(tiny).numpy()))
+                       lambda: V.relu(tiny).numpy(), device=device))
 
     # -- elementwise --------------------------------------------------------
     for n in (256, 1024, 2048):
@@ -157,9 +204,9 @@ def run_all(device) -> list[Sample]:
         nbytes = float(n * n * 4)
         # Elementwise reads once and writes once.
         out.append(measure(f"relu {n}x{n}", "elementwise",
-                           lambda x=x: V.relu(x).numpy(), bytes_moved=nbytes))
+                           lambda x=x: V.relu(x).numpy(), bytes_moved=nbytes, device=device))
         out.append(measure(f"exp {n}x{n}", "elementwise",
-                           lambda x=x: V.exp(x).numpy(), bytes_moved=nbytes))
+                           lambda x=x: V.exp(x).numpy(), bytes_moved=nbytes, device=device))
 
     # -- f16 against f32, at a size that saturates memory bandwidth ----------
     #
@@ -180,7 +227,7 @@ def run_all(device) -> list[Sample]:
         a.realize()
         b.realize()
         out.append(measure(f"mul {label} 2^24", "elementwise",
-                           lambda a=a, b=b: (a * b).realize()))
+                           lambda a=a, b=b: (a * b).realize(), device=device))
 
     # -- f16 against f32 in a GEMM ------------------------------------------
     #
@@ -197,33 +244,33 @@ def run_all(device) -> list[Sample]:
         a.realize()
         b.realize()
         out.append(measure(f"matmul {label} 1024^3", "gemm",
-                           lambda a=a, b=b: V.matmul(a, b).realize()))
+                           lambda a=a, b=b: V.matmul(a, b).realize(), device=device))
 
     # -- reductions ---------------------------------------------------------
     for rows, cols in ((64, 4096), (1024, 1024), (4096, 256), (1, 1048576)):
         x = V.tensor(rng.random((rows, cols), dtype=np.float32), device=device)
         label = f"{rows}x{cols}"
         out.append(measure(f"sum {label}", "reduction",
-                           lambda x=x: V.sum(x, [1]).numpy()))
+                           lambda x=x: V.sum(x, [1]).numpy(), device=device))
         out.append(measure(f"max {label}", "reduction",
-                           lambda x=x: V.amax(x, [1]).numpy()))
+                           lambda x=x: V.amax(x, [1]).numpy(), device=device))
         out.append(measure(f"argmax {label}", "reduction",
-                           lambda x=x: V.argmax(x, 1).numpy()))
+                           lambda x=x: V.argmax(x, 1).numpy(), device=device))
 
     # -- softmax ------------------------------------------------------------
     for rows, cols in ((64, 4096), (1024, 1024), (4096, 256)):
         x = V.tensor(rng.random((rows, cols), dtype=np.float32), device=device)
         out.append(measure(f"softmax {rows}x{cols}", "softmax",
-                           lambda x=x: V.softmax(x, -1).numpy()))
+                           lambda x=x: V.softmax(x, -1).numpy(), device=device))
         out.append(measure(f"log_softmax {rows}x{cols}", "softmax",
-                           lambda x=x: V.log_softmax(x, -1).numpy()))
+                           lambda x=x: V.log_softmax(x, -1).numpy(), device=device))
 
     # -- GEMM, the current optimization target ------------------------------
     for n in (512, 1024):
         a = V.tensor(rng.random((n, n), dtype=np.float32), device=device)
         b = V.tensor(rng.random((n, n), dtype=np.float32), device=device)
         out.append(measure(f"gemm {n}x{n}x{n}", "gemm",
-                           lambda a=a, b=b: V.matmul(a, b).numpy(), reps=12))
+                           lambda a=a, b=b: V.matmul(a, b).numpy(), reps=12, device=device))
 
     # -- subgroup scaling ---------------------------------------------------
     # A width the device cannot pin is not a slow arm, it is an absent one. The
@@ -243,7 +290,7 @@ def run_all(device) -> list[Sample]:
             continue
         V.vulkan_set_subgroup_override(sg)
         out.append(measure(f"sum 1024x1024 [{tag}]", "subgroup",
-                           lambda x=x: V.sum(x, [1]).numpy()))
+                           lambda x=x: V.sum(x, [1]).numpy(), device=device))
     V.vulkan_set_subgroup_override(0)
 
     return out
