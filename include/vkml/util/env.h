@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace vkml {
 
@@ -51,6 +52,29 @@ namespace vkml {
 [[nodiscard]] int64_t parse_env_int(const char* raw, int64_t fallback) noexcept;
 
 /// `parse_env_flag` applied to `name`'s value.
+/// One environment switch, as actually read. NOT a declared list of switches:
+/// this is populated by `env_value` at the moment each one is consulted, so it
+/// cannot drift from the code that reads them. A hand-maintained registry would
+/// be a second model of vkml's configuration and would go stale the first time
+/// somebody added a switch without updating it.
+struct ObservedSwitch {
+    std::string name;
+    std::string value;  ///< empty when unset
+    bool set = false;   ///< distinguishes unset from set-to-empty
+};
+
+/// Every switch this process has consulted, sorted by name.
+///
+/// WHY THIS EXISTS. Eighteen variables change what vkML does and none of them
+/// was visible in a running process. `VKML_GEMM_NOVEC=1` costs a measured 14.6%
+/// on a 1024-cubed matmul and left no trace anywhere — the exact signature of
+/// issue #76, where a "regression" turned out to be the execution environment
+/// rather than the code. A baseline recorded with one exported is wrong forever
+/// and says nothing about why (docs/ENGINEERING-PRINCIPLES.md 4).
+///
+/// Observed, not declared: an entry appears because something read it.
+[[nodiscard]] std::vector<ObservedSwitch> observed_environment();
+
 [[nodiscard]] bool env_flag(const char* name, bool fallback = false);
 
 /// `parse_env_int` applied to `name`'s value.

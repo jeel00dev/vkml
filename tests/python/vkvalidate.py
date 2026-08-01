@@ -103,6 +103,60 @@ requires_radv = pytest.mark.skipif(
 )
 
 
+# The register-blocked GEMM does not exist on a minimum-spec device.
+#
+# It asks for (BM/RM)*(BN/RN) invocations -- 256 at the default block -- and
+# Vulkan 1.3 guarantees only 128, so on a device reporting the floor the backend
+# falls back to the naive kernel (issue #21). Two consequences follow, and the
+# tests below fail on one or the other rather than on a wrong number:
+#
+#   - the pipeline is never created, so there are no stats for it and the
+#     register/spilling tests fail with KeyError on 'scratch_bytes'
+#   - split-K declines to participate when the naive kernel is selected
+#     (vulkan_backend.cpp:2082), so the split-K tests see 1 dispatch, not 8
+#
+# That is not a defect, and the distinction matters. Running the whole suite
+# under VKML_MIN_SPEC=1 shows 1415 tests passing and exactly these 13 failing --
+# every one of them measuring a kernel that legitimately cannot run there. The
+# stack works at the guaranteed floor; these tests are about a kernel that is
+# not part of it.
+#
+# Same treatment and same reason as requires_radv above: skipping is honest,
+# and making them pass everywhere would mean deleting the numbers that are the
+# point.
+def _matmul_falls_back_to_naive() -> bool:
+    """ASK the backend whether it fell back. Do not reimplement its rule.
+
+    The previous version of this computed `max_workgroup_invocations < 256` and
+    concluded the register-blocked kernel was unavailable. That was a SECOND
+    OWNER of a decision the backend already makes -- category 3 in
+    docs/ENGINEERING-PRINCIPLES.md -- and it could disagree silently with the
+    code it was meant to track. If vulkan_backend.cpp changed its threshold, its
+    block geometry, or the condition itself, this file would have kept skipping
+    or running the wrong tests and nothing would have said so.
+
+    It is now an OBSERVATION: run a real matmul with recording on and see what
+    the backend published. The rule lives in exactly one place
+    (docs/OBSERVABILITY-ARCHITECTURE.md 4, ownership).
+    """
+    if not vulkan_ready():
+        return True
+    V.record_decisions(8)
+    try:
+        a = V.tensor(np.zeros((8, 8), dtype=np.float32), device=gpu_device())
+        (a @ a).numpy()
+        return any(e["site"] == "matmul.kernel" for e in V.decisions())
+    finally:
+        V.stop_recording_decisions()
+
+
+requires_register_kernel = pytest.mark.skipif(
+    _matmul_falls_back_to_naive(),
+    reason="the backend reports it falls back to the naive matmul kernel on this "
+           "device, so the register-blocked pipeline is never created",
+)
+
+
 # ---------------------------------------------------------------------------
 # Randomized layout generation
 # ---------------------------------------------------------------------------

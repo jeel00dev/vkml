@@ -32,6 +32,8 @@
 #include "vkml/util/coverage.h"
 #include "vkml/util/error.h"
 #include "vkml/util/log.h"
+#include "vkml/util/decisions.h"
+#include "vkml/util/env.h"
 
 #include <cstring>
 #include <memory>
@@ -795,6 +797,54 @@ NB_MODULE(_vkml_core, m) {
                 .set_subgroup_override(size);
         },
         "size"_a, "index"_a = 0);
+    // The decision recorder. Deliberately NOT prefixed `vulkan_`: decisions are
+    // published from any layer and a CPU-only build has them too, so naming it
+    // after one backend would misdescribe what it observes.
+    m.def(
+        "configuration",
+        [] {
+            nb::list out;
+            for (const vkml::ObservedSwitch& s : vkml::observed_environment()) {
+                nb::dict e;
+                e["name"] = s.name;
+                e["value"] = s.value;
+                e["set"] = s.set;
+                out.append(e);
+            }
+            return out;
+        },
+        "Every environment switch this process has consulted, and what it saw. "
+        "Observed at the point of reading, so it cannot disagree with the code.");
+    m.def(
+        "record_decisions",
+        [](size_t capacity) { vkml::observe::start_recording(capacity); }, "capacity"_a = 256,
+        "Begin recording decision facts into a bounded window, oldest dropped.");
+    m.def(
+        "stop_recording_decisions", [] { vkml::observe::stop_recording(); },
+        "Stop recording and release the window.");
+    m.def(
+        "decisions",
+        [] {
+            nb::list out;
+            for (const vkml::observe::RecordedDecision& d : vkml::observe::recorded()) {
+                nb::dict e;
+                e["site"] = d.site;
+                e["op"] = d.op;
+                e["chose"] = d.chose;
+                e["instead_of"] = d.instead_of;
+                e["because"] = d.because;
+                e["required"] = d.required;
+                e["available"] = d.available;
+                e["seq"] = d.seq;
+                out.append(e);
+            }
+            return out;
+        },
+        "What the engine recently chose, and instead of what. Oldest first.");
+    m.def(
+        "decisions_published", [] { return vkml::observe::published(); },
+        "Decisions published since recording began, INCLUDING any the window "
+        "evicted. Compare with len(decisions()) to detect a truncated history.");
     m.def(
         "vulkan_pipeline_stats",
         [](int index) {

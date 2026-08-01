@@ -7,6 +7,8 @@
 
 #include "harness.h"
 
+#include "vkml/util/decisions.h"
+#include "vkml/util/observe.h"
 #include "vkml/api/ops.h"
 #include "vkml/api/tensor.h"
 #include "vkml/autograd/autograd.h"
@@ -93,6 +95,39 @@ void bench_graph_construction() {
     }
 
     set_eager(prev);
+}
+
+void bench_observation_cost() {
+    // THE COST OF OBSERVATION IS ITSELF A MEASUREMENT, and it is held to the same
+    // discipline as every other entry here rather than excused for being
+    // internal (docs/OBSERVABILITY-ARCHITECTURE.md 8). Being internal is a
+    // reason for more care: nobody else will notice it drifting.
+    //
+    // MEASURED AT THE PRIMITIVE, and that is a finding rather than a shortcut.
+    // The end-to-end attempt -- a min-spec matmul with recording on and off,
+    // three processes per arm, warmed -- could not resolve the effect at all:
+    // the arms overlapped completely and the recording arm even produced the
+    // lower minimum, which is physically impossible. One mutex and one deque
+    // push against a ~2 ms matmul is roughly four orders of magnitude below
+    // process-to-process variance. A number extracted from that comparison
+    // would have been noise wearing a decimal point.
+    //
+    // So the question asked here is the one that can be answered honestly: what
+    // does ONE publication cost, with and without a consumer holding it?
+    const vkml::observe::Decision d{.site = "bench.observation",
+                                    .op = "bench",
+                                    .chose = "a",
+                                    .instead_of = "b",
+                                    .because = "measuring the observer",
+                                    .required = 256,
+                                    .available = 128};
+
+    vkml::observe::stop_recording();
+    b::run("observability", "publish, nobody recording", [&d] { vkml::observe::publish(d); });
+
+    vkml::observe::start_recording(4096);
+    b::run("observability", "publish, recorded", [&d] { vkml::observe::publish(d); });
+    vkml::observe::stop_recording();
 }
 
 void bench_dispatch_overhead() {
@@ -218,6 +253,7 @@ int main(int argc, char** argv) {
     bench_transfer();
     bench_graph_construction();
     bench_dispatch_overhead();
+    bench_observation_cost();
     bench_kernels();
     bench_matmul();
     bench_training_step();

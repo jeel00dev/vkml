@@ -156,6 +156,19 @@ GROUPS: list[tuple[str, list[str]]] = [
             "set_log_level",
         ],
     ),
+    (
+        # Its own group rather than folded into introspection: these answer
+        # "why did it do that", which is a different question from "what is
+        # this device" and is not Vulkan-specific.
+        "Explaining what the engine chose",
+        [
+            "configuration",
+            "record_decisions",
+            "decisions",
+            "decisions_published",
+            "stop_recording_decisions",
+        ],
+    ),
 ]
 
 ADR_MENTIONS = R.adr_mentions()

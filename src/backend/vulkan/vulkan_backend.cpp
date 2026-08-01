@@ -31,6 +31,7 @@
 #include "vkml/util/assert.h"
 #include "vkml/util/env.h"
 #include "vkml/util/log.h"
+#include "vkml/util/observe.h"
 
 #include <algorithm>
 #include <array>
@@ -769,14 +770,6 @@ struct VulkanBackend::Impl {
     vk::Recorder recorder;
     vk::StagingBuffer staging;
     DeviceCapabilities caps;
-
-    /// Whether the matmul-kernel fallback has already been reported.
-    ///
-    /// The decision is per dispatch because that is where the geometry is
-    /// known, but the FACT is per device and never changes. Logging it each
-    /// time produced 4,785 identical lines in one MNIST epoch, which is how a
-    /// log stops being read.
-    bool reported_gemm_fallback = false;
 
     /// Adapts the Vulkan allocator to the backend-agnostic Allocator interface.
     class StorageAllocator final : public vkml::Allocator {
@@ -2048,14 +2041,25 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 bool use_naive = kernel_choice == 0;
                 bool use_tiled = kernel_choice == 1;
                 if ((use_tiled && !tiled_fits) || (!use_naive && !use_tiled && !reg_fits)) {
-                    if (!impl_->reported_gemm_fallback) {
-                        impl_->reported_gemm_fallback = true;
-                        VKML_LOG_INFO("matmul: the {} kernel needs {} invocations and the device "
-                                      "allows {}; using the naive kernel at {} for every matmul "
-                                      "on this device",
-                                      use_tiled ? "tiled" : "register-blocked",
-                                      use_tiled ? kTile * kTile : kRegWg, max_invocations, wg);
-                    }
+                    // Publish the fact and nothing else. This site does not know
+                    // whether anyone is listening, how often a reader wants to
+                    // hear it, or where it is rendered -- all three were its
+                    // business before and none of them belonged here
+                    // (docs/OBSERVABILITY-ARCHITECTURE.md 4a).
+                    //
+                    // The numbers are what make it checkable: `required` against
+                    // `available` can be contradicted by what the driver reports
+                    // about the pipeline that was actually created, which a
+                    // prose sentence cannot.
+                    observe::publish({
+                        .site = "matmul.kernel",
+                        .op = "matmul",
+                        .chose = "gemm_naive",
+                        .instead_of = use_tiled ? "gemm_tiled" : "gemm_reg",
+                        .because = "needs more workgroup invocations than the device allows",
+                        .required = use_tiled ? kTile * kTile : kRegWg,
+                        .available = max_invocations,
+                    });
                     use_naive = true;
                     use_tiled = false;
                 }

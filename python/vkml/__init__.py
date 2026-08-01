@@ -138,6 +138,15 @@ set_eager = _C.set_eager
 is_eager = _C.is_eager
 set_log_level = _C.set_log_level
 LogLevel = _C.LogLevel
+
+# The decision recorder. Exported unconditionally and NOT under `has_vulkan`:
+# decisions are published from any layer, so a CPU-only build has them too, and
+# gating them on Vulkan would misdescribe what they observe.
+configuration = _C.configuration
+record_decisions = _C.record_decisions
+stop_recording_decisions = _C.stop_recording_decisions
+decisions = _C.decisions
+decisions_published = _C.decisions_published
 available_devices = _C.available_devices
 cpu = _C.cpu_device()
 

@@ -56,6 +56,76 @@ executed, because it rebuilt one extension and pytest imported another.
 None was visible from a green run. All three were found by breaking something
 on purpose.
 
+It keeps happening, including to gates written *by* someone applying this
+principle. `check_min_spec.py` was written to catch a CI arm going missing; its
+negative control removed `VKML_MIN_SPEC=1` from the command and the gate stayed
+green, because the step's own comment still explained `VKML_MIN_SPEC=1` and the
+check was reading the whole step. **It was matching the prose about the thing
+instead of the thing.** Eleven minutes old, already dead, and it would have
+looked correct forever. Assume this of every new gate until its control has
+been run.
+
+### Verification code deserves the same skepticism as production code
+
+This is the general lesson, and it took a run of failures to see it as one
+pattern rather than a run of bad luck:
+
+| The verifier | What was wrong with it |
+|---|---|
+| `check_docs_links.py` | printed its findings, never called exit |
+| `check_docs_examples` | reported PASS over content it never opened |
+| `mutation_check.py` | rebuilt one extension, tested another |
+| the typography probe | measured the sidebar, not the reading column |
+| a red test, twice | read `$?` from the end of a pipe, not from the gate |
+| `check_min_spec.py` | matched the step's comment, not its command |
+| `check_gate_coverage.py` | let an exemption cancel the requirement it explained |
+| the min-spec gate's skip path | treated "I could not run this" as "nothing to check" |
+
+Every one of these was written *by someone who knew this principle*, and every
+one looked correct. Verification code gets less scrutiny than production code —
+no user runs it, no test covers it, and its output is a single line most people
+only read when it is red. That is exactly the environment in which a thing
+quietly stops working.
+
+So: a gate is not a place to relax, it is a place to be more careful than usual.
+Write the control before believing the check. When a verifier reports success,
+ask what it would have done if the answer were unavailable — because reporting
+"I cannot verify this" is worth far more than assuming success, and the failure
+is silent in both directions.
+
+### A different accessor is not a different owner
+
+The subtlest form of a verifier that cannot fail: two sources agree, and the
+agreement means nothing because they were never independent.
+
+It was caught in the observability design before anything was built on it. The
+proposed check was that a recorded decision naming `gemm_reg` could be validated
+against `vulkan_pipeline_stats` showing that pipeline exists. Two APIs, two
+owners, apparently a cross-check — except that *both* derive from the same
+`pipes.get("gemm_reg")` call. They cannot disagree, so the check proves nothing.
+What **is** independent is what the driver reports about the compiled pipeline
+(`vkGetPipelineExecutableStatisticsKHR`) and what the profiler counts
+(8 dispatches for 8 split-K partitions): different producers, capable of
+contradiction.
+
+The pattern predates observability, and recognising it is the reason several
+things here were rebuilt:
+
+- the mutation campaign rebuilt one extension and tested another — two paths that
+  looked like one system
+- `check_min_spec.py` compared a step's comment against its command, both
+  written by the same hand at the same moment
+- the coverage matrix and the tests it measured shared their notion of what an
+  operator was
+
+**Before calling something a validation, name the two producers and show they can
+disagree.** If a single change would move both sides together, there is one
+source of truth wearing two hats, and the comparison is decoration.
+
+The general form is worth keeping in mind wherever independence is claimed:
+two accessors over the same state, two documents generated from the same
+template, two tests exercising the same helper.
+
 **Enforced by:** `scripts/verify_gates.py`, in CI. It damages a file, runs the
 gate, checks the exit status and restores. A gate that cannot fail fails the
 build. A gate with no control is reported as unverified rather than omitted.

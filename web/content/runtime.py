@@ -309,3 +309,81 @@ RT["set_log_level"] = {
             "dispatch with its shape and grid.",
     "see": ["vulkan_stats"],
 }
+
+
+# ---------------------------------------------------------------------------
+# The decision recorder (docs/OBSERVABILITY-ARCHITECTURE.md)
+# ---------------------------------------------------------------------------
+#
+# Not prefixed `vulkan_`, and that is deliberate: decisions are published from
+# any layer, so a CPU-only build has them too.
+
+RT["record_decisions"] = {
+    "summary": "Begin recording what the engine chooses, and instead of what.",
+    "detail": "vkML makes choices a caller cannot see — which matmul kernel fits the device, "
+              "whether split-K participates, which memory kind an allocation really got. Those "
+              "used to exist only as log text, which nothing could assert on and which pytest "
+              "captures away entirely. Recording turns them into structured facts you can read.\n\n"
+              "The window is bounded and the oldest entry is dropped, because unbounded history "
+              "would make this a tracing system rather than an answer to *why did that happen*.",
+    "params": [("capacity", "int = 256", "How many decisions to keep.")],
+    "note": "Recording does not silence the log — the two are independent renderings of the "
+            "same fact.",
+    "tip": "Measured cost: 58.8 ns to publish a decision with nobody recording, 131.7 ns while "
+           "recording, so the recorder itself adds about 73 ns per decision. Against a "
+           "millisecond-scale operation that is unmeasurable; against a microsecond-scale one it "
+           "would not be. Decisions are published for coarse choices, which is why recording is "
+           "safe to leave on while you investigate.",
+    "see": ["decisions", "decisions_published", "stop_recording_decisions",
+            "vulkan_pipeline_stats"],
+}
+
+RT["decisions"] = {
+    "summary": "What the engine recently chose, oldest first.",
+    "detail": "Each entry carries `site` (where the choice was made), `op` (the operation it was "
+              "made for), `chose`, `instead_of`, `because`, and the numbers that forced it — "
+              "`required` against `available`. The numbers are the point: they can be "
+              "contradicted by what the driver independently reports about the pipeline that was "
+              "actually created, which a prose reason cannot.",
+    "returns": "A list of dicts, oldest first.",
+    "note": "A decision is a claim the engine makes about itself. It is checked against facts "
+            "with a different owner — `vulkan_pipeline_stats` reports what the *driver* saw in "
+            "the compiled pipeline, and `vulkan_last_profile` counts dispatches — because two "
+            "accessors over the same decision could never disagree.",
+    "see": ["record_decisions", "decisions_published", "vulkan_pipeline_stats",
+            "vulkan_last_profile"],
+}
+
+RT["decisions_published"] = {
+    "summary": "How many decisions were published since recording began, including evicted ones.",
+    "detail": "Compare with `len(decisions())` to tell a full window from a complete history. A "
+              "reader who cannot make that distinction will draw conclusions from a truncated "
+              "record without knowing it.",
+    "returns": "An integer count.",
+    "see": ["decisions", "record_decisions"],
+}
+
+RT["stop_recording_decisions"] = {
+    "summary": "Stop recording and release the window.",
+    "see": ["record_decisions"],
+}
+
+
+RT["configuration"] = {
+    "summary": "Every environment switch this process has consulted, and what it saw.",
+    "detail": "Eighteen `VKML_*` variables change what vkML does, and none of them used to be "
+              "visible in a running process. `VKML_GEMM_NOVEC=1` costs a measured 14.6% on a "
+              "1024-cubed matmul and left no trace anywhere — the same signature as a code "
+              "regression, and impossible to rule out after the fact.\n\n"
+              "Entries are OBSERVED, not declared: one appears because something read it, "
+              "recorded inside the project's single `getenv`. A hand-written list of switches "
+              "would be a second model of vkML's configuration and would go stale the first time "
+              "somebody added one.",
+    "returns": "A list of dicts with `name`, `value` and `set`.",
+    "note": "`set` distinguishes unset from set-to-empty, which is the difference between "
+            "*the default applied* and *nobody looked*.",
+    "warning": "A switch appears only once it has been consulted. Several are read lazily on "
+               "first use, so ask after the work you care about rather than at startup — a "
+               "matmul is what makes the GEMM switches appear.",
+    "see": ["decisions", "record_decisions"],
+}

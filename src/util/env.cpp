@@ -1,8 +1,46 @@
 #include "vkml/util/env.h"
 
 #include <cstdlib>
+#include <map>
+#include <mutex>
 
 namespace vkml {
+namespace {
+
+/// The switches this process has consulted. Guarded because env_value is called
+/// from static initialisers on several threads' first touch; not on any hot
+/// path, since every caller caches the result in a `static const`.
+std::mutex& env_lock() {
+    static std::mutex m;
+    return m;
+}
+
+std::map<std::string, ObservedSwitch>& observed() {
+    static std::map<std::string, ObservedSwitch> m;
+    return m;
+}
+
+}  // namespace
+
+std::vector<ObservedSwitch> observed_environment() {
+    std::lock_guard<std::mutex> g(env_lock());
+    std::vector<ObservedSwitch> out;
+    out.reserve(observed().size());
+    for (const auto& [_, s] : observed()) {
+        out.push_back(s);
+    }
+    return out;
+}
+
+
+namespace {
+/// Records what a read saw. Called from env_value only, which is the project's
+/// single getenv, so nothing can consult a switch without appearing here.
+void note(const char* name, const std::optional<std::string>& value) {
+    std::lock_guard<std::mutex> g(env_lock());
+    observed()[name] = ObservedSwitch{name, value.value_or(std::string()), value.has_value()};
+}
+}  // namespace
 
 std::optional<std::string> env_value(const char* name) {
     if (name == nullptr) {
@@ -32,10 +70,13 @@ std::optional<std::string> env_value(const char* name) {
 #    pragma warning(pop)
 #endif
 
-    if (raw == nullptr) {
-        return std::nullopt;
-    }
-    return std::string(raw);
+    // Recorded on BOTH paths. An unset switch is a fact too: it is the
+    // difference between "the default applied" and "nobody looked", and a
+    // reader who cannot tell them apart cannot interpret a baseline.
+    const std::optional<std::string> value =
+        raw == nullptr ? std::nullopt : std::optional<std::string>(raw);
+    note(name, value);
+    return value;
 }
 
 bool parse_env_flag(const char* raw, bool fallback) noexcept {

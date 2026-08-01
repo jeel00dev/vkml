@@ -3,7 +3,10 @@
 #include "vkml/util/env.h"
 #include "vkml/util/assert.h"
 #include "vkml/util/log.h"
+#include "vkml/util/observe.h"
+#include "vkml/util/decisions.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -158,4 +161,117 @@ TEST_CASE("env_value distinguishes unset from set-but-empty") {
     // parse_env_flag("") and parse_env_int("") above.
     CHECK_FALSE(vkml::env_value("VKML_A_VARIABLE_NOTHING_WOULD_EVER_SET").has_value());
     CHECK_FALSE(vkml::env_value(nullptr).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// observe: decision facts
+// ---------------------------------------------------------------------------
+
+TEST_CASE("observe: publishing with no subscriber is inert") {
+    // The property the architecture depends on: a decision site publishes and
+    // learns nothing, including whether anyone is there. If this ever needed a
+    // guard at the call site, the coupling this header exists to prevent would
+    // have started (docs/OBSERVABILITY-ARCHITECTURE.md 4a).
+    vkml::observe::subscribe(nullptr);
+    CHECK_FALSE(vkml::observe::enabled());
+    vkml::observe::publish({.site = "test.inert", .chose = "nothing"});
+}
+
+TEST_CASE("observe: a subscriber receives the fact it was published") {
+    std::vector<std::string> seen;
+    vkml::observe::subscribe([&](const vkml::observe::Decision& d) {
+        seen.push_back(std::string(d.site) + ":" + std::string(d.chose) + "/" +
+                       std::string(d.instead_of) + " " + std::to_string(d.required) + ">" +
+                       std::to_string(d.available));
+    });
+    CHECK(vkml::observe::enabled());
+
+    vkml::observe::publish({.site = "matmul.kernel",
+                            .op = "matmul",
+                            .chose = "gemm_naive",
+                            .instead_of = "gemm_reg",
+                            .because = "needs more invocations than the device allows",
+                            .required = 256,
+                            .available = 128});
+
+    REQUIRE(seen.size() == 1);
+    // The numbers are the point. A prose reason cannot be checked against what
+    // the driver independently reports; 256 against 128 can.
+    CHECK(seen[0] == "matmul.kernel:gemm_naive/gemm_reg 256>128");
+    vkml::observe::subscribe(nullptr);
+}
+
+TEST_CASE("observe: a throwing subscriber cannot break the observed operation") {
+    // Observation must never become a failure mode of the thing observed. A
+    // matmul that fails because something was watching it is worse than no
+    // observability at all.
+    vkml::observe::subscribe([](const vkml::observe::Decision&) {
+        throw std::runtime_error("subscriber failure");
+    });
+    vkml::observe::publish({.site = "test.throwing", .chose = "x"});
+    vkml::observe::subscribe(nullptr);
+    CHECK_FALSE(vkml::observe::enabled());
+}
+
+TEST_CASE("observe: unsubscribing leaves no live flag over a dead sink") {
+    vkml::observe::subscribe([](const vkml::observe::Decision&) {});
+    CHECK(vkml::observe::enabled());
+    vkml::observe::subscribe(nullptr);
+    CHECK_FALSE(vkml::observe::enabled());
+    vkml::observe::publish({.site = "test.after", .chose = "y"});
+}
+
+TEST_CASE("decisions: the recorder is a consumer and keeps a bounded window") {
+    vkml::observe::start_recording(3);
+    CHECK(vkml::observe::recording());
+    for (int i = 0; i < 5; ++i) {
+        vkml::observe::publish({.site = "test.ring", .chose = "x", .required = i});
+    }
+    // Five published, three kept: the window must say so rather than let a
+    // reader mistake a truncated history for a complete one.
+    CHECK(vkml::observe::published() == 5);
+    const auto got = vkml::observe::recorded();
+    REQUIRE(got.size() == 3);
+    CHECK(got.front().required == 2);   // oldest survivor
+    CHECK(got.back().required == 4);    // newest
+    CHECK(got.front().seq == 3);        // seq survives eviction
+    CHECK(got.back().seq == 5);
+    vkml::observe::stop_recording();
+    CHECK_FALSE(vkml::observe::recording());
+    CHECK(vkml::observe::recorded().empty());
+}
+
+TEST_CASE("decisions: recorded facts own their strings") {
+    vkml::observe::start_recording(4);
+    {
+        // A published Decision carries string_views. If the recorder kept the
+        // views rather than copying, this scope ending would dangle them.
+        std::string site = "test.owned";
+        std::string chose = "copied";
+        vkml::observe::publish({.site = site, .chose = chose});
+    }
+    const auto got = vkml::observe::recorded();
+    REQUIRE(got.size() == 1);
+    CHECK(got[0].site == "test.owned");
+    CHECK(got[0].chose == "copied");
+    vkml::observe::stop_recording();
+}
+
+TEST_CASE("decisions: recording does not silence the default renderer") {
+    // Two renderings of one fact are independent. An earlier draft made a
+    // subscriber REPLACE the default, so installing the recorder would have
+    // stopped a min-spec user being told about the kernel fallback.
+    std::vector<std::string> logged;
+    vkml::set_log_callback([&](vkml::LogLevel, std::string_view m) {
+        logged.emplace_back(m);
+    });
+    vkml::observe::start_recording(4);
+    vkml::observe::publish({.site = "test.both",
+                            .chose = "a",
+                            .instead_of = "b",
+                            .because = "reason"});
+    vkml::observe::stop_recording();
+    vkml::set_log_callback(nullptr);
+    CHECK(std::any_of(logged.begin(), logged.end(),
+                      [](const std::string& m) { return m.find("test.both") != std::string::npos; }));
 }
