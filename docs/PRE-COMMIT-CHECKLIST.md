@@ -131,6 +131,7 @@ python scripts/check_docs_references.py
 python scripts/check_docs_examples.py     # needs a built extension
 python scripts/check_versions.py
 python scripts/check_design_system.py   # font/colour scale
+python scripts/verify_gates.py          # every gate proves it can fail
 python scripts/check_file_ownership.py    # root-owned files from a container run
 python web/build.py && python scripts/check_source_links.py
 

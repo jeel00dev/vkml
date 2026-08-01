@@ -110,6 +110,14 @@ python scripts/mutation_check.py           # are the tests capable of failing?
 python scripts/coverage_matrix.py          # operator coverage vs baseline
 ```
 
+**Every mechanism proves itself by failing first.** A gate, test, benchmark or
+validator that has never been demonstrated to fail has never been demonstrated
+to work — and this project has now found three that were doing nothing while
+reporting green. `check_docs_links.py` printed the broken links it found and
+exited 0 for its entire life. `scripts/verify_gates.py` breaks something on
+purpose for each gate and reports the exit status, so "verified" is a result
+rather than a claim. A new gate is not done until it has a control there.
+
 `mutation_check.py` is the one people skip and shouldn't. A green suite proves
 the tests ran, not that they *can* fail — see `docs/MEASUREMENT-AUDIT.md` rule
 10. Breaking the thing a new test guards, and watching it go red, is the

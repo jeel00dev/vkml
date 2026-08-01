@@ -105,6 +105,11 @@ Ask: does this check the whole class, or only the instance I happened to hit?
 
 ## 9. Every gate must be validated
 
+> This one has outgrown the documentation. It is now a project-wide engineering
+> principle in `CLAUDE.md`, and `scripts/verify_gates.py` enforces it: it breaks
+> something on purpose for each gate and reports the exit status, so a gate that
+> cannot fail shows up as a failure of the dashboard.
+
 A gate that has never failed is a gate that has never been shown to work. Break
 the thing it guards, watch it go red, restore, watch it go green.
 
