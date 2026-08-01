@@ -298,6 +298,7 @@ deliberate divergence exists it is stated on the operator's own page.</p>
 """
 
 
+from .arch_overview import PAGE as ARCH_OVERVIEW  # noqa: E402
 from .arch_autograd import PAGE as ARCH_AUTOGRAD  # noqa: E402
 from .arch_cpu import PAGE as ARCH_CPU  # noqa: E402
 from .arch_numerics import PAGE as ARCH_NUMERICS  # noqa: E402
@@ -317,6 +318,7 @@ PAGES: list[tuple[str, str, str]] = [
     ("performance", "Performance", GUIDE_PERF),
     ("testing", "Testing and verification", GUIDE_TESTING),
     ("contributing", "Adding an operator", GUIDE_CONTRIBUTING),
+    ("arch-overview", "Architecture overview", ARCH_OVERVIEW),
     ("arch-tensor", "Tensors, storage and views", ARCH_TENSOR),
     ("arch-graph", "The lazy graph and execution", ARCH_GRAPH),
     ("arch-autograd", "Autograd", ARCH_AUTOGRAD),

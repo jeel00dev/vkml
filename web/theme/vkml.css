@@ -673,3 +673,32 @@ dl.legend dd { margin: 0; color: var(--fg-muted); font-size: var(--fs-4); }
 .limit h3 { margin-top: 0; display: flex; align-items: center; gap: var(--s-3);
             flex-wrap: wrap; }
 .limit .src { margin: 0; font-size: var(--fs-3); }
+
+/* ------------------------------------------------------------- diagrams -- */
+
+/* Inlined SVG, so it inherits the theme's variables and is correct in both
+   without a second file. Everything is drawn with tokens rather than literal
+   colours -- a diagram with baked-in greys is the one element that stays dark
+   when the page goes light. */
+.dia { display: block; width: 100%; height: auto; margin: var(--s-5) 0;
+       max-width: 40rem; }
+.dia-box { fill: var(--bg-panel); stroke: var(--border-strong); }
+/* A declared layer with no files in it. Drawn as absent rather than omitted:
+   `plan` is in the enforced layer order and has nothing in it yet, and hiding
+   that would make the diagram tidier than the tree. */
+.dia-box-empty { fill: none; stroke-dasharray: 3 3; }
+.dia-edge { fill: none; stroke: var(--accent); opacity: .38; }
+.dia-name { fill: var(--fg-strong); font: var(--fw-medium) var(--fs-3) var(--mono); }
+.dia-lv   { fill: var(--fg-muted); font: var(--fw-medium) var(--fs-2) var(--mono); }
+.dia-meta { fill: var(--fg-muted); font: var(--fs-2) var(--mono); }
+.dia-cap  { fill: var(--fg-muted); font: var(--fs-1) var(--sans);
+            text-transform: uppercase; letter-spacing: .08em; }
+
+/* A caption belongs to the diagram above it, so it sits tight to it. */
+.dia + .dia-note { margin-top: calc(var(--s-4) * -1); color: var(--fg-muted);
+                   font-size: var(--fs-3); }
+
+@media (prefers-reduced-motion: no-preference) {
+    .dia-edge { transition: opacity .2s; }
+}
+.dia:hover .dia-edge { opacity: .55; }

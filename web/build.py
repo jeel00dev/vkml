@@ -43,6 +43,7 @@ sys.path.insert(0, str(ROOT / "python"))
 sys.path.insert(0, str(WEB))
 
 import vkml as V  # noqa: E402
+import diagrams as DIA  # noqa: E402
 import research as R  # noqa: E402
 from content import CLASSES, PAGES, PROSE  # noqa: E402
 
@@ -287,6 +288,24 @@ def code_block(src: str, repl: bool = False) -> str:
 
 
 # ------------------------------------------------------------------ markup --
+
+
+def with_diagrams(body: str, where: str) -> str:
+    """Replace {{diagram:name}} with the SVG that `diagrams.py` generates.
+
+    A page asks for a diagram by name and gets whatever the tree says today.
+    An unknown name raises rather than rendering the placeholder as visible
+    text -- a typo should stop the build, not ship as `{{diagram:layer_stak}}`
+    in the middle of a paragraph.
+    """
+    def sub(m: re.Match) -> str:
+        name = m.group(1)
+        fn = getattr(DIA, name, None)
+        if fn is None:
+            raise SystemExit(f"{where}: no diagram named {name!r} in web/diagrams.py")
+        return fn()
+
+    return re.sub(r"\{\{diagram:(\w+)\}\}", sub, body)
 
 
 def with_heading_ids(body: str) -> str:
@@ -690,7 +709,7 @@ def class_slug(name: str) -> str:
 NAV_SECTIONS: list[tuple[str, list[str]]] = [
     ("Learn", ["get-started", "concepts", "compatibility"]),
     ("Capabilities", ["capabilities", "limitations"]),
-    ("Architecture", ["arch-tensor", "arch-graph", "arch-autograd", "arch-cpu",
+    ("Architecture", ["arch-overview", "arch-tensor", "arch-graph", "arch-autograd", "arch-cpu",
                       "arch-vulkan", "arch-shaders", "arch-numerics"]),
     ("Project", ["performance", "testing", "contributing", "reference-env"]),
 ]
@@ -1436,6 +1455,7 @@ def build() -> int:
               page=slug, index_json=index_json)
 
     for slug, title, body in list(PAGES) + capability_pages():
+        body = with_diagrams(body, slug)
         body = with_heading_ids(body)
         heads = [
             (m.group(1), re.sub(r"<[^>]+>", "", m.group(2)), 2)
