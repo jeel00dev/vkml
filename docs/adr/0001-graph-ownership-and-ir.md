@@ -174,6 +174,29 @@ Small, cheap commitments that keep the M5 lowering from becoming a refactor:
 1. **`Node` must not appear in the public Tensor API.** `include/vkml/api/tensor.h` exposes
    no `Node`, `NodePtr`, or graph header. Swapping the internal representation then cannot
    break the ABI or the bindings.
+
+   > **Amended 2026-08-01, after an audit checked it against the code.** Half of this
+   > holds and half does not, and the difference matters for M5.
+   >
+   > Holds: `tensor.h` includes no graph header, and `Node` is a forward declaration
+   > (`struct Node;`, line 21) that is never completed there. Its *layout* is therefore
+   > genuinely replaceable — no caller can name a field.
+   >
+   > Does not hold: the *ownership model* is in the public signature.
+   > `Tensor::node()` returns `const std::shared_ptr<Node>&` (line 187), the converting
+   > constructor takes `std::shared_ptr<Node>` (line 46), and the member is one (line 190).
+   > The bindings use it too — `bindings/module.cpp:590` collects `t.node()` into the
+   > vector passed to `vkml::realize(std::span<const NodePtr>)` for multi-root realize.
+   >
+   > So "swapping the internal representation cannot break the ABI or the bindings" is
+   > too strong as written. Option B above — an arena with `uint32` handles — would
+   > change both. What is actually guaranteed is narrower: node CONTENTS are free to
+   > change, node OWNERSHIP is not.
+   >
+   > This was not true when the ADR was written; `.node()` reached the binding layer
+   > with the multi-root realize of ADR 0006's stage B, and nothing brought the question
+   > back here. Whether to narrow the API to restore the original guardrail is a design
+   > decision and is tracked separately, not decided by this note.
 2. **Nodes are immutable after construction**, except for the realisation fields
    (`storage`, `storage_offset`). Documented on the type. This is what makes it safe for
    two Tensors to share a node, for passes to assume a node never changes underneath them,
