@@ -395,9 +395,14 @@ pre:hover .copy { opacity: 1; }
 .admon { margin: 1.25rem 0; border: 1px solid var(--border);
          border-left: 4px solid var(--fg-muted); border-radius: var(--radius);
          overflow: hidden; background: var(--bg-panel); }
-.admon .label { display: flex; align-items: center; gap: .45rem; padding: .45rem .85rem;
+/* Horizontal padding clears the 4px accent bar rather than sitting on it.
+   .85rem left only 13.6px between a coloured edge and the text, and inline
+   code chips carry their own background, so a chip on the first line read as
+   touching the border. The bar is decoration; the text should not appear to
+   start inside it. */
+.admon .label { display: flex; align-items: center; gap: .45rem; padding: .45rem 1.15rem;
                 font: var(--fw-semibold) var(--fs-3)/1.4 var(--sans); color: var(--fg-strong); }
-.admon .body { padding: .75rem .85rem; border-top: 1px solid var(--border); }
+.admon .body { padding: .8rem 1.15rem; border-top: 1px solid var(--border); }
 .admon .body > :last-child { margin-bottom: 0; }
 .admon.warn { border-left-color: var(--warn-edge); }
 .admon.warn .label { background: var(--warn-bar); color: var(--warn-fg); }
