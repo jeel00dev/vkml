@@ -254,8 +254,12 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
 .sidenav > h2 { margin: 0 0 1rem; padding: 0 1.2rem; border: 0;
                 font: var(--fw-semibold) var(--fs-5)/1 var(--sans); color: var(--fg-strong); }
 
-/* Section headings -- PyTorch's "Core", "C++ Frontend", "Extensions". */
-.sidenav .sect { margin: 1.4rem 0 .35rem; padding: 0 1.2rem;
+/* Section headings -- PyTorch's "Core", "C++ Frontend", "Extensions".
+   Targets h3 as well as .sect: the builder emits a bare <h3>, and
+   `class="sect"` appeared ZERO times in the built site, so this rule styled
+   markup that does not exist and the headings rendered flush against the
+   panel edge with no padding at all. */
+.sidenav h3, .sidenav .sect { margin: 1.4rem 0 .35rem; padding: 0 1.2rem;
                  font: 700 var(--fs-3)/1 var(--sans); color: var(--fg-strong); }
 .sidenav ol { list-style: none; margin: 0; padding: 0; }
 
@@ -292,7 +296,13 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
 .grp.closed > button .chev { transform: rotate(-90deg); }
 .grp.closed > ol { display: none; }
 
-.content { flex: 1 1 auto; min-width: 0; padding: 1.6rem 3rem 5rem; }
+/* The box is capped as well as the measure. Previously `.content` grew to
+   fill while its children stopped at --measure, so on a wide window the
+   leftover space collected as one dead gap between the prose and the table
+   of contents. Capping the box and centring it splits that slack evenly,
+   which is what makes the column look deliberate rather than pushed left. */
+.content { flex: 1 1 auto; min-width: 0; padding: 1.6rem 3rem 5rem;
+           max-width: calc(var(--measure) + 6rem); margin-inline: auto; }
 .content > * { max-width: var(--measure); }
 .content > .wide, .content > .hero, .content > .cards, .content > .pagenav { max-width: none; }
 

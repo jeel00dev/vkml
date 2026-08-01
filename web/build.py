@@ -284,6 +284,29 @@ def highlight(src: str) -> str:
 REPL_LINE = re.compile(r"^(>>> |\.\.\. )(.*)$")
 
 
+RAW_PRE = re.compile(r"<pre><code>(.*?)</code></pre>", re.S)
+
+
+def highlight_raw_blocks(html_text: str) -> str:
+    """Colour <pre><code> written by hand in web/content/.
+
+    WHY. Content files may contain literal HTML, and a hand-written
+    <pre><code> never reaches code_block(), so it never reaches highlight().
+    That is how index.html shipped with ZERO token spans while the rest of the
+    site had 1291 -- the highlighter was fine; the content walked around it.
+
+    Fixing it here rather than in the content keeps ONE renderer: any block
+    added by hand in future is coloured for free instead of depending on the
+    author remembering. The source inside is already escaped, so it is
+    unescaped before tokenising and re-escaped by highlight() as it goes.
+    """
+    def paint(m: re.Match) -> str:
+        src = html.unescape(m.group(1))
+        return f"<pre><code>{highlight(src)}</code></pre>"
+
+    return RAW_PRE.sub(paint, html_text)
+
+
 def code_block(src: str, repl: bool = False) -> str:
     src = src.strip("\n")
     copy = '<button class="copy" type="button">copy</button>'
@@ -1520,6 +1543,7 @@ def build() -> int:
 
     for slug, title, body in all_pages:
         body = with_diagrams(body, slug)
+        body = highlight_raw_blocks(body)
         body = with_heading_ids(body)
         # Prev/next, so the guide reads straight through as well as by search.
         # `pagenav()` and its eight CSS rules existed and were called from
