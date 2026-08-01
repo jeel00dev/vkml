@@ -52,6 +52,12 @@ def main() -> int:
     bad: list[str] = []
     for p in sorted(SITE.glob("*.html")):
         for href in re.findall(r'href="([^"]+)"', p.read_text(errors="ignore")):
+            # Strip a cache-busting query string. The stylesheet ships as
+            # theme/vkml.css?v=<hash> so a changed file is a different URL and
+            # browsers cannot serve a stale one; the file on disk is still
+            # theme/vkml.css, and treating the query as part of the path made
+            # this gate report all 58 pages as broken.
+            href = href.split("?", 1)[0]
             if href.startswith(("http", "#", "mailto")):
                 continue
             f, _, frag = href.partition("#")

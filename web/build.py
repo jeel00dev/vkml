@@ -22,6 +22,7 @@ Where prose is missing the page SAYS SO, in place, and the run prints coverage.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import inspect
 import json
@@ -305,6 +306,23 @@ def highlight_raw_blocks(html_text: str) -> str:
         return f"<pre><code>{highlight(src)}</code></pre>"
 
     return RAW_PRE.sub(paint, html_text)
+
+
+def css_version() -> str:
+    """A short hash of the stylesheet, appended to its own URL.
+
+    WHY THIS EXISTS. Three consecutive UI fixes shipped correctly, deployed
+    successfully, and were invisible to the person who reported the bugs --
+    because the href never changed, so the browser kept serving the stylesheet
+    it already had. Every fix was real and none of them could be seen.
+
+    "Tell the user to hard-refresh" is not a fix; it makes every reader of the
+    site responsible for a build problem. Hashing the content into the URL
+    means a changed stylesheet is a different resource, so the browser fetches
+    it and an unchanged one still caches for free.
+    """
+    css = (ROOT / "web" / "theme" / "vkml.css").read_bytes()
+    return hashlib.sha256(css).hexdigest()[:8]
 
 
 def code_block(src: str, repl: bool = False) -> str:
@@ -936,7 +954,7 @@ SHELL = """<!doctype html>
 <meta name="twitter:title" content="{ogtitle}">
 <meta name="twitter:description" content="{desc}">
 <meta name="twitter:image" content="{site}/assets/og-card.png">
-<link rel="stylesheet" href="theme/vkml.css">
+<link rel="stylesheet" href="theme/vkml.css?v={css_version}">
 </head>
 <body class="{bodycls}">
 <header class="topbar">
@@ -1013,6 +1031,7 @@ def write(
             apicls="active" if page == "api" else "",
             # The landing page is not a documentation page: it drops the
             # section tree and the measure clamp, and centres on the viewport.
+            css_version=css_version(),
             bodycls="landing" if page == "index" else "",
             page=page,
             site=SITE_URL,
