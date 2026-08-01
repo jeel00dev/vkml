@@ -64,6 +64,16 @@ jobs:
       - name: Push-constant budget
         run: python scripts/check_push_constants.py
 
+      # The other half of the same problem. check_push_constants reads one limit
+      # out of the GLSL; VKML_MIN_SPEC makes a live device report ALL of them at
+      # the guaranteed floor, which is how the suite tests the case no machine
+      # here has. Without a device this checks the part it still can -- that the
+      # facility exists, and that a job somewhere actually runs the suite under
+      # it. Both were true of nothing until now: five months after #21 closed,
+      # VKML_MIN_SPEC appeared in no script and no workflow.
+      - name: Minimum-spec facility
+        run: python scripts/check_min_spec.py
+
       # ADR 0005: GEMM accumulators must forbid FMA contraction. The decoration
       # is invisible in behaviour on RADV -- byte-identical machine code either
       # way -- so a variant that omitted it would pass every test here and
@@ -116,6 +126,18 @@ jobs:
       # exit status, so a gate that has gone blind fails the build.
       - name: Verification dashboard
         run: python scripts/verify_gates.py
+
+      # The other half of that question. verify_gates asks whether each gate CAN
+      # fail; this asks whether anything ever gives it the chance. Two gates
+      # were found in that state -- one of them the very gate the step above
+      # names as the reason it exists -- and neither was visible from reading
+      # either file, only from putting the two sets side by side.
+      #
+      # It also replaces a claim that nothing checked: PRE-COMMIT-CHECKLIST
+      # section 6 lists "the gates CI runs anyway" by hand, and was missing
+      # three of them.
+      - name: Gate coverage
+        run: python scripts/check_gate_coverage.py
 
       # LAST, deliberately: it checks what the steps above just wrote. While this
       # container ran as root it left root-owned build output in the bind-mounted
@@ -207,6 +229,25 @@ jobs:
         run: |
           python web/build.py
           python scripts/check_source_links.py
+
+      # Both of these could fail and neither was ever given the chance.
+      #
+      # check_docs_links.py was the gate that exited 0 for its entire life. It
+      # was fixed, and a control in verify_gates.py proves it can fail -- but
+      # nothing ran it over the real site. A broken link would still have failed
+      # the build, as an accident of the dashboard re-running it after restoring
+      # its own damage, and the message would have read "the gate stayed red
+      # after the damage was reverted", which names the wrong cause.
+      #
+      # docs_graph.py --check has a baseline, a governance rule and a manual
+      # entry in the dashboard, and was executed by nothing at all. New orphans
+      # were unguarded the whole time.
+      #
+      # Same build as the step above, so the site is already there.
+      - name: Documentation link graph
+        run: |
+          python scripts/check_docs_links.py
+          python scripts/docs_graph.py --check
 
       - name: Run validation suite
         # Coverage is recorded on the same run: it costs nothing measurable and
@@ -546,6 +587,36 @@ jobs:
         if: always()
         run: |
           VKML_TEST_DEVICE=$VKML_INTEGRATED python -m pytest tests/python -q -m "not slow" \
+            --deselect "tests/python/test_nan_semantics.py::test_sign_matches_torch_including_the_zeros[vulkan]"
+
+      - name: Suite at the Vulkan 1.3 guaranteed floor
+        # THE PROJECT'S MOST COMMON BUG has one shape: code written against what
+        # the development GPU reports rather than what Vulkan guarantees. Push
+        # constant budgets, subgroup ranges and workgroup widths have each been
+        # wrong that way, and each was found by somebody running vkml on hardware
+        # this project does not own.
+        #
+        # VKML_MIN_SPEC=1 makes any device report the Required Limits, so that
+        # class becomes reproducible on the hardware we do have. CLAUDE.md has
+        # told readers to run it before claiming a limit is satisfied since #21
+        # closed -- and nothing ran it. It appeared in no script and no workflow;
+        # one test used it in a subprocess, covering matmul and softmax.
+        # Knowledge that only exists as an instruction gets followed until the
+        # first busy week.
+        #
+        # The two arms above run the SAME code on two devices. This one runs it
+        # against a different set of limits, which is the axis those two cannot
+        # vary. Both GPUs here report 1024 invocations; a device at the floor
+        # reports 128, and the blocked GEMM does not fit in it.
+        #
+        # Cost is one more suite run on hardware already held for this job. If
+        # this ever fails, read it as a portability defect until proven
+        # otherwise: 1415 tests passed at the floor when it was written, so a
+        # new failure means something started assuming the development GPU.
+        if: always()
+        run: |
+          VKML_MIN_SPEC=1 VKML_TEST_DEVICE=$VKML_DISCRETE \
+            python -m pytest tests/python -q -m "not slow" \
             --deselect "tests/python/test_nan_semantics.py::test_sign_matches_torch_including_the_zeros[vulkan]"
 
   manylinux:

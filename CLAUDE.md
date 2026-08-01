@@ -148,9 +148,16 @@ why that is a reprieve rather than a solution to the general problem.
 `min(256, maxComputeWorkGroupInvocations)` and `matmul` falls back to the naive
 kernel where the blocked ones do not fit, so a minimum-spec device can train
 rather than fail at pipeline creation. **`VKML_MIN_SPEC=1` reports the Vulkan
-1.3 Required Limits on any device**, which is how that is now tested — run it
-before claiming a limit is satisfied, because it is the cheapest way to find the
-next instance of this project's most common bug.
+1.3 Required Limits on any device**, which is how that is tested.
+
+CI now runs the whole suite under it on real hardware, so that is no longer
+something to remember: 1415 tests pass at the guaranteed floor, and the 13 that
+do not are skipped by `requires_register_kernel` because they measure a kernel
+which cannot exist at 128 invocations. `scripts/check_min_spec.py` checks that
+the facility still lowers limits and that a job still runs under it — for five
+months after #21 closed, this paragraph was the only thing enforcing any of it,
+and nothing ran it. Locally it is still the cheapest way to find the next
+instance of this project's most common bug.
 
 **A rebuild is not necessarily what `import vkml` gives you.** `cmake --build`
 writes `python/vkml`; after `pip install -e .` the extension resolves from

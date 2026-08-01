@@ -119,6 +119,35 @@ CONTROLS: list[Control] = [
         artifacts="none -- this one guards the code",
     ),
     Control(
+        gate="check_gate_coverage.py",
+        guards="a gate that can fail but which nothing ever runs",
+        source_of_truth="scripts/ that exit non-zero, against the workflows' shell lines",
+        target=".github/workflows/ci.yml",
+        find="          python scripts/docs_graph.py --check\n",
+        replace="",
+        defect="a gate quietly dropped from CI, or added and never wired in -- "
+               "the state check_docs_links.py and docs_graph.py were both in",
+        artifacts="PRE-COMMIT-CHECKLIST section 6, which it makes checkable",
+    ),
+    Control(
+        gate="check_min_spec.py",
+        guards="the Vulkan guaranteed-floor facility silently ceasing to be "
+               "exercised, or to lower anything",
+        source_of_truth="the clamps in vk_device.cpp, and a live device",
+        target=".github/workflows/ci.yml",
+        find="VKML_MIN_SPEC=1 VKML_TEST_DEVICE",
+        replace="VKML_TEST_DEVICE",
+        defect="the suite no longer running at the floor, while the step that "
+               "used to do it is still there and still green",
+        artifacts="none -- it guards the test matrix's only limits axis",
+    ),
+    # The device half of that gate -- source declares a floor the running binary
+    # does not apply -- has an equally cheap control (edit 128U to 64U in
+    # vk_device.cpp; verified, exits 1 with the two numbers) but it needs a
+    # Vulkan device, and this dashboard runs in a job without one. It would
+    # report a missing GPU as a gate that cannot fail, which is a lie in the
+    # more dangerous direction.
+    Control(
         gate="docs_graph.py --check",
         guards="a page becoming unreachable from prose, or linking nowhere",
         source_of_truth="the built site's link graph",

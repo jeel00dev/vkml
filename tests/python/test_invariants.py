@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python")
 import vkml as V  # noqa: E402
 from conftest import TOLERANCES  # noqa: E402
 from vkvalidate import (VULKAN_DEVICE, gpu_device, requires_radv,  # noqa: E402
+                        requires_register_kernel,
                         requires_vulkan)
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -590,6 +591,7 @@ def test_profiler_reports_nonzero_for_a_real_dispatch():
 # too, but that is untested and I will not claim it.
 @requires_radv
 @requires_vulkan
+@requires_register_kernel
 def test_submit_window_bounds_concurrent_dispatches():
     """The submit window must be a TRUE upper bound on concurrent execution.
 
@@ -744,6 +746,7 @@ def _gemm_stats(env: dict[str, str], m: int, k: int, n: int) -> dict:
 @requires_vulkan
 @pytest.mark.slow
 @pytest.mark.parametrize("block,k,levels", [("2x2", 256, 4), ("2x2", 512, 6), ("2x2", 2048, 8)])
+@requires_register_kernel
 def test_register_model_predicts_vgpr_exactly(block, k, levels):
     """VGPR = RM*RN*STACK_LEVELS + C(RM,RN), with slope EXACTLY 1.0.
 
@@ -769,6 +772,7 @@ def test_register_model_predicts_vgpr_exactly(block, k, levels):
 @requires_radv
 @requires_vulkan
 @pytest.mark.slow
+@requires_register_kernel
 def test_high_occupancy_can_mean_spilling_not_efficiency():
     """The trap that makes `max_waves` unsafe to rank on.
 
@@ -792,6 +796,7 @@ def test_high_occupancy_can_mean_spilling_not_efficiency():
 @requires_radv
 @requires_vulkan
 @pytest.mark.slow
+@requires_register_kernel
 def test_split_k_removes_the_4x4_spill():
     """Split-K shortens STACK_LEVELS enough to unlock the 4x4 register block.
 
@@ -828,6 +833,7 @@ _C = {(2, 2): 18, (4, 2): 26, (2, 4): 23, (4, 4): 35, (2, 8): 35, (8, 2): 42}
 @pytest.mark.parametrize("block,k,levels", [
     ("2x4", 256, 4), ("2x4", 2048, 8), ("2x8", 256, 4), ("8x2", 256, 4),
 ])
+@requires_register_kernel
 def test_law1_vgpr_equals_stack_plus_constant(block, k, levels):
     """VGPR = RM*RN*STACK_LEVELS + C(RM,RN), slope exactly 1.000.
 
@@ -843,6 +849,7 @@ def test_law1_vgpr_equals_stack_plus_constant(block, k, levels):
 @requires_radv
 @requires_vulkan
 @pytest.mark.slow
+@requires_register_kernel
 def test_law4_spill_threshold_is_array_size_not_register_pressure():
     """The decisive pair. Same VGPR count, opposite spill outcome.
 
@@ -868,6 +875,7 @@ def test_law4_spill_threshold_is_array_size_not_register_pressure():
 @requires_radv
 @requires_vulkan
 @pytest.mark.slow
+@requires_register_kernel
 def test_register_cost_is_asymmetric_in_rm_and_rn():
     """RM costs materially more registers than RN.
 
@@ -939,6 +947,7 @@ def _split_decisions(shapes: list[tuple[int, int, int]]) -> dict[tuple, int]:
 @requires_radv
 @requires_vulkan
 @pytest.mark.slow
+@requires_register_kernel
 def test_split_k_heuristic_accepts_only_measured_wins():
     """Every shape split-K is enabled for measured >= 1.5x; every shape it
     declines measured <= 1.23x, including two that would have LOST (0.59x and

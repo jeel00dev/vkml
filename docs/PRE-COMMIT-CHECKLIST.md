@@ -123,6 +123,24 @@ have caused one (`docs/adr/0006` §7).
 
 ## 6. The gates CI runs anyway
 
+**This list is no longer the authority — `check_gate_coverage.py` is.** It
+derives the gates from the scripts that can exit non-zero and checks each one
+against what the workflows actually run, so the question "is this list still
+true?" has an answer that does not depend on anyone updating it:
+
+```sh
+python scripts/check_gate_coverage.py --list
+```
+
+It was written after the list below was found to be wrong in both directions:
+three gates CI runs were missing from it, and two gates listed nowhere were run
+by nothing at all — including `check_docs_links.py`, the gate this project cites
+as the reason `verify_gates.py` exists. A hand-maintained list of what is
+automated is the least likely list to stay true, because it has to be edited on
+exactly the days somebody is busy adding automation.
+
+The commands below are still the convenient local sweep:
+
 ```sh
 python scripts/check_layering.py
 python scripts/check_push_constants.py
@@ -131,9 +149,12 @@ python scripts/check_docs_references.py
 python scripts/check_docs_examples.py     # needs a built extension
 python scripts/check_versions.py
 python scripts/check_design_system.py   # font/colour scale
+python scripts/check_min_spec.py        # the Vulkan guaranteed floor is still tested
 python scripts/verify_gates.py          # every gate proves it can fail
+python scripts/check_gate_coverage.py   # ...and something actually runs it
 python scripts/check_file_ownership.py    # root-owned files from a container run
-python web/build.py && python scripts/check_source_links.py
+python web/build.py && python scripts/check_docs_links.py \
+  && python scripts/docs_graph.py --check && python scripts/check_source_links.py
 
 # POSIX shells, including Git Bash on Windows. CONTRIBUTING.md sec8 has the
 # PowerShell equivalent -- `find` and `xargs` do not exist there.
