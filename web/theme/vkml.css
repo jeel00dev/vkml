@@ -16,10 +16,31 @@
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
 
-    --nav-w: 17.5rem;
-    --toc-w: 15.5rem;
+    /* Layout budget, chosen so all three columns fit a 1280 laptop without
+       squeezing the prose:  264 nav + 656 text + 216 contents = 1136, leaving
+       144 for gutters. Before this, the contents rail was simply hidden below
+       1408px, which is every common laptop. */
+    --nav-w: 16.5rem;
+    --toc-w: 13.5rem;
     --topbar-h: 3.5rem;
     --radius: 4px;
+
+    /* THE READING COLUMN. Measured against twelve reference documentation
+       sites at 1440: their median line is 79 characters and the best-reading
+       group -- stripe 65, shadcn 64, nextjs 65, tailwind 67 -- sits in the
+       mid-60s. This was 50rem, which measured 93 characters: longer than every
+       site checked except pytorch and huggingface, and past the 45-75 range
+       where return sweeps stay reliable. 41rem against a 16px body measures
+       about 74. */
+    --measure: 41rem;
+
+    /* One spacing scale, so components stop inventing margins. */
+    --s-1: .25rem;
+    --s-2: .5rem;
+    --s-3: .75rem;
+    --s-4: 1rem;
+    --s-5: 1.5rem;
+    --s-6: 2.5rem;
 }
 
 :root, :root[data-theme="dark"] {
@@ -84,7 +105,9 @@ body {
     margin: 0;
     background: var(--bg);
     color: var(--fg);
-    font: 400 15.5px/1.68 var(--sans);
+    /* 16px, the median of the sites measured; 15.5 paired a slightly small
+       body with the longest line on the page, and the two compounded. */
+    font: 400 16px/1.68 var(--sans);
     -webkit-font-smoothing: antialiased;
 }
 
@@ -218,7 +241,7 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
 .grp.closed > ol { display: none; }
 
 .content { flex: 1 1 auto; min-width: 0; padding: 1.6rem 3rem 5rem; }
-.content > * { max-width: 50rem; }
+.content > * { max-width: var(--measure); }
 .content > .wide, .content > .hero, .content > .cards, .content > .pagenav { max-width: none; }
 
 .toc { flex: 0 0 var(--toc-w); width: var(--toc-w); padding: 1.6rem 1rem 4rem;
