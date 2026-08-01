@@ -538,3 +538,214 @@ def push_structs() -> dict[str, dict]:
             "line": text[:m.start()].count("\n") + 1,
         }
     return out
+
+
+# ------------------------------------------------------------- class surface --
+
+@dataclass
+class Member:
+    """One member of a class: a method, an operator, or a data field."""
+    name: str
+    signature: str
+    doc: str
+    kind: str                 # method | field | ctor | operator | static
+    access: str               # public | protected | private
+    line: int
+
+
+@dataclass
+class ClassDoc:
+    name: str
+    kind: str                 # class | struct
+    bases: str
+    doc: str
+    file: Path
+    line: int
+    members: list[Member] = field(default_factory=list)
+
+    @property
+    def path(self) -> str:
+        return rel(self.file)
+
+    @property
+    def url(self) -> str:
+        return src_link(self.file, self.line)
+
+    def public(self) -> list[Member]:
+        return [m for m in self.members if m.access == "public"]
+
+
+# Lines that open a class body. `final`, a base list and an attribute may all
+# appear, so the base clause is captured loosely and reported verbatim.
+CLASS_OPEN = re.compile(r"^(class|struct)\s+(\w+)\s*(?:final\s*)?(?::([^{]*))?\{?\s*$")
+
+
+def parse_classes(path: Path) -> list[ClassDoc]:
+    """Classes in a header, with their public members.
+
+    Brace-counted rather than parsed. The headers here declare one class per
+    block with no nested types, so counting braces from the opening line is
+    exact for this codebase -- and where it would not be, the member simply
+    lands in the wrong class rather than being invented.
+    """
+    lines = path.read_text().split("\n")
+    out: list[ClassDoc] = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        m = CLASS_OPEN.match(stripped)
+        if not m or stripped.endswith(";"):        # a forward declaration
+            i += 1
+            continue
+
+        # The `///` block immediately above.
+        doc: list[str] = []
+        j = i - 1
+        while j >= 0 and lines[j].strip().startswith("///"):
+            doc.insert(0, lines[j].strip()[3:].lstrip())
+            j -= 1
+
+        cls = ClassDoc(name=m.group(2), kind=m.group(1),
+                       bases=(m.group(3) or "").strip(), doc="\n".join(doc).strip(),
+                       file=path, line=i + 1)
+
+        # A struct is public by default, a class private.
+        access = "public" if m.group(1) == "struct" else "private"
+        depth, k, mdoc = 0, i, []
+        while k < len(lines):
+            line = lines[k]
+            depth += line.count("{") - line.count("}")
+            if k > i and depth <= 0:
+                break
+            k += 1
+            body = line.strip()
+
+            if body.startswith("///"):
+                mdoc.append(body[3:].lstrip())
+                continue
+            acc = re.match(r"(public|protected|private)\s*:", body)
+            if acc:
+                access, mdoc = acc.group(1), []
+                continue
+            if not body or body.startswith(("//", "#", "}")) or body == "{":
+                if not body:
+                    mdoc = []
+                continue
+            if k == i + 1:                          # the class line itself
+                continue
+
+            # A member declaration: ends in ; or { and is not a statement.
+            if not (body.endswith((";", "{", ")")) or "(" in body):
+                mdoc = []
+                continue
+
+            # JOIN A WRAPPED DECLARATION before classifying it. A signature
+            # spanning lines otherwise leaks its continuation as a phantom
+            # member -- `Tensor full(span, DType dtype = ..., Device device =
+            # ...)` produced members called `dtype` and `device`, which exist
+            # nowhere.
+            joined, look = body, k
+            while (not joined.rstrip().endswith((";", "{"))
+                   and look < len(lines) and look - k < 8):
+                joined += " " + lines[look].strip()
+                look += 1
+            if look > k:
+                depth += sum(lines[x].count("{") - lines[x].count("}")
+                             for x in range(k, look))
+                k = look
+
+            sig = re.sub(r"\s+", " ", joined).rstrip("{").strip()
+            # `operator` is checked FIRST: `Tensor& operator=(const Tensor&)`
+            # also satisfies the field pattern, and was being recorded as a
+            # field named `operator`.
+            om = re.search(r"\boperator\s*([^\s(]+)", sig)
+            if om:
+                cls.members.append(Member(name=f"operator{om.group(1)}", signature=sig,
+                                          doc="\n".join(mdoc).strip(), kind="operator",
+                                          access=access, line=k))
+                mdoc = []
+                continue
+            fm = re.search(r"(?:^|[\s*&])(\w+)\s*\(", body)
+            if fm:
+                name = fm.group(1)
+                if name in {"if", "for", "while", "switch", "return", "sizeof"}:
+                    mdoc = []
+                    continue
+                if name == cls.name:
+                    kind = "ctor"
+                elif name.startswith("operator"):
+                    kind = "operator"
+                elif body.startswith("static") or " static " in body:
+                    kind = "static"
+                else:
+                    kind = "method"
+            else:
+                dm = re.match(r"(?:mutable\s+)?[\w:<>,\s*&]+?\b(\w+)\s*(?:=[^;]*)?;$", body)
+                if not dm:
+                    mdoc = []
+                    continue
+                name, kind = dm.group(1), "field"
+
+            cls.members.append(Member(name=name, signature=sig, doc="\n".join(mdoc).strip(),
+                                      kind=kind, access=access, line=k))
+            mdoc = []
+        out.append(cls)
+        i = k
+    return out
+
+
+def all_classes() -> dict[str, ClassDoc]:
+    out = {}
+    for h in HEADERS:
+        for c in parse_classes(h):
+            out.setdefault(c.name, c)
+    return out
+
+
+PY_PACKAGE = ROOT / "python" / "vkml"
+
+
+def python_classes() -> dict[str, ClassDoc]:
+    """Classes defined in the Python package, via ast.
+
+    A real parse here rather than a line scan, because Python ships one and the
+    Python surface is where the nn modules, optimisers and data pipeline live --
+    the parts a user meets first. There is no reason to approximate what the
+    standard library will do exactly.
+    """
+    import ast
+
+    out: dict[str, ClassDoc] = {}
+    for f in sorted(PY_PACKAGE.glob("*.py")):
+        try:
+            tree = ast.parse(f.read_text())
+        except SyntaxError:
+            continue
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            bases = ", ".join(ast.unparse(b) for b in node.bases)
+            cls = ClassDoc(name=node.name, kind="class", bases=bases,
+                           doc=(ast.get_docstring(node) or "").strip(),
+                           file=f, line=node.lineno)
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    # A leading underscore marks internals; __init__ and the
+                    # dunder protocol methods are part of the surface.
+                    private = item.name.startswith("_") and not item.name.startswith("__")
+                    sig = f"{item.name}{ast.unparse(item.args)}"
+                    returns = f" -> {ast.unparse(item.returns)}" if item.returns else ""
+                    cls.members.append(Member(
+                        name=item.name,
+                        signature=f"def {sig}{returns}",
+                        doc=(ast.get_docstring(item) or "").strip(),
+                        kind="ctor" if item.name == "__init__" else "method",
+                        access="private" if private else "public",
+                        line=item.lineno))
+                elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                    cls.members.append(Member(
+                        name=item.target.id,
+                        signature=f"{item.target.id}: {ast.unparse(item.annotation)}",
+                        doc="", kind="field", access="public", line=item.lineno))
+            out[node.name] = cls
+    return out
