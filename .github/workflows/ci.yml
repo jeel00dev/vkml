@@ -83,6 +83,13 @@ jobs:
       - name: Documented versions
         run: python scripts/check_versions.py
 
+      # The stylesheet had 39 distinct font sizes, 6 weights (two of them
+      # non-standard) and 6 colour literals outside the palette. None of that
+      # reads as a bug; it reads as a site that feels loose and cannot be
+      # pointed at. This keeps it on the scale.
+      - name: Design system
+        run: python scripts/check_design_system.py
+
       # LAST, deliberately: it checks what the steps above just wrote. While this
       # container ran as root it left root-owned build output in the bind-mounted
       # workspace -- 551 files accumulated -- and the first symptom was a
