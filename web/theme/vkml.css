@@ -32,7 +32,7 @@
        site checked except pytorch and huggingface, and past the 45-75 range
        where return sweeps stay reliable. 41rem against a 16px body measures
        about 74. */
-    --measure: 41rem;
+    --measure: 46rem;
 
     /* TYPE SCALE. The stylesheet had 39 distinct font sizes across 62 uses,
        including 18 different values spanning the 2.4 pixels between 12.8 and
@@ -267,8 +267,8 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
    `class="sect"` appeared ZERO times in the built site, so this rule styled
    markup that does not exist and the headings rendered flush against the
    panel edge with no padding at all. */
-.sidenav h3, .sidenav .sect { margin: 1.4rem 0 .35rem; padding: 0 1.2rem;
-                 font: 700 var(--fs-3)/1 var(--sans); color: var(--fg-strong); }
+.sidenav h3, .sidenav .sect { margin: 1.8rem 0 .5rem; padding: 0 1.2rem;
+                 font: 700 var(--fs-5)/1.2 var(--sans); color: var(--fg-strong); }
 .sidenav ol { list-style: none; margin: 0; padding: 0; }
 
 .sidenav a {
