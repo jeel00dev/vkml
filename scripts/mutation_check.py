@@ -32,7 +32,9 @@ Exit:   0 if every mutation was killed, 1 otherwise.
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -97,9 +99,14 @@ MUTATIONS = [
     # Strided indexing. Only reachable at all since the coverage audit gave
     # these operators non-contiguous inputs; before that, every source was
     # contiguous and this arithmetic was dead in every test.
-    ("operand_offset: ignore strides, walk flat", "shaders/common.glsl",
-     "        off += idx * op.nb[i];",
-     "        off += idx * op.nb[VKML_MAX_DIMS - 1];",
+    # Targets offset_from rather than operand_offset: the loop moved there when
+    # operand_offset became a one-line forwarder, and this mutation stopped
+    # applying without anything noticing, because nothing runs this campaign
+    # automatically. That is the maintenance cost named at the top of this file,
+    # observed rather than hypothetical.
+    ("offset_from: ignore strides, walk flat", "shaders/common.glsl",
+     "        off += idx * nb[i];",
+     "        off += idx * nb[VKML_MAX_DIMS - 1];",
      "test_layout_and_scale"),
 
     # The shader half of the f16 contract. DTYPE is a specialisation constant,
@@ -228,8 +235,58 @@ MUTATIONS = [
 ]
 
 
+PACKAGE = ROOT / "python" / "vkml"
+
+
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, **kw)
+
+
+def imported_extension_dir() -> Path | None:
+    """Where `import vkml` gets its extension, ASKED rather than assumed.
+
+    This is the same question scripts/check_cpu_only_build.py had to answer for
+    issue #29, and the answer is the same: after `pip install -e .`, which
+    README.md tells every contributor to run, scikit-build-core installs a
+    meta-path finder ahead of sys.path, so `vkml/__init__.py` comes from the
+    source tree while `vkml._vkml_core` comes from site-packages. They are two
+    different binaries.
+
+    Until this existed, every shaders/ and src/ mutation here was VACUOUS.
+    `cmake --build` rewrote python/vkml/_vkml_core*.so, pytest imported the
+    site-packages copy, and the mutated code was never executed. Verified by
+    hash: after mutating shaders/common.glsl and rebuilding, the built module
+    changed and the imported one did not.
+
+    The consequence was worse than a silent pass, because it lied in the more
+    damaging direction. Four common.glsl mutations were reported SURVIVED --
+    which reads as "the suite does not catch this defect" and sends someone to
+    write tests for defects that are, in fact, already caught.
+    """
+    probe = run([str(PY), "-c",
+                 "import sys;sys.path.insert(0,'python');"
+                 "import vkml;print(vkml._vkml_core.__file__)"])
+    if probe.returncode != 0 or not probe.stdout.strip():
+        return None
+    return Path(probe.stdout.strip()).resolve().parent
+
+
+def sync_extension(target: Path | None) -> None:
+    """Put what the build just produced where the tests will import it."""
+    if target is None or target == PACKAGE:
+        return
+    for built in PACKAGE.glob("_vkml_core*"):
+        if built.suffix in (".so", ".pyd") or ".so" in built.name:
+            shutil.copy2(built, target / built.name)
+
+
+def extension_fingerprint(target: Path | None) -> str:
+    """Hash of the extension the tests will import, for the did-it-change check."""
+    d = target or PACKAGE
+    h = hashlib.sha256()
+    for f in sorted(d.glob("_vkml_core*")):
+        h.update(f.read_bytes())
+    return h.hexdigest()
 
 
 def build() -> bool:
@@ -241,6 +298,15 @@ def main() -> int:
     only = sys.argv[1] if len(sys.argv) > 1 else None
     results = []
 
+    target = imported_extension_dir()
+    if target is None:
+        print("cannot import vkml at all -- fix the build before running a campaign")
+        return 1
+    if target != PACKAGE:
+        print(f"extension is imported from {target}, not {PACKAGE};\n"
+              f"each compiled mutation will be copied there so the tests see it")
+
+    compiled_ran = False
     for label, rel, find, replace, selector in MUTATIONS:
         if only and only not in rel:
             continue
@@ -256,10 +322,23 @@ def main() -> int:
             path.write_text(original.replace(find, replace, 1))
             # Python mutations need no rebuild, and skipping it turns a minute
             # per mutation into a second. Only compiled sources pay for it.
-            if rel.startswith(("shaders/", "src/")) and not build():
-                results.append((label, "BUILD-FAILED"))
-                print(f"  !! {label}: did not compile", flush=True)
-                continue
+            if rel.startswith(("shaders/", "src/")):
+                before = extension_fingerprint(target)
+                if not build():
+                    results.append((label, "BUILD-FAILED"))
+                    print(f"  !! {label}: did not compile", flush=True)
+                    continue
+                sync_extension(target)
+                # A compiled mutation that leaves the imported binary byte
+                # identical did not reach the tests, and reporting it as
+                # SURVIVED would blame the suite for a defect it never saw.
+                # This is the check that was missing while every shaders/ and
+                # src/ mutation silently ran against a stale extension.
+                if extension_fingerprint(target) == before:
+                    results.append((label, "NOT-IN-IMPORTED-BINARY"))
+                    print(f"  !! {label}: rebuilt, but the imported extension is "
+                          f"unchanged -- the mutation never ran", flush=True)
+                    continue
 
             r = run([str(PY), "-m", "pytest", "tests/python", "-x", "-q", "-k", selector])
             killed = r.returncode != 0
@@ -268,6 +347,8 @@ def main() -> int:
             print(f"  {mark}{label}: {'KILLED' if killed else 'SURVIVED'}", flush=True)
         finally:
             path.write_text(original)
+            if rel.startswith(("shaders/", "src/")):
+                compiled_ran = True
 
     build()  # leave the tree as we found it
 
@@ -278,6 +359,14 @@ def main() -> int:
     # broken campaign. The two need opposite responses -- one means write a test,
     # the other means fix this script -- and the reader cannot tell them apart
     # from a label that lies. Both still fail the run.
+    if compiled_ran:
+        print("rebuilding from the restored sources", flush=True)
+        if build():
+            sync_extension(target)
+        else:
+            print("  !! the restore build FAILED -- the installed extension may "
+                  "still contain the last mutation; rebuild before trusting it")
+
     killed = [r for r in results if r[1] == "KILLED"]
     survived = [r for r in results if r[1] == "SURVIVED"]
     invalid = [r for r in results if r[1] not in ("KILLED", "SURVIVED")]
