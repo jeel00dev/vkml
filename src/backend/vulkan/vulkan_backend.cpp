@@ -2059,6 +2059,10 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                         .because = "needs more workgroup invocations than the device allows",
                         .required = use_tiled ? kTile * kTile : kRegWg,
                         .available = max_invocations,
+                        // Names the dispatch this choice is about to produce.
+                        // The recorder mints it; this site only quotes it, so
+                        // identity keeps exactly one owner.
+                        .dispatch = rec.next_dispatch_id(),
                     });
                     use_naive = true;
                     use_tiled = false;
@@ -2480,6 +2484,18 @@ std::vector<std::pair<std::string, double>> VulkanBackend::last_profile() const 
     std::vector<std::pair<std::string, double>> out;
     for (const vk::ProfileEntry& e : impl_->recorder.profile()) {
         out.emplace_back(e.label, e.gpu_ms);
+    }
+    return out;
+}
+
+std::vector<ProfileRecord> VulkanBackend::last_profile_records() const {
+    // The same intervals last_profile() returns, with the identity attached.
+    // Kept as a SEPARATE accessor rather than changing the existing pair, so
+    // nothing that consumes (label, ms) has to move for a slice that only adds
+    // a field -- and so this one can be deleted without touching the other.
+    std::vector<ProfileRecord> out;
+    for (const vk::ProfileEntry& e : impl_->recorder.profile()) {
+        out.push_back(ProfileRecord{e.label, e.gpu_ms, e.dispatch});
     }
     return out;
 }

@@ -201,6 +201,7 @@ if has_vulkan:
         return _builtins.sum(ms for _, ms in profile)
     vulkan_set_subgroup_override = _C.vulkan_set_subgroup_override
     vulkan_pipeline_stats = _C.vulkan_pipeline_stats
+    vulkan_profile_records = _C.vulkan_profile_records
 
 
 # ---------------------------------------------------------------------------

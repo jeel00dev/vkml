@@ -49,6 +49,9 @@ struct RecordedDecision {
     /// oldest I kept" from "the first that happened" — the distinction that
     /// makes a bounded window honest about what it dropped.
     uint64_t seq = 0;
+
+    /// The DispatchId this choice named, or 0. Copied, not derived.
+    uint64_t dispatch = 0;
 };
 
 /// Begins recording, replacing any previous window. Installs the subscriber.

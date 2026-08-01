@@ -84,6 +84,17 @@ struct Decision {
     /// Both zero when the choice was not driven by a limit.
     int64_t required = 0;
     int64_t available = 0;
+
+    /// Which dispatch this choice produced, or 0 when it produced none.
+    ///
+    /// The SAME identity the profiler records, minted by the one thing that
+    /// records dispatches. It lets a consumer answer "what did this kernel
+    /// cost" by joining, rather than by either subsystem learning the other's
+    /// job -- the profiler must never own kernel selection
+    /// (docs/OBSERVABILITY-ARCHITECTURE.md 4b).
+    ///
+    /// Opaque. Compare for equality; never sort by it or do arithmetic on it.
+    uint64_t dispatch = 0;
 };
 
 /// True when at least one subscriber is installed. Decision sites should not

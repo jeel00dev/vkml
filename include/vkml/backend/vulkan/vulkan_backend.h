@@ -121,6 +121,13 @@ struct DeviceReport {
 };
 
 /// GPU backend. Created on demand; never at static initialisation.
+/// One measured interval with the identity of what it measured.
+struct ProfileRecord {
+    std::string label;
+    double gpu_ms = 0.0;
+    uint64_t dispatch = 0;  ///< 0 when the interval is not a dispatch
+};
+
 class VulkanBackend final : public Backend {
 public:
     explicit VulkanBackend(int device_index, bool enable_validation);
@@ -162,6 +169,14 @@ public:
 
     /// GPU intervals from the most recent compute() call, in milliseconds.
     [[nodiscard]] std::vector<std::pair<std::string, double>> last_profile() const;
+
+    /// The same intervals, carrying the DispatchId each one measured.
+    ///
+    /// A consumer joins these against decision facts on `dispatch` to answer
+    /// "what did this kernel cost" -- without the profiler ever learning which
+    /// kernel ran, which stays the backend's fact
+    /// (docs/OBSERVABILITY-ARCHITECTURE.md 4b).
+    [[nodiscard]] std::vector<ProfileRecord> last_profile_records() const;
 
     /// Overrides the subgroup width kernels request, for measurement.
     ///

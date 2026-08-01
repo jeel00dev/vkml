@@ -15,6 +15,20 @@ namespace vkml::vk {
 struct ProfileEntry {
     std::string label;
     double gpu_ms = 0.0;
+
+    /// Which dispatch this interval measured, or 0 when the interval is not a
+    /// dispatch (the whole-submission entry is the case that exists today).
+    ///
+    /// IDENTITY, NOT DESCRIPTION. This says WHICH dispatch, never which kernel
+    /// or why it was chosen -- those are the Decision's, and duplicating them
+    /// here would give kernel selection two owners
+    /// (docs/OBSERVABILITY-ARCHITECTURE.md 4b). A consumer joins the two on
+    /// this field; neither producer reads the other.
+    ///
+    /// Compare for EQUALITY only. It is deliberately opaque: code that sorts by
+    /// it or computes `id + 1` has taken a dependency on today's counter and
+    /// will break when this widens to (queue, ordinal) for multiple queues.
+    uint64_t dispatch = 0;
 };
 
 /// Records GPU work and submits it.
@@ -137,6 +151,14 @@ public:
 
     [[nodiscard]] uint64_t dispatch_count() const noexcept { return dispatch_count_; }
 
+    /// The DispatchId the next recorded dispatch will carry.
+    ///
+    /// The recorder is the only thing that records dispatches, so it is the
+    /// only thing that may number them. A decision published just before a
+    /// dispatch names it through this; the profile entry written just after
+    /// carries the same value, and a consumer joins them.
+    [[nodiscard]] uint64_t next_dispatch_id() const noexcept { return dispatch_count_ + 1; }
+
 private:
     void reset_command_buffer();
 
@@ -156,11 +178,16 @@ private:
     VkQueryPool query_pool_ = VK_NULL_HANDLE;
     uint32_t query_index_ = 0;
     std::string label_;
-    std::vector<std::pair<std::string, uint32_t>> pending_;  // label, first query slot
+    struct Pending {
+        std::string label;
+        uint32_t slot = 0;      ///< first query slot of the pair
+        uint64_t dispatch = 0;  ///< 0 when the interval is not a dispatch
+    };
+    std::vector<Pending> pending_;
     std::vector<ProfileEntry> profile_;
     double total_gpu_ms_ = 0.0;
 
-    void begin_timestamp(const char* label);
+    void begin_timestamp(const char* label, uint64_t dispatch_id = 0);
     void end_timestamp();
     void resolve_timestamps();
 };

@@ -389,3 +389,21 @@ RT["configuration"] = {
                "matmul is what makes the GEMM switches appear.",
     "see": ["decisions", "record_decisions"],
 }
+
+
+RT["vulkan_profile_records"] = {
+    "summary": "Measured GPU intervals carrying the identity of what they measured.",
+    "detail": "The same intervals `vulkan_last_profile` returns, plus a `dispatch` field. Join it "
+              "against `decisions()` on the same field to answer *what did this kernel cost* — "
+              "a question neither side can answer alone.\n\n"
+              "The profiler deliberately does not know which kernel ran, and the planner "
+              "deliberately does not know what anything cost. Identity is a third fact, owned by "
+              "the recorder, describing nothing. That is what stops kernel selection acquiring a "
+              "second owner.",
+    "params": [("index", "int = 0", "Which device.")],
+    "returns": "A list of dicts with `label`, `gpu_ms` and `dispatch`.",
+    "note": "`dispatch` is 0 when the interval is not a dispatch — the whole-submission entry is "
+            "the case that exists today. Compare ids for equality only; they are opaque and will "
+            "widen when multiple queues arrive.",
+    "see": ["vulkan_last_profile", "decisions", "record_decisions"],
+}

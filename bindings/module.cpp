@@ -791,6 +791,24 @@ NB_MODULE(_vkml_core, m) {
         },
         "index"_a = 0);
     m.def(
+        "vulkan_profile_records",
+        [](int index) {
+            nb::list out;
+            for (const vkml::ProfileRecord& r :
+                 static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index))
+                     .last_profile_records()) {
+                nb::dict e;
+                e["label"] = r.label;
+                e["gpu_ms"] = r.gpu_ms;
+                e["dispatch"] = r.dispatch;
+                out.append(e);
+            }
+            return out;
+        },
+        "index"_a = 0,
+        "Measured GPU intervals carrying the DispatchId each one measured. Join "
+        "against decisions() on `dispatch` to attribute cost to a kernel choice.");
+    m.def(
         "vulkan_set_subgroup_override",
         [](uint32_t size, int index) {
             static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index))
@@ -836,6 +854,7 @@ NB_MODULE(_vkml_core, m) {
                 e["required"] = d.required;
                 e["available"] = d.available;
                 e["seq"] = d.seq;
+                e["dispatch"] = d.dispatch;
                 out.append(e);
             }
             return out;

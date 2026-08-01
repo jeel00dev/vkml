@@ -151,6 +151,7 @@ GROUPS: list[tuple[str, list[str]]] = [
             "vulkan_timestamps_supported",
             "vulkan_unavailable_reason",
             "vulkan_last_profile",
+            "vulkan_profile_records",
             "vulkan_submit_ms",
             "vulkan_set_profiling",
             "vulkan_set_subgroup_override",

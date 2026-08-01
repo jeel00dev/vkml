@@ -179,6 +179,12 @@ nowhere.
 
 ## 4b. DispatchId — the identity that lets facts be joined without merging
 
+**Status: implemented.** `ProfileEntry.dispatch` and `Decision.dispatch` carry it;
+`CommandRecorder::next_dispatch_id()` mints it; `vulkan_profile_records()` and
+`decisions()` expose it. Measured end to end: *chose gemm_naive instead of
+gemm_reg → 0.1631 ms*, joined from two producers neither of which knows the
+other.
+
 Decision owns *what was chosen and why*. Measurement owns *what it cost*.
 Neither may own the other, and until now neither could be connected to the
 other either — which is why the obvious fix for kernel attribution was to write
@@ -219,8 +225,17 @@ representation and will break when the representation widens.
 - **Replay.** Requires persistence, which section 9 forbids today. That
   prohibition would need revisiting deliberately rather than by growth.
 - **A misassigned id** is the interesting failure: two dispatches sharing one
-  id, or a decision naming an id that was never recorded. Both are detectable
-  (below), which is the point of having the identity at all.
+  id, or a decision naming an id that was never recorded. **Proven detectable**,
+  by breaking it three ways and watching the join fail each time: omitting the
+  id from the decision producer, naming an id that was never recorded, and an
+  off-by-one between minting and stamping.
+
+  A fourth control -- incrementing the counter twice -- did NOT break the join,
+  and that is recorded because it is instructive rather than embarrassing. With
+  a single dispatch the id was already minted before the corruption, so only
+  *subsequent* dispatches would be affected. A control that cannot fire proves
+  nothing, and finding that out is why controls are run rather than reasoned
+  about.
 
 ### Extension path
 

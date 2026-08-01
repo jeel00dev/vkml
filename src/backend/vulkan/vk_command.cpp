@@ -73,11 +73,11 @@ void Recorder::set_profiling(bool enabled) {
     }
 }
 
-void Recorder::begin_timestamp(const char* label) {
+void Recorder::begin_timestamp(const char* label, uint64_t dispatch_id) {
     if (!profiling_ || query_index_ + 2 > kMaxQueries) {
         return;
     }
-    pending_.emplace_back(label_.empty() ? label : label_, query_index_);
+    pending_.push_back(Pending{label_.empty() ? label : label_, query_index_, dispatch_id});
     // TOP_OF_PIPE for the start: the earliest point the dispatch can be said to
     // have begun.
     vkCmdWriteTimestamp2(cmd_, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool_, query_index_);
@@ -91,7 +91,7 @@ void Recorder::end_timestamp() {
     // ALL_COMMANDS for the end: the dispatch is only finished once its writes
     // have drained, and BOTTOM_OF_PIPE would report early on some drivers.
     vkCmdWriteTimestamp2(cmd_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, query_pool_,
-                         pending_.back().second + 1);
+                         pending_.back().slot + 1);
 }
 
 void Recorder::resolve_timestamps() {
@@ -114,12 +114,12 @@ void Recorder::resolve_timestamps() {
     if (r == VK_SUCCESS) {
         // Ticks are device-specific; timestampPeriod converts to nanoseconds.
         const double ns_per_tick = static_cast<double>(ctx_.info().timestamp_period);
-        for (const auto& [label, slot] : pending_) {
+        for (const auto& [label, slot, dispatch_id] : pending_) {
             const uint64_t start = raw[slot];
             const uint64_t end = raw[slot + 1];
             const double ms =
                 end > start ? static_cast<double>(end - start) * ns_per_tick / 1e6 : 0.0;
-            profile_.push_back(ProfileEntry{label, ms});
+            profile_.push_back(ProfileEntry{label, ms, dispatch_id});
             // Only the whole-submit window accumulates; see total_gpu_ms().
             if (label == "submit") {
                 total_gpu_ms_ += ms;
@@ -195,7 +195,7 @@ void Recorder::dispatch(const PipelineCache::Pipeline& pipeline, const void* pus
                                                    ctx_.info().max_workgroup_count[0],
                                                    ctx_.info().max_workgroup_count[1]);
 
-    begin_timestamp("dispatch");
+    begin_timestamp("dispatch", dispatch_count_ + 1);
     vkCmdDispatch(cmd_, grid.groups_x, grid.groups_y, 1);
     end_timestamp();
     ++dispatch_count_;
@@ -227,7 +227,7 @@ void Recorder::dispatch_groups(const PipelineCache::Pipeline& pipeline, const vo
     VKML_CHECK(groups_y <= ctx_.info().max_workgroup_count[1], DeviceError,
                "reduction needs {} workgroups ({} x {}) but the device allows {} x {}", group_count,
                groups_x, groups_y, max_x, ctx_.info().max_workgroup_count[1]);
-    begin_timestamp("dispatch");
+    begin_timestamp("dispatch", dispatch_count_ + 1);
     vkCmdDispatch(cmd_, static_cast<uint32_t>(groups_x), static_cast<uint32_t>(groups_y), 1);
     end_timestamp();
     ++dispatch_count_;
@@ -289,7 +289,9 @@ uint64_t Recorder::submit() {
     // a second one that could drift from it.
     if (profiling_ && !pending_.empty()) {
         vkCmdWriteTimestamp2(cmd_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, query_pool_, 1);
-        pending_.insert(pending_.begin(), std::pair<std::string, uint32_t>{"submit", 0});
+        // dispatch id 0: the whole-submit window is not a dispatch, and a
+        // consumer joining on identity must not match it to one.
+        pending_.insert(pending_.begin(), Pending{"submit", 0, 0});
     }
 
     check(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer");
