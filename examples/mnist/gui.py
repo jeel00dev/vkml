@@ -139,7 +139,23 @@ class Viewer:
         self._build_image_pane()
         self._build_probability_pane()
         self._build_controls()
-        self.show_test_image(0)
+
+        # The first inference happens here, inside the constructor, so anything
+        # the model cannot do on this device surfaces as a bare traceback and no
+        # window -- which tells a reader nothing about which operator failed or
+        # what to try instead. Issue #22 was reported from exactly this path:
+        # `softmax` exceeded the 128-byte push-constant floor mid-construction,
+        # and the visible symptom was a stack trace plus a nanobind leak report.
+        #
+        # That trigger is gone (608d7ba, and issue #2 is closed), so this is not
+        # a fix for a live defect. It is here because the window is the right
+        # place to say what went wrong, and the next constrained device will
+        # find some other operator.
+        try:
+            self.show_test_image(0)
+        except Exception as exc:                       # noqa: BLE001
+            self.caption.config(text=f"{type(exc).__name__}: {exc}", fg="#e57373")
+            self.verdict.config(text="inference failed", fg="#e57373")
 
     # -- layout -------------------------------------------------------------
 
