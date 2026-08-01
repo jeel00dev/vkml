@@ -276,11 +276,13 @@ RT["vulkan_last_profile"] = {
     "summary": "Timings from the most recent profiled run.",
     "returns": "A list of `(label, milliseconds)` pairs.",
     "params": [("index", "int = 0", "Which device.")],
-    "warning": "**Submission-level only.** The entries are `('submit', ms)` pairs — there is "
-               "currently no per-dispatch breakdown, so this cannot tell you which kernel "
-               "dominates a step. Timestamps are supported by the device; what is missing is "
-               "recording them around each dispatch and aggregating by kernel name. Until "
-               "that exists, kernel-level attribution has to come from indirect evidence such "
+    "warning": "**Labelled by operator, not by kernel.** The entries are real per-operation GPU "
+               "time, not submission totals — timestamps are written and resolved per node. What "
+               "they cannot tell you is which KERNEL ran: a `matmul` entry does not distinguish "
+               "the naive kernel from the register-blocked one, nor show split-K's partitions. "
+               "Joining cost to kernel choice needs a shared dispatch identity, which is "
+               "designed but not yet implemented. Until then, attribution comes from indirect "
+               "evidence such "
                "as batch scaling or device substitution.",
     "see": ["vulkan_submit_ms", "vulkan_set_profiling", "vulkan_pipeline_stats"],
 }

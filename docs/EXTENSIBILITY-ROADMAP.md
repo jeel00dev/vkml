@@ -197,14 +197,35 @@ the step cannot fix a step that is three-quarters overhead.
 
 ### P0 — Attribution *(before any optimisation)*
 
-**Nothing here can be prioritised properly, because vkML cannot currently say which kernel
-costs what.** `vulkan_last_profile` returns submission-level `('submit', ms)` tuples; there is
-no per-dispatch breakdown. The evidence above is all indirect — batch scaling, device
-substitution, submission counting — which is enough to locate the problem and not enough to
-close it.
+**Nothing here can be prioritised properly, because vkML cannot currently say which KERNEL
+costs what.** The evidence above is all indirect — batch scaling, device substitution,
+submission counting — which is enough to locate the problem and not enough to close it.
 
-`vulkan_timestamps_supported` is already true, so the mechanism exists. What is missing is
-writing timestamps around each dispatch and aggregating them by kernel name.
+**Corrected 2026-08-02, after reading the code.** An earlier draft of this section claimed
+`vulkan_last_profile` returns submission-level tuples, that there is no per-dispatch breakdown,
+and that timestamps must be written around each dispatch. All three are wrong, and the roadmap
+should describe reality:
+
+- `vk_command.h` defines `ProfileEntry{label, gpu_ms}` and `begin_timestamp(label)`; timestamps
+  are already written and resolved **per node**.
+- `vulkan_last_profile()` returns real per-operation GPU time — measured,
+  `[('submit', 0.32288), ('matmul', 0.31884)]`.
+
+What is actually missing is narrower, and none of it is timestamp plumbing:
+
+- **The label is the operator, not the kernel.** `vulkan_backend.cpp:1099` is the only
+  `set_label` call site and passes `op_name(node->op)`, so a `matmul` entry cannot distinguish
+  `gemm_naive` from `gemm_reg`, nor show split-K's partitions.
+- **No correlation.** Cost cannot be joined to the choice that produced it.
+- **No aggregation** by kernel across a step.
+- **No unaccounted remainder** — which is this section's own exit criterion, and *is* the
+  overhead being hunted.
+
+The fix is deliberately **not** to write the kernel name into the profiler's label. That would
+give kernel selection two owners: the backend already publishes it as a Decision, and the
+profiler would derive it again. Identity becomes a third fact instead — `DispatchId`, owned by
+`CommandRecorder`, describing nothing, carried by both Decision and Measurement so that a
+consumer joins them. See `docs/OBSERVABILITY-ARCHITECTURE.md` §4b.
 
 **Reference.** llama.cpp's Vulkan backend keeps per-op timing behind a build flag; the same
 query-pool-per-dispatch structure applies here. `VK_EXT_debug_utils` labels make the result
