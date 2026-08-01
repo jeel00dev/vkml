@@ -353,3 +353,123 @@ CLASSES["AvgPool2d"] = {
                ("Internals", ["__repr__"])],
     "see": ["avg_pool2d", "MaxPool2d"],
 }
+
+
+# ------------------------------------------------- optimisers and data ----
+
+CLASSES["Optimizer"] = {
+    "lang": "python",
+    "summary": "Base class for optimisers: holds a parameter list and clears gradients.",
+    "detail": "**Captures the parameter list at construction.** Every optimiser here iterates "
+              "that captured list, which is why `model.to(device)` must happen *before* the "
+              "optimiser is built — `to` replaces each parameter with a new tensor, and an "
+              "optimiser made first would keep updating the old ones while the model used the "
+              "new.\n\n"
+              "Every `step` runs under `no_grad` and writes through `assign_`. Both matter: "
+              "the update is a mutation of the parameters, not part of the function being "
+              "differentiated, so recording it would keep step N's graph alive into step N+1; "
+              "and rebinding `self.params[i]` instead of assigning in place would update the "
+              "optimiser's view and leave the model untouched.",
+    "groups": [("Construction", ["__init__"]), ("Interface", ["step", "zero_grad"])],
+    "see": ["SGD", "Adam", "AdamW", "RMSProp", "backward"],
+}
+
+CLASSES["SGD"] = {
+    "lang": "python",
+    "summary": "Stochastic gradient descent, with optional momentum and Nesterov look-ahead.",
+    "detail": "The update as implemented, in order:\n\n"
+              "- `g = grad`, plus `weight_decay · p` when weight decay is set.\n"
+              "- With momentum: `v ← v·momentum + g`, and on the first step `v = g` rather "
+              "than a zero-initialised buffer.\n"
+              "- Classical momentum then steps **along the buffer**: `g ← v`.\n"
+              "- **Nesterov** steps along the buffer and then one more momentum-step further — "
+              "`g ← g + v·momentum` — which is the look-ahead. It uses the current gradient "
+              "*again* rather than replacing it, and that `g` is the gradient after weight "
+              "decay, which is what torch feeds in too.\n"
+              "- `p ← p − lr·g`, assigned in place.\n\n"
+              "State: one velocity tensor per parameter, and only when momentum is non-zero — "
+              "so plain SGD costs no extra memory.",
+    "groups": [("Construction", ["__init__"]), ("Update", ["step"])],
+    "see": ["Optimizer", "Adam", "backward"],
+}
+
+CLASSES["Adam"] = {
+    "lang": "python",
+    "summary": "Adam with bias correction, matching `torch.optim.Adam` defaults.",
+    "detail": "The update as implemented:\n\n"
+              "- `g = grad`, plus `weight_decay · p` when set — **coupled** decay, added to "
+              "the gradient.\n"
+              "- `m ← m·β₁ + g·(1−β₁)`, and on the first step `m = g·(1−β₁)` rather than a "
+              "zero buffer.\n"
+              "- `v ← v·β₂ + g²·(1−β₂)`, likewise.\n"
+              "- `p ← p − lr·m̂ / (√v̂ + ε)`, assigned in place.\n\n"
+              "**Bias correction is applied to the step size, not to `m` and `v` "
+              "individually.** Algebraically identical, one fewer tensor operation per "
+              "parameter, and it is what torch does.\n\n"
+              "State: two tensors per parameter, so Adam costs **2× the model size** in "
+              "optimiser state — worth knowing before choosing it on a device with 5.75 GiB.",
+    "groups": [("Construction", ["__init__"]), ("Update", ["step"])],
+    "see": ["AdamW", "SGD", "Optimizer"],
+}
+
+CLASSES["AdamW"] = {
+    "lang": "python",
+    "summary": "Adam with **decoupled** weight decay, matching `torch.optim.AdamW`.",
+    "detail": "The only difference from `Adam` is *where* the decay is applied, and it is not "
+              "cosmetic.\n\n"
+              "`Adam` adds `wd·p` to the gradient, so the decay then passes through the "
+              "second-moment normalisation and is scaled by `1/√v` — meaning **parameters with "
+              "small gradients get decayed far harder than intended**.\n\n"
+              "`AdamW` subtracts `lr·wd·p` from the parameter directly, leaving the adaptive "
+              "step to act on the gradient alone. Everything else — the moments, the bias "
+              "correction, the state cost — is inherited unchanged.",
+    "groups": [("Construction", ["__init__"]), ("Update", ["step"])],
+    "see": ["Adam", "SGD", "Optimizer"],
+}
+
+CLASSES["RMSProp"] = {
+    "lang": "python",
+    "summary": "RMSProp, matching `torch.optim.RMSprop`.",
+    "detail": "Divides the gradient by a running root-mean-square of recent gradients.\n\n"
+              "**The running average starts at zero, as torch's does**, so the first step is "
+              "`(1−α)·g²` rather than `g²`. That difference persists for many steps through "
+              "the exponential average, so it is not a detail — a reimplementation that "
+              "initialises from the first gradient diverges from torch for a long time.",
+    "groups": [("Construction", ["__init__"]), ("Update", ["step"])],
+    "see": ["Adam", "SGD", "Optimizer"],
+}
+
+CLASSES["DataLoader"] = {
+    "lang": "python",
+    "summary": "Iterate a dataset in batches, optionally shuffled.",
+    "detail": "Single-process and synchronous: batches are assembled on the calling thread. "
+              "Prefetching and worker processes are tracked as future work, not implemented.",
+    "note": "Shuffling is seeded, so a run replays. The final batch is smaller when the "
+            "dataset size is not a multiple of the batch size — it is **not** dropped, so "
+            "every sample is seen exactly once per epoch.",
+    "groups": [("Construction", ["__init__"]), ("Iteration", ["__iter__", "__len__"])],
+    "see": ["ArrayDataset", "rand"],
+}
+
+CLASSES["ArrayDataset"] = {
+    "lang": "python",
+    "summary": "A dataset over one or more equal-length NumPy arrays.",
+    "detail": "Indexing yields a tuple with one element per array, so features and labels stay "
+              "aligned by construction rather than by convention.",
+    "groups": [("Construction", ["__init__"]), ("Access", ["__len__", "__getitem__"])],
+    "see": ["DataLoader"],
+}
+
+CLASSES["Checkpoint"] = {
+    "lang": "python",
+    "summary": "What `load` returns: the arrays, the metadata and the format version.",
+    "detail": "Kept as **separate fields rather than one merged mapping**, so a metadata key "
+              "can never collide with a tensor name.\n\n"
+              "`version` is the checkpoint's `FORMAT_VERSION`, which increments when the "
+              "layout changes in a way an older reader would misread. Loading a newer "
+              "checkpoint fails with a message naming both versions instead of "
+              "misinterpreting the bytes.",
+    "groups": [("Fields", ["tensors", "metadata", "version"]),
+               ("Internals", ["__repr__"])],
+    "see": ["load", "save", "load_module"],
+}
