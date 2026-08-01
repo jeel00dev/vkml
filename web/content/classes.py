@@ -82,3 +82,274 @@ CLASSES["Tensor"] = {
     },
     "see": ["tensor", "realize", "backward", "detach"],
 }
+
+
+# ------------------------------------------------------------- nn modules --
+
+CLASSES["Module"] = {
+    "lang": "python",
+    "summary": "Base class for layers: named parameters, buffers and children.",
+    "detail": "Written in Python rather than C++ **on purpose**. A `Module` holds references "
+              "and iterates dicts, none of which is hot; the hot part is the tensor operators "
+              "it calls, and those are already in C++.\n\n"
+              "The structure — named children plus named parameters, recursive with a dotted "
+              "prefix — exists so parameter names line up with a `state_dict` for loading and "
+              "comparison. It mirrors `torch.nn` closely enough that PyTorch code reads across "
+              "unchanged.\n\n"
+              "**Assigning a `Tensor` attribute makes a parameter**, and assigning a `Module` "
+              "makes a child. That is done in `__setattr__`, so `self.weight = ...` registers "
+              "without any explicit call. `register_buffer` is the explicit opt-out for state "
+              "that must travel with the module but must not be trained.",
+    "groups": [
+        ("Construction", ["__init__", "register_buffer"]),
+        ("Traversal", ["named_parameters", "parameters", "named_buffers", "named_modules"]),
+        ("State", ["state_dict", "load_state_dict"]),
+        ("Placement and mode", ["to", "train", "eval", "zero_grad"]),
+        ("Interface", ["forward", "__call__", "__repr__"]),
+        ("Attribute plumbing", ["__setattr__", "__getattr__"]),
+    ],
+    "members": {
+        "register_buffer": "Records persistent state that is **not trained**. A buffer appears "
+                           "in `state_dict`, so it saves, loads and interoperates with a torch "
+                           "checkpoint — but never in `parameters()`, so an optimiser cannot "
+                           "see it. Batch normalisation's running statistics are the "
+                           "motivating case: they carry no gradient, and letting an optimiser "
+                           "\"train\" them would destroy the estimate. Raises if the tensor "
+                           "has `requires_grad`.",
+        "state_dict": "Parameters **and buffers**, by dotted name. Buffers are included "
+                      "because that is what makes a checkpoint complete: a batch-normalised "
+                      "model restored without its running statistics evaluates against the "
+                      "wrong distribution while looking perfectly healthy.",
+        "load_state_dict": "Copies values in by name, **in place**, preserving each entry's "
+                           "device, dtype and `requires_grad`. Every key must match — a "
+                           "missing or unexpected one raises rather than being ignored.",
+        "to": "Moves every parameter and buffer to a device, in place.\n\n"
+              "**Call this before constructing an optimiser.** The optimiser captures the "
+              "parameter list when it is built, and `to` replaces each parameter with a new "
+              "tensor — so an optimiser made first would keep updating the old ones while the "
+              "model used the new. torch has the same ordering constraint for the same "
+              "reason.\n\n"
+              "Transfer goes through the host, because that is what a transfer to a discrete "
+              "device is. Gradients move with their parameters; dropping them would leave a "
+              "subsequent optimiser step silently updating nothing.",
+        "train": "Sets training mode recursively. Only `Dropout` and `BatchNorm2d` behave "
+                 "differently between modes.",
+        "eval": "`train(False)`.",
+        "zero_grad": "Clears every parameter's gradient by assigning an undefined tensor. "
+                     "Required between steps, because `backward` **accumulates**.",
+        "named_modules": "Yields `self` first, then children depth-first, so a caller can "
+                         "match on the root as well as the leaves.",
+        "__setattr__": "Routes a `Tensor` into `_parameters` and a `Module` into `_modules`, "
+                       "which is what makes `self.weight = ...` register without a call.",
+        "__getattr__": "Only invoked when normal lookup fails, so parameters, buffers and "
+                       "children resolve without shadowing real attributes.",
+    },
+    "see": ["backward", "save_module", "load_module"],
+}
+
+CLASSES["Linear"] = {
+    "lang": "python",
+    "summary": "`y = x @ Wᵀ + b`, matching `torch.nn.Linear`.",
+    "detail": "The weight is stored as `(out_features, in_features)` and transposed in "
+              "`forward`, exactly as PyTorch does. That layout is not arbitrary — it means a "
+              "PyTorch `state_dict` loads **without any transposition**, which keeps the "
+              "validation comparison honest.\n\n"
+              "**Initialisation** draws `U(−1/√fan_in, +1/√fan_in)` for both weight and bias. "
+              "That closed form is exactly torch's default `kaiming_uniform_(w, a=√5)`: with "
+              "`a=√5` the gain is `√(2/6)`, so the bound reduces to `1/√fan_in`. Verified "
+              "against `torch.nn.Linear` — both give ±0.0357142857 at `fan_in=784`.\n\n"
+              "Weights are drawn from a module-level generator seeded by `nn.manual_seed`, not "
+              "from `default_rng()` per layer. An unseeded generator would give every run "
+              "different weights, making a training result impossible to reproduce and a "
+              "divergence impossible to investigate.",
+    "note": "`manual_seed` mirrors `torch.manual_seed` in spirit, not in stream — the two "
+            "libraries draw from different generators by design, so equal seeds do **not** "
+            "give equal weights. To compare against torch, copy a `state_dict` rather than "
+            "seeding both.",
+    "groups": [("Construction", ["__init__"]),
+               ("Forward", ["forward"]),
+               ("Internals", ["__setattr__", "__repr__"])],
+    "see": ["matmul", "Module"],
+}
+
+CLASSES["BatchNorm2d"] = {
+    "lang": "python",
+    "summary": "Normalise each channel over the batch and spatial axes.",
+    "detail": "**Two variance estimators, deliberately.** The batch is normalised with the "
+              "*biased* variance (divide by N) while the running estimate accumulates the "
+              "*unbiased* one (divide by N−1). That is torch's behaviour, verified, and the "
+              "asymmetry is principled: the biased figure is the right normaliser for the "
+              "batch in hand, the unbiased one the right estimator of the population.\n\n"
+              "Using one for both makes evaluation drift away from training as the running "
+              "estimate converges to the wrong value — which a single-step comparison cannot "
+              "see, so it is pinned by a test that runs many.\n\n"
+              "The running statistics are updated **under `no_grad` and assigned in place**. "
+              "They are bookkeeping about the data seen so far, not part of the function being "
+              "differentiated, and letting them onto the tape would keep every past batch's "
+              "graph alive.",
+    "warning": "`num_batches_tracked` exists **and is deliberately not maintained**. Every "
+               "torch BatchNorm `state_dict` carries the key, so the buffer must exist or "
+               "`load_state_dict` rejects the checkpoint — but nothing in vkML reads it, since "
+               "torch uses it only for `momentum=None`, a mode this layer does not offer.\n\n"
+               "Keeping it accurate would cost a host round-trip per forward pass: int64 "
+               "arithmetic is unimplemented on both backends, so the increment cannot happen "
+               "on the device, and reading the counter back is exactly the per-step "
+               "synchronisation this project spends effort avoiding.\n\n"
+               "**Stated consequence**: a vkML checkpoint loaded into torch reports zero "
+               "batches tracked.",
+    "note": "A single-sample batch leaves the running estimate untouched rather than dividing "
+            "by zero, matching torch.",
+    "groups": [("Construction", ["__init__"]),
+               ("Forward", ["forward"]),
+               ("Internals", ["_update_running_stats", "__repr__"])],
+    "see": ["batch_norm", "LayerNorm", "Module"],
+}
+
+CLASSES["Dropout"] = {
+    "lang": "python",
+    "summary": "Zero elements with probability `p` during training, scaling the rest.",
+    "detail": "**Advances an offset on every call.** The underlying `rand` is a pure function "
+              "of `(seed, offset, index)`, so a module reusing one offset would drop the "
+              "*same* elements at every step — silently, while the loss curve still looked "
+              "plausible. The counter is what makes successive masks independent, and there is "
+              "a test that two consecutive calls differ.\n\n"
+              "Seeding from a module-local counter rather than a global stream keeps the whole "
+              "thing reproducible: the same seed replays the same run.",
+    "note": "`p` must be in `[0, 1)`. `p=0.0` short-circuits to the identity, as does "
+            "evaluation mode.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Internals", ["__repr__"])],
+    "see": ["dropout", "rand", "Module"],
+}
+
+CLASSES["MultiheadAttention"] = {
+    "lang": "python",
+    "summary": "Scaled dot-product attention over several heads.",
+    "detail": "Parameter layout follows `torch.nn.MultiheadAttention` exactly — a packed "
+              "`in_proj_weight` of shape `(3E, E)` plus an `out_proj` submodule — so a torch "
+              "`state_dict` loads without rearrangement.\n\n"
+              "That is not cosmetic. It is what lets the validation suite compare against "
+              "torch's own implementation rather than against a reference written here, which "
+              "would only prove the two agree with each other.",
+    "warning": "**Two deliberate divergences from torch**, both pinned by tests:\n\n"
+               "- `batch_first` defaults to **True**. torch defaults to False, meaning "
+               "`(S, B, E)`, a legacy layout almost every caller overrides.\n"
+               "- It returns the **output tensor alone**, not `(output, weights)`. The "
+               "averaged per-head weights torch returns second are a debugging aid, and a "
+               "tuple that is nearly always destructured-and-discarded is worse to use.",
+    "note": "`embed_dim` must divide by `num_heads`; the constructor raises otherwise. Causal "
+            "masking is built from `triu` plus a comparison, not a dedicated kernel.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Internals", ["__repr__"])],
+    "see": ["softmax", "matmul", "triu", "TransformerEncoderLayer"],
+}
+
+CLASSES["TransformerEncoderLayer"] = {
+    "lang": "python",
+    "summary": "Self-attention followed by a feed-forward block, each residual.",
+    "detail": "Parameter names match `torch.nn.TransformerEncoderLayer` — `self_attn`, "
+              "`linear1`, `linear2`, `norm1`, `norm2` — so a `state_dict` loads unchanged and "
+              "the comparison is against torch's own layer.\n\n"
+              "`norm_first` selects pre- or post-normalisation. Post (torch's default) is the "
+              "original formulation; pre is what deep stacks use, because normalising inside "
+              "the residual branch keeps the gradient path to the input clean.",
+    "note": "`activation` accepts `\"relu\"` or `\"gelu\"`; anything else raises at "
+            "construction rather than at the first forward pass.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Internals", ["__repr__"])],
+    "see": ["MultiheadAttention", "LayerNorm", "Linear", "gelu"],
+}
+
+CLASSES["Sequential"] = {
+    "lang": "python",
+    "summary": "Chain modules, calling each on the previous one's output.",
+    "detail": "Children are registered under their positional index, so a `state_dict` key "
+              "reads `0.weight`, `1.bias` and so on — the same convention as torch, which is "
+              "what lets a torch `Sequential` checkpoint load here.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Access", ["__getitem__", "__len__", "__iter__"])],
+    "see": ["Module", "Linear"],
+}
+
+CLASSES["Embedding"] = {
+    "lang": "python",
+    "summary": "A lookup table mapping integer indices to dense vectors.",
+    "detail": "Implemented as an `index_select` over the weight, so its gradient is a "
+              "`scatter_add` back into a zero tensor — which is why `scatter_add`'s "
+              "determinism matters for training a model with an embedding, not only for "
+              "inference.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Internals", ["__repr__"])],
+    "see": ["index_select", "scatter_add", "Module"],
+}
+
+CLASSES["Conv2d"] = {
+    "lang": "python",
+    "summary": "2-D convolution, matching `torch.nn.Conv2d`.",
+    "detail": "Calls `conv2d`, which lowers to `im2col` followed by `matmul` — so every GEMM "
+              "improvement reaches this layer for free, and so does the im2col memory "
+              "expansion.",
+    "warning": "Grouped and depthwise convolution are not supported; the weight's input "
+               "channels must equal the input's.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Internals", ["__repr__"])],
+    "see": ["conv2d", "im2col", "matmul", "Module"],
+}
+
+CLASSES["LayerNorm"] = {
+    "lang": "python",
+    "summary": "Layer normalisation with an optional affine transform.",
+    "detail": "Calls `layer_norm` for the normalisation, then applies weight and bias itself — "
+              "the operator is the normalisation alone, and this layer owns the affine part.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Internals", ["__repr__"])],
+    "see": ["layer_norm", "rms_norm", "BatchNorm2d", "Module"],
+}
+
+
+# The activation and shape wrappers. Each is a one-line `forward` calling the
+# operator of the same name, so the entry is short on purpose -- padding it
+# would imply there is more happening than there is. The operator page carries
+# the numerical detail.
+for _name, _op, _what in [
+    ("ReLU", "relu", "the rectified linear unit"),
+    ("GELU", "gelu", "the Gaussian error linear unit"),
+    ("Sigmoid", "sigmoid", "the logistic function"),
+    ("Tanh", "tanh", "the hyperbolic tangent"),
+]:
+    CLASSES[_name] = {
+        "lang": "python",
+        "summary": f"Apply {_what}, element-wise.",
+        "detail": f"A stateless wrapper: `forward` calls `{_op}` and nothing else. It exists "
+                  f"so the activation can sit inside a `Sequential`. See `{_op}` for the "
+                  f"numerical behaviour, which is where the substance is.",
+        "groups": [("Forward", ["forward"])],
+        "see": [_op, "Sequential"],
+    }
+
+CLASSES["Flatten"] = {
+    "lang": "python",
+    "summary": "Collapse every axis after the first into one.",
+    "detail": "A **view**, not a copy — it reshapes, so no data moves. Typically the join "
+              "between a convolutional stack and a linear head.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"])],
+    "see": ["Sequential", "Linear"],
+}
+
+CLASSES["MaxPool2d"] = {
+    "lang": "python",
+    "summary": "Maximum over each sliding window, per channel.",
+    "detail": "A stateless wrapper over `max_pool2d`, holding only the window geometry.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Internals", ["__repr__"])],
+    "see": ["max_pool2d", "AvgPool2d"],
+}
+
+CLASSES["AvgPool2d"] = {
+    "lang": "python",
+    "summary": "Mean over each sliding window, per channel.",
+    "detail": "A stateless wrapper over `avg_pool2d`, holding only the window geometry.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Internals", ["__repr__"])],
+    "see": ["avg_pool2d", "MaxPool2d"],
+}
