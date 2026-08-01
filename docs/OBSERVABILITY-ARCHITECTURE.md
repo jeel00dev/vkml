@@ -177,6 +177,67 @@ Practical test of the constraint: **it must be possible to delete the recorder
 entirely and still compile.** Publication is a call into layer 0 that may go
 nowhere.
 
+## 4b. DispatchId — the identity that lets facts be joined without merging
+
+Decision owns *what was chosen and why*. Measurement owns *what it cost*.
+Neither may own the other, and until now neither could be connected to the
+other either — which is why the obvious fix for kernel attribution was to write
+the kernel name into the profiler's label. That would have given
+kernel-selection two owners.
+
+**DispatchId is the third fact: identity.** It carries no description, so it
+cannot drift from anything; it exists only so consumers can join.
+
+| | |
+|---|---|
+| **What it identifies** | one `vkCmdDispatch` recorded into a command buffer — not an operator (split-K makes one matmul several dispatches) and not a submission (batching makes one submission many dispatches) |
+| **Owner** | `CommandRecorder`. It is the only thing that records dispatches, so it is the only thing that can number them. Neither the planner nor the profiler may mint one |
+| **Created** | at record time, *before* the command is written, so the Decision published just before and the timestamp resolved just after can name the same dispatch |
+| **Lifetime** | the process. It is not persisted: persisting it would make this a tracing system, which section 9 forbids |
+| **Validity domain** | one device, one queue, one process — see the failure modes below, which are real rather than theoretical |
+
+### The invariant, which is what this section actually specifies
+
+> **Every recorded dispatch has exactly one DispatchId, and every fact that
+> refers to that dispatch carries the same one.**
+
+Today a monotonic `uint64_t` counter satisfies that. **The counter is the
+implementation; the invariant is the architecture.** Consumers must join on
+DispatchId and must never assume it is dense, ordered, or arithmetic — code
+that computes `id + 1` or sorts by it has taken a dependency on today's
+representation and will break when the representation widens.
+
+### Failure modes, stated before they happen
+
+- **Multi-queue or async execution.** "The next ordinal" stops being
+  unambiguous across queues. DispatchId must widen to `(queue, ordinal)`.
+  Consumers that treated it as opaque keep working; consumers that did
+  arithmetic on it do not.
+- **Multi-device.** Widens again, and it invalidates the single-owner
+  assumption for Capability at the same time (section 13). The two must be
+  revisited together, not separately.
+- **Replay.** Requires persistence, which section 9 forbids today. That
+  prohibition would need revisiting deliberately rather than by growth.
+- **A misassigned id** is the interesting failure: two dispatches sharing one
+  id, or a decision naming an id that was never recorded. Both are detectable
+  (below), which is the point of having the identity at all.
+
+### Extension path
+
+Widen the type, never the meaning. Consumers depend on *"names one dispatch"*;
+they must not depend on *"is a number"*. The test of any future change is
+whether a consumer that only compares ids for equality still compiles and still
+joins correctly.
+
+### Why this does not create a new subsystem
+
+Nothing new observes anything. `CommandRecorder` already counts dispatches
+(`dispatch_count_`), Decision already publishes, Measurement already records —
+the three simply begin carrying a common key. **Either side can be deleted
+independently:** remove profiling and Decisions still carry an id nobody joins;
+remove the decision recorder and timestamps still resolve. Neither imports the
+other; both import only the counter's owner.
+
 ## 5. Every fact must be checkable against reality
 
 The highest-leverage systems in this project all became bidirectional —
