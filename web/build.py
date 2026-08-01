@@ -764,6 +764,21 @@ CLASS_LABEL = {"vkml.Tensor": "Tensor <span class=\"nav-note\">Python</span>",
                "Tensor": "Tensor <span class=\"nav-note\">C++</span>"}
 
 
+def reading_order() -> list[str]:
+    """The sequence a reader is walked through, DERIVED from NAV_SECTIONS.
+
+    Not a second declaration. The sidebar already states the order a reader is
+    meant to meet these pages in, so prev/next reuses it rather than introducing
+    a parallel list that can disagree with the navigation -- which is how a site
+    ends up telling you one thing in the tree and another at the foot of a page.
+
+    Reference pages are deliberately absent. `api-reduction` has no natural
+    successor: nobody reads the operator reference front to back, and offering
+    "Next: Shape and indexing" would invent a journey nobody is on.
+    """
+    return [slug for _, slugs in NAV_SECTIONS for slug in slugs]
+
+
 def sidenav(active: str) -> str:
     """The section tree, built from the reader's structure rather than the build's."""
     title_of = {slug: title for slug, title, _ in PAGES}
@@ -1486,9 +1501,23 @@ def build() -> int:
               toc=toc_for(ctoc), crumb=crumbs(("Classes", None), (cname, None)),
               page=slug, index_json=index_json)
 
-    for slug, title, body in list(PAGES) + capability_pages():
+    all_pages = list(PAGES) + capability_pages()
+    titles = {s: t for s, t, _ in all_pages}
+    order = [s for s in reading_order() if s in titles]
+
+    for slug, title, body in all_pages:
         body = with_diagrams(body, slug)
         body = with_heading_ids(body)
+        # Prev/next, so the guide reads straight through as well as by search.
+        # `pagenav()` and its eight CSS rules existed and were called from
+        # nowhere: every page was a dead end for sequential reading, which is
+        # what the link graph reported as twenty dead ends.
+        if slug in order:
+            i = order.index(slug)
+            prev = ((titles[order[i - 1]], f"{order[i - 1]}.html") if i > 0 else None)
+            nxt = ((titles[order[i + 1]], f"{order[i + 1]}.html")
+                   if i + 1 < len(order) else None)
+            body += pagenav(prev, nxt)
         heads = [
             (m.group(1), re.sub(r"<[^>]+>", "", m.group(2)), 2)
             for m in re.finditer(r'<h2 id="([^"]+)"[^>]*>(.*?)</h2>', body, re.S)
