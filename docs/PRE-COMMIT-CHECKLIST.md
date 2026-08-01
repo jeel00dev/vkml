@@ -126,6 +126,7 @@ have caused one (`docs/adr/0006` §7).
 ```sh
 python scripts/check_layering.py
 python scripts/check_push_constants.py
+python scripts/check_precise_gemm.py
 python scripts/check_docs_references.py
 python scripts/check_docs_examples.py     # needs a built extension
 python scripts/check_versions.py

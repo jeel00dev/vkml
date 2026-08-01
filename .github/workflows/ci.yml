@@ -63,6 +63,13 @@ jobs:
       - name: Push-constant budget
         run: python scripts/check_push_constants.py
 
+      # ADR 0005: GEMM accumulators must forbid FMA contraction. The decoration
+      # is invisible in behaviour on RADV -- byte-identical machine code either
+      # way -- so a variant that omitted it would pass every test here and
+      # violate the contract only on a driver that does contract.
+      - name: GEMM contraction contract
+        run: python scripts/check_precise_gemm.py
+
       # The documentation gates. They import vkml only for the example runner,
       # which is why that one lives in the Python job instead of here.
       - name: Documentation references
