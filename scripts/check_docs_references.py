@@ -104,6 +104,7 @@ def main() -> int:
     problems += stale_docs_references()
     problems += unrendered_markup()
     problems += headings_without_ids()
+    problems += oversized_site_files()
     if problems:
         print(f"  {len(problems)} problems:")
         for p in problems:
@@ -330,6 +331,46 @@ def headings_without_ids():
             label = re.sub(r"<[^>]+>", "", m.group(3)).strip()
             out.append(f"{page.name}: <{m.group(1)}> {label[:40]!r} has no id, "
                        f"so it cannot be linked or listed")
+    return out
+
+
+# What a single file in the built site may weigh. Not a round number: the
+# largest legitimate asset is the 1200x630 social card at 65 kB, and the budget
+# sits just above it so anything bigger is a decision rather than an accident.
+SITE_FILE_BUDGET_KB = 80
+
+
+def oversized_site_files():
+    """No binary asset in the built site may exceed the budget.
+
+    The master logo -- 1536x1024, 2.4 MB -- was being served as the favicon, in
+    the topbar at 25.6px and in the hero at 120px. Against 54.7 kB of HTML, CSS
+    and JavaScript it was 97.8% of every page load, and nothing said so: the
+    page looked right, so the weight was invisible.
+
+    Derived sizes now come from scripts/make_assets.py and the landing page
+    transfers 104 kB. This keeps it that way.
+    """
+    site = ROOT / "web" / "_site"
+    if not site.exists():
+        return ["web/_site does not exist; run python web/build.py first"]
+    # BINARY assets only. Markup and stylesheets are text, compress about 5:1
+    # in transit, and grow for a reason -- api-element-wise.html is 94 kB
+    # because it documents twenty-one operators in full, which is the page doing
+    # its job. Holding those to an image budget would report the reference
+    # getting more complete as a regression.
+    binary = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
+              ".woff", ".woff2", ".ttf", ".otf", ".mp4", ".zip"}
+    out = []
+    for f in sorted(site.rglob("*")):
+        if not f.is_file() or f.suffix.lower() not in binary:
+            continue
+        kb = f.stat().st_size / 1000
+        if kb > SITE_FILE_BUDGET_KB:
+            out.append(f"{f.relative_to(site)} is {kb:.0f} kB, over the "
+                       f"{SITE_FILE_BUDGET_KB} kB budget -- derive a smaller "
+                       f"asset with scripts/make_assets.py, or raise the budget "
+                       f"deliberately")
     return out
 
 if __name__ == "__main__":
