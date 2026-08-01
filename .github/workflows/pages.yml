@@ -65,11 +65,17 @@ jobs:
       - name: Build the site
         run: python web/build.py
 
-      # The same gates ci.yml runs. Publishing a site that fails them would put
-      # the project's own documentation discipline behind the deploy.
+      # The gates that validate the BUILT SITE. Publishing a site that fails
+      # them would put the deploy ahead of the project's own discipline.
+      #
+      # check_docs_references.py is deliberately NOT here. It also validates
+      # citations in the design documents into third_party/reference -- llama.cpp,
+      # CUTLASS, Tensile, tinygrad -- which are vendored locally and not checked
+      # out on a runner, so it reports twelve absent files that are present in a
+      # full tree. That gate belongs to ci.yml, which owns the source tree's
+      # correctness; this workflow owns the site.
       - name: Documentation gates
         run: |
-          python scripts/check_docs_references.py
           python scripts/check_docs_links.py
           python scripts/docs_graph.py --check
           python scripts/check_source_links.py
