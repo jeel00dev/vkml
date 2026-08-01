@@ -123,8 +123,14 @@ CONTROLS: list[Control] = [
         guards="a gate that can fail but which nothing ever runs",
         source_of_truth="scripts/ that exit non-zero, against the workflows' shell lines",
         target=".github/workflows/ci.yml",
-        find="          python scripts/docs_graph.py --check\n",
-        replace="",
+        # Damages a gate that ONLY ci.yml runs. `docs_graph.py --check` was the
+        # original target and silently stopped being a control the moment
+        # pages.yml started running it too: removing it from one workflow left
+        # it accounted for by the other, so the gate stayed green and this
+        # control reported FAILED -- correctly, because it could no longer
+        # detect what it guards. A control can rot the same way a gate can.
+        find="        run: python scripts/check_layering.py",
+        replace="        run: true",
         defect="a gate quietly dropped from CI, or added and never wired in -- "
                "the state check_docs_links.py and docs_graph.py were both in",
         artifacts="PRE-COMMIT-CHECKLIST section 6, which it makes checkable",

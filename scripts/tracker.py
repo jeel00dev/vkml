@@ -187,6 +187,13 @@ T: dict[int, tuple] = {
                                      "O-A..O-F in PROJECT-SCOPE-ANALYSIS.md", SHARED),
     118: ("open", DEFECT,   PRODUCT, "a maintainer decision narrowing the manifesto P1 list -- "
                                      "which must be written INTO the manifesto, it being the authority", FOUND),
+    # ---- First release (R-series) ----
+    119: ("open", PLANNED,  VERIFY,  "none -- this is the release's definition of tested", SHARED),
+    120: ("open", PLANNED,  VERIFY,  "none -- PyTorch is the stated oracle", SHARED),
+    121: ("open", PLANNED,  VERIFY,  "none -- coverage without mutation overstates the suite", FOUND),
+    122: ("open", PLANNED,  VERIFY,  "none -- without it the performance claim is unfalsifiable", FOUND),
+    123: ("open", PLANNED,  KNOW,    "none -- a public claim must be generated from measurement", SHARED),
+    124: ("open", DESIGN,   KNOW,    "blocked on #114; the definition is Jeel's to make", FOUND),
     # ---- Observability architecture increments ----
     115: ("done", PLANNED,  OBSERVE, "recorder + Python query surface", None),
     116: ("done", PLANNED,  VERIFY,  "shipped 1 of 2 proposed checks; the dispatch-structure signal "
