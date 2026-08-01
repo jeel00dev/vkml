@@ -7,43 +7,36 @@ would be more machinery than the pages are worth.
 from __future__ import annotations
 
 LANDING = """
-<div class="hero">
-  <img src="assets/vkml_logo.png" alt="vkML">
-  <h1>Machine learning on Vulkan</h1>
-  <p class="lede">A tensor library and neural-network framework in C++20 with a Python API.
-  Compute shaders only, no vendor runtime — it runs on the GPU you already have.</p>
-  <p>
+<div class="lhero">
+  <img src="assets/logo-256.png" alt="vkML" width="256" height="171">
+  <h1>Machine learning on the GPU you already have</h1>
+  <p class="lede">A tensor library and neural-network framework in C++20 with a Python
+  API. Compute shaders only &mdash; no CUDA, no ROCm, no vendor runtime.</p>
+  <p class="cta">
     <a class="btn solid" href="get-started.html">Get started</a>
     <a class="btn" href="api.html">API reference</a>
+    <a class="btn" href="https://github.com/jeel00dev/vkml">GitHub</a>
   </p>
+  <div class="lstats">
+    <div class="lstat"><b>102</b><span>operators</span></div>
+    <div class="lstat"><b>24</b><span>compute shaders</span></div>
+    <div class="lstat"><b>2</b><span>backends, one an oracle</span></div>
+    <div class="lstat"><b>Vulkan&nbsp;1.3</b><span>and nothing else</span></div>
+  </div>
 </div>
 
-<div class="cards">
-  <a class="card" href="get-started.html">
-    <h3>Install and train</h3>
-    <p>Build it, put a tensor on the GPU, and train MNIST end to end.</p>
-  </a>
-  <a class="card" href="concepts.html">
-    <h3>How it works</h3>
-    <p>Lazy graphs, the two backends, and why the CPU one is the oracle.</p>
-  </a>
-  <a class="card" href="api.html">
-    <h3>API reference</h3>
-    <p>Every public function, with signatures generated from the module.</p>
-  </a>
-  <a class="card" href="https://github.com/jeel00dev/vkml">
-    <h3>Source</h3>
-    <p>Apache-2.0. Issues, design records and the engineering handbook.</p>
-  </a>
-</div>
-
-<h2>What it looks like</h2>
-<pre><code>import numpy as np, vkml
+<div class="lsec">
+<h2 id="quick-start">Train something in twenty lines</h2>
+<p>Install, pick a device, and run a training loop. The whole API is NumPy-shaped
+and PyTorch-shaped on purpose &mdash; a <code>state_dict</code> from torch loads
+without translation.</p>
+<pre><code>pip install vkml</code></pre>
+<pre><code>import vkml
 from vkml import nn, optim
 
 vkml.init_vulkan(0)
 dev, why = vkml.best_device()
-print(why)          # using Vulkan device 0: AMD Radeon RX 5600M (discrete, …)
+print(why)          # using Vulkan device 0: AMD Radeon RX 5600M (discrete, ...)
 
 model = nn.Sequential(nn.Linear(784, 128), nn.ReLU(), nn.Linear(128, 10)).to(dev)
 opt = optim.Adam(model.parameters(), lr=1e-3)
@@ -52,38 +45,107 @@ for x, y in loader:
     opt.zero_grad()
     vkml.backward(nn.cross_entropy(model(x), y))
     opt.step()</code></pre>
+</div>
 
-<h2>What makes it different</h2>
+<div class="lsec">
+<h2 id="any-gpu">Runs on any Vulkan GPU</h2>
+<p>Vulkan 1.3 compute is the only requirement. That covers AMD, Intel, NVIDIA,
+Apple through MoltenVK, and the integrated GPU in a laptop &mdash; the same
+binary, with no vendor toolkit to install and no per-vendor code path to
+maintain.</p>
+<div class="lsplit">
+  <div>
+    <h3>No vendor runtime</h3>
+    <p>Twenty-four GLSL compute shaders compiled to SPIR-V at build time. There is
+    no CUDA, no ROCm and no vendor SDK anywhere in the build.</p>
+    <h3>Written against the guarantee, not the machine</h3>
+    <p>Push-constant budgets, workgroup widths and subgroup ranges are checked
+    against what Vulkan 1.3 <em>requires</em>, not what the development GPU happens
+    to report. <code>VKML_MIN_SPEC=1</code> makes any device report the guaranteed
+    floor so that is testable.</p>
+  </div>
+  <div>
+    <h3>Deterministic by contract</h3>
+    <p>Identical inputs give identical bytes on the same device, and across
+    drivers where the contract says so. f32&rarr;f16 narrowing is done in software
+    rather than left to <code>OpFConvert</code>, whose rounding mode SPIR-V leaves
+    implementation-defined.</p>
+    <h3>Lazy by default</h3>
+    <p>Operations build a graph; evaluation waits until something observes the
+    result. Eager mode collapses that while debugging.</p>
+  </div>
+</div>
+</div>
 
-<h3>Portable by construction</h3>
-<p>No CUDA, no ROCm, no vendor SDK. Vulkan compute shaders run on AMD, Intel, NVIDIA and
-software rasterisers alike. The library asserts against the limits Vulkan <em>guarantees</em>
-rather than the ones the development machine happens to report — every push-constant block
-fits the guaranteed 128 bytes, and the workgroup width adapts to the device.</p>
+<div class="lsec">
+<h2 id="correctness">The CPU backend is the oracle, not a fallback</h2>
+<p>Every operator has a CPU implementation whose job is to be <em>right</em>, and
+the Vulkan one is checked against it. Both are checked against PyTorch. Where the
+two backends disagree, the difference is a documented tolerance with a stated
+kind &mdash; exact, ULP, relative or backward &mdash; not a fudge factor.</p>
+<div class="lsplit">
+  <div>
+    <h3>Tested against two references</h3>
+    <p>1,434 Python tests compare against PyTorch and against the CPU oracle,
+    including strided inputs, empty tensors, broadcasting, mixed precision and
+    extreme magnitudes.</p>
+  </div>
+  <div>
+    <h3>The tests are checked too</h3>
+    <p>A mutation campaign breaks each kernel on purpose and confirms the suite
+    notices. A green suite proves the tests ran, not that they can fail.</p>
+  </div>
+</div>
+</div>
 
-<h3>The CPU backend is an oracle, not a fallback</h3>
-<p>Correctness is a chain: the CPU backend is checked against PyTorch for semantics, then the
-Vulkan backend against the CPU for kernel bugs. That second link only means anything because
-the CPU backend shares vkML's exact semantics, so a mismatch is unambiguously a kernel
-defect.</p>
-<p>It follows that the Vulkan backend is <strong>all or nothing</strong>. An operation it does
-not implement raises <code>NotImplementedError</code> instead of quietly moving your data to
-the host — a silent fallback would make a GPU run indistinguishable from a CPU one.</p>
+<div class="lsec">
+<h2 id="architecture">How it fits together</h2>
+<p>Nine layers, and the dependency direction is enforced by a build gate rather
+than by convention.</p>
+<pre><code>util 0 &middot; core 1 &middot; graph 2 &middot; backend/api 3 &middot; backend/cpu | backend/vulkan 4
+dispatch 5 &middot; plan 5 &middot; api 6 &middot; autograd 7</code></pre>
+<p>A Python call enters the API layer, builds graph nodes, and returns. When a
+result is observed the dispatcher walks the graph, picks a backend per node, and
+submits. On Vulkan that means selecting one of six matmul pipelines, packing
+push constants, and recording a dispatch &mdash; all described in
+<a href="concepts.html">Concepts</a> and the architecture pages.</p>
+</div>
 
-<h3>Deterministic on purpose</h3>
-<p>Identical inputs give bit-identical outputs on the same device, and across drivers where
-the contract says so. Reduction trees are fixed by shape rather than by scheduling, and
-float32→float16 narrowing is done in software because SPIR-V leaves
-<code>OpFConvert</code>'s rounding mode implementation-defined.</p>
-
-<div class="admon warn">
-  <span class="label">alpha</span>
-  <p>vkML is under active development. The core tensor and autograd layers are stable and
-  heavily tested; performance work is ongoing and the API may still change. See
-  <a href="https://github.com/jeel00dev/vkml/issues">open issues</a> for what is known.</p>
+<div class="lsec">
+<h2 id="explore">Explore</h2>
+<div class="cards">
+  <a class="card" href="get-started.html">
+    <h3>Get started</h3>
+    <p>Build it, check your device is usable, put a tensor on the GPU and train
+    MNIST end to end.</p>
+  </a>
+  <a class="card" href="concepts.html">
+    <h3>Concepts</h3>
+    <p>Lazy graphs, the two backends, dtypes and devices, and why the CPU one is
+    the oracle.</p>
+  </a>
+  <a class="card" href="api.html">
+    <h3>API reference</h3>
+    <p>102 operators and 27 classes, with signatures generated from the installed
+    module so they cannot go stale.</p>
+  </a>
+  <a class="card" href="arch-tensor.html">
+    <h3>Architecture</h3>
+    <p>Tensors and views, the graph, autograd, both backends, the shader layer
+    and the numerics.</p>
+  </a>
+  <a class="card" href="performance.html">
+    <h3>Performance</h3>
+    <p>Where the time actually goes, measured with timestamp queries, and what is
+    being done about it.</p>
+  </a>
+  <a class="card" href="https://github.com/jeel00dev/vkml">
+    <h3>Source</h3>
+    <p>Apache-2.0. Issues, design records and the engineering handbook.</p>
+  </a>
+</div>
 </div>
 """
-
 
 GET_STARTED = """
 <h1>Get started</h1>

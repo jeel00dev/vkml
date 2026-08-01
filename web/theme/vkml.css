@@ -470,3 +470,68 @@ footer.page { max-width: none; margin-top: 2.5rem; padding-top: 1.1rem;
     html { scroll-behavior: auto; }
     * { transition-duration: .01ms !important; }
 }
+
+/* --------------------------------------------------------------- landing -- */
+
+/* The landing page is not a documentation page. It drops the section tree, the
+   contents rail and the measure clamp, and centres on the viewport instead of
+   on whatever is left after a sidebar -- which is what made the hero sit
+   visibly off-centre and squeezed the lede into a three-line block ending in a
+   one-word widow. */
+
+.landing .content { max-width: none; padding: 0 0 var(--s-6); }
+/* Written as `.content > .lsec` rather than `.lsec`, because the reset above
+   is `.landing .content > *` and would otherwise win on specificity -- which it
+   did: every section rendered at the full 1280 with no container, and the card
+   grid spread to four across. */
+.landing .content > * { max-width: none; }
+.landing .content > .lsec,
+.landing .content > .lhero { max-width: 60rem; margin-left: auto; margin-right: auto; }
+.landing footer.page { max-width: 60rem; margin-left: auto; margin-right: auto;
+                       padding-left: var(--s-4); padding-right: var(--s-4); }
+
+/* Every landing section shares one container, so the left edges line up down
+   the page. Wider than the prose measure because these are display blocks, not
+   long-form reading. */
+.lsec { max-width: 60rem; margin: 0 auto; padding: var(--s-6) var(--s-4); }
+.lsec + .lsec { padding-top: 0; }
+.lsec > h2 { margin-top: 0; font-size: 1.45rem; }
+.lsec > h2 + p { color: var(--fg-muted); max-width: 40rem; }
+
+/* Hero. The lede is clamped well inside the container so it breaks into two
+   balanced lines rather than three with a widow. */
+.lhero { text-align: center; padding: var(--s-6) var(--s-4) var(--s-5); }
+.lhero img { height: 7.5rem; width: auto; }
+.lhero h1 { margin: var(--s-4) 0 var(--s-3); font-size: clamp(2rem, 5vw, 3rem);
+            letter-spacing: -.03em; line-height: 1.1; }
+.lhero .lede { max-width: 40rem; margin: 0 auto var(--s-5);
+               font-size: 1.12rem; color: var(--fg-muted); text-wrap: balance; }
+.lhero .cta { display: flex; gap: var(--s-3); justify-content: center; flex-wrap: wrap; }
+
+/* A run of short facts under the hero. Each is checkable -- they are counted
+   from the tree at build time, not typed here. */
+.lstats { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--s-5);
+          margin: var(--s-5) auto 0; padding: var(--s-4) var(--s-4) 0;
+          border-top: 1px solid var(--border); max-width: 44rem; }
+.lstat { text-align: center; }
+.lstat b { display: block; font: 700 1.35rem/1.2 var(--sans); color: var(--fg-strong); }
+.lstat span { font-size: .8rem; color: var(--fg-muted); }
+
+/* Two columns where the point is a comparison or a code sample beside prose.
+   Collapses to one on anything narrow. */
+.lsplit { display: grid; gap: var(--s-5); grid-template-columns: 1fr 1fr;
+          align-items: start; }
+.lsplit pre { margin: 0; }
+@media (max-width: 56rem) { .lsplit { grid-template-columns: 1fr; } }
+
+/* The landing card grid: an even 2x2 rather than three across with a fourth
+   orphaned onto a second row. */
+.landing .cards { grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); }
+.card:hover { border-color: var(--border-strong); background: var(--bg-code); }
+.card h3 { margin: 0 0 var(--s-2); font-size: 1rem; }
+.card p { margin: 0; font-size: .9rem; color: var(--fg-muted); }
+
+@media (max-width: 48rem) {
+    .lhero img { height: 5.5rem; }
+    .lsec { padding: var(--s-5) var(--s-4); }
+}

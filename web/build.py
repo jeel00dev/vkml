@@ -34,6 +34,11 @@ ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
 OUT = WEB / "_site"
 
+# Absolute, because og:image and og:url are fetched by a crawler that has no
+# page context to resolve a relative path against -- a relative og:image is
+# the usual reason a link preview renders blank.
+SITE_URL = "https://jeel00dev.github.io/vkml"
+
 sys.path.insert(0, str(ROOT / "python"))
 sys.path.insert(0, str(WEB))
 
@@ -760,14 +765,25 @@ SHELL = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <meta name="description" content="{desc}">
-<link rel="icon" href="assets/vkml_logo.png">
+<link rel="icon" href="assets/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="vkML">
+<meta property="og:title" content="{ogtitle}">
+<meta property="og:description" content="{desc}">
+<meta property="og:image" content="{site}/assets/og-card.png">
+<meta property="og:url" content="{site}/{page}.html">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{ogtitle}">
+<meta name="twitter:description" content="{desc}">
+<meta name="twitter:image" content="{site}/assets/og-card.png">
 <link rel="stylesheet" href="theme/vkml.css">
 </head>
-<body>
+<body class="{bodycls}">
 <header class="topbar">
   <button class="icon-btn" id="nav-toggle" aria-label="Toggle navigation">☰</button>
   <a class="brand" href="index.html">
-    <img src="assets/vkml_logo.png" alt=""><span>vk<span class="ml">ML</span></span>
+    <img src="assets/logo-64.png" alt="" width="38" height="26"><span>vk<span class="ml">ML</span></span>
   </a>
   <span class="ver">{version}</span>
   <nav>
@@ -821,6 +837,10 @@ def write(
     path.write_text(
         SHELL.format(
             title=html.escape(title),
+            # Without the site suffix. The <title> ends "-- vkML" and og:site_name
+            # already carries the project, so reusing it here rendered link
+            # previews as "vkML -- machine learning on Vulkan -- vkML".
+            ogtitle=html.escape(re.sub(r"\s*—\s*vkML$", "", title)),
             desc=html.escape(plain(desc)),
             body=body,
             sidenav=nav,
@@ -828,6 +848,11 @@ def write(
             crumbs=crumb,
             version=html.escape(V.__version__),
             apicls="active" if page == "api" else "",
+            # The landing page is not a documentation page: it drops the
+            # section tree and the measure clamp, and centres on the viewport.
+            bodycls="landing" if page == "index" else "",
+            page=page,
+            site=SITE_URL,
             index=index_json,
         )
     )
@@ -981,7 +1006,8 @@ def build() -> int:
     shutil.copytree(WEB / "theme", OUT / "theme")
     (OUT / "theme" / "site.js").write_text(SITE_JS)
     (OUT / "assets").mkdir()
-    shutil.copy(ROOT / "assets" / "vkml_logo.png", OUT / "assets" / "vkml_logo.png")
+    for f in sorted((ROOT / "assets" / "derived").glob("*.png")):
+        shutil.copy(f, OUT / "assets" / f.name)
     (OUT / ".nojekyll").write_text("")
 
     public = {
@@ -1091,8 +1117,13 @@ def build() -> int:
             title=f"{title} — vkML",
             desc=title,
             body=body,
-            nav=sidenav(slug),
-            toc=toc_for(heads),
+            # The landing page carries no section tree and no contents rail:
+            # a sidebar is a wayfinding aid for a reader who already knows what
+            # they are looking for, and a first-time visitor is not that reader.
+            # None of the twelve reference sites measured shows its docs tree
+            # on the landing page.
+            nav="" if slug == "index" else sidenav(slug),
+            toc="" if slug == "index" else toc_for(heads),
             crumb=crumb,
             page=slug,
             index_json=index_json,
