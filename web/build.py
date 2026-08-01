@@ -158,6 +158,8 @@ GROUPS: list[tuple[str, list[str]]] = [
     ),
 ]
 
+ADR_MENTIONS = R.adr_mentions()
+BENCH_MENTIONS = R.benchmark_mentions()
 FACTS = R.gather(sorted({n for _, names in GROUPS for n in names}))
 CPU_ONLY = {"prod"}
 ALL_NAMES = {n for _, names in GROUPS for n in names}
@@ -489,6 +491,23 @@ def impl_table(f) -> str:
     else:
         rows.append(("Gradient rule",
                      '<span class="none">none — backward through it raises</span>'))
+
+    # Decisions, measurements and history: the three destinations the table
+    # named nowhere, so a reader who wanted to know WHY an operator behaves as
+    # it does had to already know which ADR to open.
+    adrs = ADR_MENTIONS.get(f.name, [])
+    if adrs:
+        rows.append(("Decisions", " ".join(
+            f'<a href="{R.REPO_URL}/{path}">{html.escape(title.split(" — ")[0])}</a>'
+            for path, title in adrs)))
+    marks = BENCH_MENTIONS.get(f.name, [])
+    if marks:
+        rows.append(("Benchmarked", " · ".join(
+            f"<code>{html.escape(m)}</code>" for m in marks[:4])))
+    if f.cpu_kernel:
+        rows.append(("History",
+                     f'<a href="{R.history_url(f.cpu_kernel[0])}">'
+                     f"commits touching the CPU kernel</a>"))
 
     if f.tests:
         files = sorted({t[0] for t in f.tests})

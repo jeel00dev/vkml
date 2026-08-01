@@ -938,3 +938,57 @@ def torch_equivalents() -> dict[str, list[str]]:
             if len(ours) == 1 and len(theirs) == 1:
                 out.setdefault(ours[0], set()).add(theirs[0])
     return {k: sorted(v) for k, v in sorted(out.items())}
+
+
+# ------------------------------------------------- operator cross-references --
+
+ADR_DIR = ROOT / "docs" / "adr"
+GPU_BENCH = ROOT / "bench" / "gpu_bench.py"
+
+
+def adr_mentions() -> dict[str, list[tuple[str, str]]]:
+    """operator -> the ADRs that discuss it, as (file, title).
+
+    An operator's behaviour is often a DECISION rather than an implementation
+    detail -- `prod` is CPU-only because of a determinism argument, `matmul`
+    forbids FMA contraction because of ADR 0005 -- and the reasoning lives in a
+    document the reference never pointed at. A reader who wants to know why has
+    to already know the ADR exists.
+
+    Matched on whole words only. A substring match would tie `sum` to any ADR
+    containing "assume", which is most of them.
+    """
+    out: dict[str, list[tuple[str, str]]] = {}
+    docs = []
+    for f in sorted(ADR_DIR.glob("[0-9]*.md")):
+        text = f.read_text(errors="ignore")
+        first = next((ln.lstrip("# ").strip() for ln in text.splitlines()
+                      if ln.startswith("# ")), f.stem)
+        docs.append((f, first, text))
+    for f, title, text in docs:
+        # Only backticked mentions count. An ADR that says "the matmul path" in
+        # prose is context; one that writes `matmul` is naming the operator.
+        for name in set(re.findall(r"`(\w+)`", text)):
+            out.setdefault(name, []).append((rel(f), title))
+    return {k: sorted(set(v)) for k, v in out.items()}
+
+
+def benchmark_mentions() -> dict[str, list[str]]:
+    """operator -> the benchmark cases that measure it.
+
+    Read from the benchmark's own case names, so an operator that gains or loses
+    a benchmark changes this without anyone editing the documentation.
+    """
+    if not GPU_BENCH.is_file():
+        return {}
+    out: dict[str, list[str]] = {}
+    for label in re.findall(r'measure\(\s*f?"([^"{]+)', GPU_BENCH.read_text()):
+        head = label.split()[0] if label.split() else ""
+        if head:
+            out.setdefault(head, []).append(label.strip())
+    return {k: sorted(set(v)) for k, v in out.items()}
+
+
+def history_url(path: str) -> str:
+    """The file's commit history. Constructed, not stored -- it is a URL shape."""
+    return f"{REPO_URL.replace('/blob/main', '/commits/main')}/{path}"
