@@ -250,6 +250,12 @@ def metadata() -> dict:
         "total_memory_bytes": caps["total_memory_bytes"],
         "max_shared_memory_bytes": caps["max_shared_memory_bytes"],
         "global_float_atomics": caps["global_float_atomics"],
+        # Validation layers cost real time on every submission and are ON BY
+        # DEFAULT. Recording the setting is what makes a wall-clock comparison
+        # against this baseline interpretable: measured on an RX 5600M, the same
+        # suite reports 14 regressions past 15% with layers on and 2 with them
+        # off, and twelve of those fourteen are wall-clock only.
+        "validation_layers": os.environ.get("VKML_VULKAN_VALIDATION", "1") != "0",
     }
 
 
@@ -276,6 +282,23 @@ def check(samples: list[Sample], baseline_path: str, threshold: float) -> int:
         print(f"NOTE: baseline was recorded on {baseline['metadata'].get('gpu')!r}, "
               f"this is {metadata()['gpu']!r}; comparison is not meaningful.")
         return 0
+
+    # A baseline recorded without validation layers cannot be compared against a
+    # run with them, and the difference is not small: twelve of fourteen
+    # warnings in one measured run were this and nothing else. Older baselines
+    # predate the field, so an absent value is treated as unknown and reported
+    # rather than assumed either way.
+    here = metadata()["validation_layers"]
+    there = baseline.get("metadata", {}).get("validation_layers")
+    if there is None:
+        print("NOTE: this baseline predates the validation_layers field, so wall-clock "
+              f"comparisons may be measuring layer overhead. This run has them "
+              f"{'ON' if here else 'OFF'}; re-record the baseline to remove the doubt.")
+    elif there != here:
+        print(f"NOTE: baseline recorded with validation layers "
+              f"{'ON' if there else 'OFF'}, this run has them "
+              f"{'ON' if here else 'OFF'}. WALL-CLOCK COMPARISONS ARE NOT MEANINGFUL "
+              f"across that difference; kernel times are.")
 
     warnings = 0
 
