@@ -223,6 +223,7 @@ deliberate divergence exists it is stated on the operator's own page.</p>
 
 
 from .arch_autograd import PAGE as ARCH_AUTOGRAD  # noqa: E402
+from .arch_cpu import PAGE as ARCH_CPU  # noqa: E402
 from .arch_graph import PAGE as ARCH_GRAPH  # noqa: E402
 from .arch_tensor import PAGE as ARCH_TENSOR  # noqa: E402
 
@@ -233,4 +234,5 @@ PAGES: list[tuple[str, str, str]] = [
     ("arch-tensor", "Tensors, storage and views", ARCH_TENSOR),
     ("arch-graph", "The lazy graph and execution", ARCH_GRAPH),
     ("arch-autograd", "Autograd", ARCH_AUTOGRAD),
+    ("arch-cpu", "The CPU backend", ARCH_CPU),
 ]
