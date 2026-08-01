@@ -284,6 +284,43 @@ def code_block(src: str, repl: bool = False) -> str:
 # ------------------------------------------------------------------ markup --
 
 
+def with_heading_ids(body: str) -> str:
+    """Give every h2/h3 an id, leaving hand-written ones exactly as they are.
+
+    Guide pages are authored as raw HTML, so whether a heading was linkable came
+    down to whether whoever typed it remembered. It split: guide_perf.py writes
+    `<h2 id="machine">` and works, while guide.py writes `<h2>` and does not --
+    so "Get started" had seven sections and "Concepts" six that no link, no
+    contents rail and no scroll-spy could reach. Those are the first two pages a
+    newcomer opens, and the pages most likely to be linked from an issue.
+
+    Restoring the contents rail at laptop widths is what made it visible: both
+    pages rendered the rail with nothing in it, which reads worse than not
+    having one.
+
+    Existing ids are never rewritten -- any link already shared keeps working --
+    and slugs are deduplicated within the page so two sections of the same name
+    cannot make one of them unreachable.
+    """
+    seen: set[str] = set(re.findall(r'<h[1-6][^>]*\bid="([^"]+)"', body))
+
+    def fix(m: re.Match) -> str:
+        tag, attrs, inner = m.group(1), m.group(2), m.group(3)
+        if "id=" in attrs:
+            return m.group(0)
+        text = re.sub(r"<[^>]+>", "", inner)
+        slug = re.sub(r"[^a-z0-9]+", "-", html.unescape(text).lower()).strip("-")
+        if not slug:
+            return m.group(0)
+        base, n = slug, 2
+        while slug in seen:
+            slug, n = f"{base}-{n}", n + 1
+        seen.add(slug)
+        return f'<{tag}{attrs} id="{slug}">{inner}</{tag}>'
+
+    return re.sub(r"<(h[23])([^>]*)>(.*?)</\1>", fix, body, flags=re.S)
+
+
 def plain(text: str) -> str:
     """Authored markdown reduced to the plain sentence inside it.
 
@@ -1043,6 +1080,7 @@ def build() -> int:
               page=slug, index_json=index_json)
 
     for slug, title, body in PAGES:
+        body = with_heading_ids(body)
         heads = [
             (m.group(1), re.sub(r"<[^>]+>", "", m.group(2)), 2)
             for m in re.finditer(r'<h2 id="([^"]+)"[^>]*>(.*?)</h2>', body, re.S)

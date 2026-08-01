@@ -103,6 +103,7 @@ def main() -> int:
     problems += unlisted_native_members()
     problems += stale_docs_references()
     problems += unrendered_markup()
+    problems += headings_without_ids()
     if problems:
         print(f"  {len(problems)} problems:")
         for p in problems:
@@ -283,6 +284,52 @@ def unrendered_markup():
                 out.append(f"{page.name}: unrendered emphasis in the body: "
                            f"*{hit.group(1)[:40]}*")
                 break
+    return out
+
+
+def headings_without_ids():
+    """Every CONTENT heading must be linkable.
+
+    Guide pages are authored as raw HTML, so whether a section could be linked
+    depended on whether the author typed an id. It split down the middle:
+    guide_perf.py wrote them and worked, guide.py did not, so "Get started" had
+    seven sections and "Concepts" six that no deep link, no contents rail and no
+    scroll-spy could reach -- on the two pages a newcomer opens first.
+
+    Both pages rendered a contents rail with nothing in it, which is a worse
+    signal than having no rail at all, and it stayed invisible until the rail
+    was restored at laptop widths.
+
+    The sidebar's own `<h2>Documentation</h2>` is chrome, not content, and is
+    the one heading legitimately without an id -- so it is matched by name
+    rather than by counting, which would have hidden a real regression behind an
+    expected total.
+    """
+    site = ROOT / "web" / "_site"
+    if not site.exists():
+        return ["web/_site does not exist; run python web/build.py first"]
+    out = []
+    for page in sorted(site.glob("*.html")):
+        text = page.read_text(errors="ignore")
+        # Scope to <main class="content">. The sidebar carries its own headings
+        # -- "Documentation", "Guide", "Classes", "API reference" -- which are
+        # chrome and correctly have no id; a whole-document scan reports those
+        # as defects, which is the same mistake that made the research probe
+        # measure a nav heading as if it were the page's hierarchy.
+        main = re.search(r'<main class="content">(.*?)</main>', text, re.S)
+        if not main:
+            out.append(f"{page.name}: no <main class=\"content\"> to check")
+            continue
+        # A heading inside a link card is the card's title, and the card itself
+        # navigates -- it needs no anchor of its own. The API index renders each
+        # operator group that way.
+        region = re.sub(r'<a class="card".*?</a>', "", main.group(1), flags=re.S)
+        for m in re.finditer(r"<(h2|h3)([^>]*)>(.*?)</\1>", region, re.S):
+            if "id=" in m.group(2):
+                continue
+            label = re.sub(r"<[^>]+>", "", m.group(3)).strip()
+            out.append(f"{page.name}: <{m.group(1)}> {label[:40]!r} has no id, "
+                       f"so it cannot be linked or listed")
     return out
 
 if __name__ == "__main__":
