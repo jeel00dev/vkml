@@ -144,6 +144,15 @@ jobs:
       - name: Documentation examples
         run: python scripts/check_docs_examples.py
 
+      # Line numbers are the part of a source reference that goes stale
+      # quietly: inserting lines at the top of a header moves every link below
+      # it, the file still exists, the link still resolves, and it now points at
+      # a different declaration. This checks the association, not the existence.
+      - name: Documentation source links
+        run: |
+          python web/build.py
+          python scripts/check_source_links.py
+
       - name: Run validation suite
         # Coverage is recorded on the same run: it costs nothing measurable and
         # the gate below needs it.

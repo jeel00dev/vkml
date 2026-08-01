@@ -129,6 +129,7 @@ python scripts/check_push_constants.py
 python scripts/check_docs_references.py
 python scripts/check_docs_examples.py     # needs a built extension
 python scripts/check_versions.py
+python web/build.py && python scripts/check_source_links.py
 
 # POSIX shells, including Git Bash on Windows. CONTRIBUTING.md sec8 has the
 # PowerShell equivalent -- `find` and `xargs` do not exist there.
