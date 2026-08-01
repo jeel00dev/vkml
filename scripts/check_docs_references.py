@@ -101,6 +101,7 @@ def main() -> int:
 
     print(f"  {checked_paths} path references, {checked_consts} constant references")
     problems += unlisted_native_members()
+    problems += stale_docs_references()
     if problems:
         print(f"  {len(problems)} problems:")
         for p in problems:
@@ -108,6 +109,100 @@ def main() -> int:
         return 1
     print("  all resolve")
     return 0
+
+
+# Paths named in prose that deliberately do not exist. Each needs a reason, so
+# that adding one is a decision rather than a way to silence the check.
+DOC_PATH_EXCEPTIONS = {
+    # SPLIT_K_DESIGN.md quotes the name used in the task brief precisely in order
+    # to say the tree does not use it. The sentence is about the mismatch.
+    "docs/PERFORMANCE_MODEL.md",
+    # ARCHITECTURE.md 2.3 surveys stable-diffusion.cpp, which is NOT one of the
+    # six projects vendored under third_party/reference, so its paths cannot be
+    # resolved here. The name happens to look like a vkml path, which is the
+    # only reason it needs saying.
+    "src/core/ggml_graph_cut.cpp",
+}
+
+# Everything worth indexing when resolving a documented path, INCLUDING the
+# vendored reference trees. The design documents cite CUTLASS, llama.cpp,
+# tinygrad and Tensile constantly -- those citations are the evidence for the
+# decisions, so a checker that cannot see them reports the project's most
+# carefully sourced claims as broken.
+INDEX_SKIP = {".git", ".venv", "build", "node_modules", "_site", "actions-runner",
+              "__pycache__"}
+
+
+def _file_index() -> dict:
+    index: dict[str, list] = {}
+    for p in ROOT.rglob("*"):
+        if p.is_file() and not INDEX_SKIP & set(p.parts):
+            index.setdefault(p.name, []).append(p)
+    return index
+
+
+def _candidates(rel: str, index: dict) -> list:
+    """Every file a documented path could be naming, best match first.
+
+    ALL of them, not the best one, and that is the whole difficulty. A bare
+    `gemm.h` matches a dozen files in the vendored CUTLASS; every candidate ties
+    on any suffix score, so choosing one is arbitrary, and choosing wrong turns a
+    correct citation into a false alarm. `gemm.h:346` is exactly
+    `semaphore.wait(threadblock_tile_offset.k())` in cutlass/gemm/kernel/gemm.h,
+    but cutlass/gemm/gemm.h sorts earlier and has 153 lines.
+
+    Two earlier attempts at this check reported 58 and then 12 stale references
+    in the documents. The true number was zero: every one was this resolution
+    being too eager. So the question asked is the weaker, honest one -- does the
+    tree contain SOME file of this name that satisfies the citation -- which
+    still catches what actually happens, a file renamed or deleted outright.
+    """
+    direct = ROOT / rel
+    if direct.is_file():
+        return [direct]
+    # `.../` is how the docs elide a long vendored path; the tail is what matters.
+    tail = rel.rsplit(".../", 1)[-1]
+    cands = index.get(Path(tail).name, [])
+    return sorted(cands, key=lambda c: (not str(c).endswith(tail), len(str(c))))
+
+
+def stale_docs_references():
+    """Every `path` and `path:line` in the hand-written docs must resolve.
+
+    check_docs_examples and this file's own path check cover the GENERATED site.
+    The design documents -- the ADRs, ARCHITECTURE, THEORY, MEASUREMENT-AUDIT --
+    were never checked by anything, and they are the older, longer and more
+    heavily cross-referenced half. They were found clean; nothing was keeping
+    them that way.
+
+    Documents that declare themselves superseded are skipped: they describe a
+    design that was rejected, so naming files that were never written is what
+    they are for.
+    """
+    out = []
+    index = _file_index()
+    docs = sorted(ROOT.glob("docs/**/*.md")) + [ROOT / n for n in
+                                                ("README.md", "CONTRIBUTING.md", "CLAUDE.md")]
+    for doc in docs:
+        if not doc.is_file():
+            continue
+        text = doc.read_text(errors="ignore")
+        if "**SUPERSEDED" in text[:2000]:
+            continue
+        for rel, line in PATH_RE.findall(text):
+            if rel in DOC_PATH_EXCEPTIONS:
+                continue
+            cands = _candidates(rel, index)
+            where = doc.relative_to(ROOT)
+            if not cands:
+                out.append(f"{where}: `{rel}` names no file in the tree")
+            elif line and not any(
+                    int(line) <= c.read_text(errors="ignore").count("\n") + 1
+                    for c in cands):
+                out.append(f"{where}: `{rel}:{line}` but no file of that name is "
+                           f"that long (closest: {cands[0].relative_to(ROOT)}, "
+                           f"{cands[0].read_text(errors='ignore').count(chr(10)) + 1} lines)")
+    return out
 
 
 def unlisted_native_members():
