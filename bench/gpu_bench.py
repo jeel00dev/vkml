@@ -23,6 +23,15 @@ REGRESSION MODE
 fails. Kernel time and wall-clock time are compared separately, so a transfer
 change and a kernel change stay distinguishable.
 
+A threshold alone cannot say whether a change is real. Measured over ten runs on
+an RX 5600M, 22 of 34 benchmarks moved by more than the 15% threshold WITHOUT
+any code change, and the within-run standard deviation does not predict that --
+it understates the between-run spread by a median of 5.4x. So `--runs N` records
+each benchmark's own run-to-run spread into the baseline, and the comparison
+reports anything inside three of those as noise rather than as a warning. The
+one benchmark whose within-run figure did predict its spread, `dispatch 1
+element`, is also the one whose reported regression survived the control.
+
 Baselines carry GPU model, driver, subgroup configuration and timestamp period,
 because a number without that metadata is not interpretable on another machine.
 """
@@ -43,6 +52,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 import vkml as V  # noqa: E402
 
 DEFAULT_THRESHOLD = 0.15  # warn beyond 15% slower
+# How many multiples of a benchmark's measured run-to-run spread a change must
+# exceed before it is called a regression rather than noise. Three is the usual
+# convention and is deliberately conservative: this tool warns, so the cost of
+# a missed regression is a later investigation, while the cost of crying wolf
+# is that the whole report stops being read.
+NOISE_SIGMA = 3.0
 
 
 @dataclass
@@ -52,8 +67,16 @@ class Sample:
     gpu_min: float = 0.0
     gpu_mean: float = 0.0
     gpu_sd: float = 0.0
+    # Dispersion of gpu_min ACROSS separate runs of this program, as a fraction
+    # of the median. Zero when only one run was taken. See noise_floor() for why
+    # this exists and why gpu_sd cannot stand in for it.
+    gpu_run_sd: float = 0.0
     wall_min: float = 0.0
     wall_mean: float = 0.0
+    # The same between-run measure for wall clock. Kept separate because wall
+    # time carries transfer and host cost that kernel time does not, and is
+    # consistently the noisier of the two -- so one floor cannot serve both.
+    wall_run_sd: float = 0.0
     transfer_ms: float = 0.0
     bytes_moved: float = 0.0
     gbps: float = 0.0
@@ -273,6 +296,59 @@ def print_table(samples: list[Sample]) -> None:
     print()
 
 
+def noise_floor(runs: int) -> dict[str, float]:
+    """Re-run this program `runs` times and report each benchmark's own spread.
+
+    WHY A SEPARATE PROCESS PER RUN, and why `gpu_sd` is not a substitute.
+
+    `gpu_sd` is the dispersion of the repeats taken inside ONE run, with the
+    device already open, the pipelines already built and the clocks already
+    where they settled. It says nothing about what changes between runs, and
+    that turns out to be almost everything: measured over ten runs on an
+    RX 5600M with the validation layers off, between-run dispersion exceeded
+    the within-run figure by a median of 5.4x and by up to 222x, and was more
+    than twice as large for 23 of 34 benchmarks. `exp 1024x1024` reports a
+    within-run sd near 4% and moves 165% between runs.
+
+    Using `gpu_sd` to judge a regression would therefore call a benchmark
+    quiet precisely where it is loudest. Only repeated runs measure the
+    quantity a comparison actually needs.
+
+    Not every benchmark is noisy, which is the point of measuring rather than
+    assuming: `dispatch 1 element` matches its within-run figure almost exactly
+    (3.1% against 3.3%), so a change there means something.
+    """
+    import subprocess
+    import tempfile
+
+    per_name: dict[tuple[str, str], list[float]] = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(runs):
+            path = os.path.join(tmp, f"run{i}.json")
+            # `--runs` is deliberately NOT forwarded: the child takes one
+            # measurement, and this loop is the repetition.
+            proc = subprocess.run(
+                [sys.executable, os.path.abspath(__file__), "--json", path],
+                capture_output=True, text=True, check=False)
+            if proc.returncode != 0 or not os.path.exists(path):
+                print(f"  run {i + 1}/{runs} failed:\n{proc.stderr.strip()[-500:]}")
+                continue
+            with open(path) as f:
+                for s in json.load(f)["samples"]:
+                    for field in ("gpu_min", "wall_min"):
+                        if s.get(field):
+                            per_name.setdefault((s["name"], field), []).append(s[field])
+            print(f"  run {i + 1}/{runs} done")
+
+    out: dict[tuple[str, str], float] = {}
+    for key, values in per_name.items():
+        if len(values) >= 2:
+            med = statistics.median(values)
+            if med > 0:
+                out[key] = statistics.pstdev(values) / med
+    return out
+
+
 def check(samples: list[Sample], baseline_path: str, threshold: float) -> int:
     with open(baseline_path) as f:
         baseline = json.load(f)
@@ -301,6 +377,7 @@ def check(samples: list[Sample], baseline_path: str, threshold: float) -> int:
               f"across that difference; kernel times are.")
 
     warnings = 0
+    suppressed = 0
 
     # Resource regressions are checked FIRST and with a tight threshold,
     # because these counters are exact. A VGPR increase is a real change in the
@@ -330,16 +407,39 @@ def check(samples: list[Sample], baseline_path: str, threshold: float) -> int:
             continue
         # Kernel and wall clock are compared separately so a transfer-path
         # change is never mistaken for a kernel regression.
-        for field, label in (("gpu_min", "kernel"), ("wall_min", "wall")):
+        # A benchmark's own run-to-run spread, if the baseline recorded one.
+        # Anything within NOISE_SIGMA of it is reported but not counted: a
+        # warning nobody can act on trains people to ignore all of them, and
+        # 22 of 34 benchmarks here exceed the flat 15% threshold on noise alone.
+        for field, label, sd_field in (("gpu_min", "kernel", "gpu_run_sd"),
+                                       ("wall_min", "wall", "wall_run_sd")):
             before, now = old.get(field, 0.0), getattr(s, field)
             if before <= 0 or now <= 0:
                 continue
             delta = (now - before) / before
-            if delta > threshold:
-                print(f"WARN  {s.name:<28} {label:<7} {before:.3f} -> {now:.3f} ms "
-                      f"({delta:+.1%})")
+            if delta <= threshold:
+                continue
+            # Each measure is judged against ITS OWN floor: wall time carries
+            # transfer and host cost that kernel time does not, and is reliably
+            # the noisier, so borrowing the kernel figure would under-report it.
+            run_sd = float(old.get(sd_field, 0.0) or 0.0)
+            noisy = run_sd > 0 and delta <= NOISE_SIGMA * run_sd
+            tag = "noise " if noisy else "WARN  "
+            detail = (f"  [within {NOISE_SIGMA:g}x this benchmark's own "
+                      f"{run_sd:.1%} run-to-run spread]" if noisy else "")
+            print(f"{tag}{s.name:<28} {label:<7} {before:.3f} -> {now:.3f} ms "
+                  f"({delta:+.1%}){detail}")
+            if noisy:
+                suppressed += 1
+            else:
                 warnings += 1
-    print(f"\nregression check: {warnings} warning(s) beyond {threshold:.0%}")
+
+    if not any(s.get("gpu_run_sd") or s.get("wall_run_sd") for s in prior.values()):
+        print("\nNOTE: this baseline carries no run-to-run noise floor, so every "
+              "change is judged against the flat threshold alone. Re-record it "
+              "with --runs N to make the warnings interpretable.")
+    print(f"\nregression check: {warnings} warning(s) beyond {threshold:.0%}"
+          + (f", {suppressed} within measured noise" if suppressed else ""))
     # Deliberately always 0: performance is noisy on shared machines and must
     # never block a merge. The signal is the warning, not the exit code.
     return 0
@@ -350,6 +450,11 @@ def main() -> int:
     ap.add_argument("--json", metavar="PATH", help="write results as JSON")
     ap.add_argument("--check", metavar="BASELINE", help="compare against a baseline and warn")
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
+    ap.add_argument("--runs", type=int, default=1, metavar="N",
+                    help="re-run N times in separate processes and record each "
+                         "benchmark's run-to-run spread; use when recording a "
+                         "baseline, so later comparisons can tell a regression "
+                         "from noise")
     args = ap.parse_args()
 
     if not V.has_vulkan or not V.vulkan_available():
@@ -368,6 +473,17 @@ def main() -> int:
 
     samples = run_all(device)
     print_table(samples)
+
+    if args.runs > 1:
+        print(f"\nmeasuring the run-to-run noise floor over {args.runs} runs")
+        floor = noise_floor(args.runs)
+        for s in samples:
+            s.gpu_run_sd = floor.get((s.name, "gpu_min"), 0.0)
+            s.wall_run_sd = floor.get((s.name, "wall_min"), 0.0)
+        loud = sorted(((v, k) for k, v in floor.items()), reverse=True)[:6]
+        print("\n  noisiest measurements (run-to-run sd, relative to median):")
+        for v, (name, field) in loud:
+            print(f"    {name:<30} {field:<9} {v:>7.1%}")
 
     resources = pipeline_resources()
     if resources:
