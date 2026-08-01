@@ -321,8 +321,11 @@ h3 { margin: 2.1rem 0 .5rem; font-size: var(--fs-6); font-weight: var(--fw-semib
 /* An entry's NAME. It is marked up as <code> inside the heading, so it was
    inheriting the inline-code chip and rendering smaller and lighter than the
    signature box below it -- the page scanned as a list of signatures rather
-   than a list of operators. Plain, full size, heading weight. */
-h2 > code, h3 > code, h4 > code {
+   than a list of operators. Plain, full size, heading weight.
+
+   h1 is in the list because the class pages title themselves that way, and
+   leaving it out meant every class page led with its own name in a chip. */
+h1 > code, h2 > code, h3 > code, h4 > code {
     background: none; border: 0; padding: 0;
     font-size: 1em; font-weight: inherit; color: inherit;
 }
@@ -637,3 +640,12 @@ footer.page { max-width: none; margin-top: 2.5rem; padding-top: 1.1rem;
    different colours, one of them the platform's. */
 .search input::-webkit-search-cancel-button,
 .search input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
+
+/* Which surface a class documents, and how many operators a category holds --
+   both answer a question the reader would otherwise have to open the page to
+   ask. Quiet, because they are labels on the choice, not the choice. */
+.sidenav .nav-note { font-size: var(--fs-1); color: var(--fg-muted);
+                     text-transform: uppercase; letter-spacing: .06em;
+                     margin-left: .35rem; }
+.sidenav .nav-count { float: right; font-size: var(--fs-1); color: var(--fg-muted);
+                      opacity: .7; font-variant-numeric: tabular-nums; }

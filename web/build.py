@@ -672,44 +672,100 @@ def class_slug(name: str) -> str:
     return "class-" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
 
+# ---------------------------------------------------------------- navigation --
+
+# THE READER'S STRUCTURE, declared here rather than fallen out of the build's.
+#
+# `sidenav()` used to walk PAGES, CLASSES and GROUPS -- the containers the site
+# is generated FROM -- so the order was build order and the grouping was
+# whatever list a page happened to live in. The visible result: fourteen items
+# under "Guide", of which seven were architecture pages and one was a reference
+# page; twenty-seven classes in one flat column mixing layers, optimisers, data
+# and serialisation; and 42-52 visible links running 2.6 screens at 1440x900.
+#
+# Four sections because a reader arrives with one of four questions: how do I
+# start, how does it work, what is it called, and can I trust it. Architecture
+# is promoted out of "Guide" because those seven pages are the ones a systems
+# programmer comes for.
+NAV_SECTIONS: list[tuple[str, list[str]]] = [
+    ("Learn", ["get-started", "concepts"]),
+    ("Architecture", ["arch-tensor", "arch-graph", "arch-autograd", "arch-cpu",
+                      "arch-vulkan", "arch-shaders", "arch-numerics"]),
+    ("Project", ["performance", "testing", "contributing", "reference-env"]),
+]
+
+# Classes by KIND. A reader looking for "an optimiser" should see four names,
+# not scan twenty-seven. The two Tensors are labelled by surface: they document
+# genuinely different things -- Python `.size` is the element count, C++
+# `size(axis)` is one extent -- and the navigation is where that choice is made.
+CLASS_SECTIONS: list[tuple[str, list[str]]] = [
+    ("Core", ["vkml.Tensor", "Tensor", "Module"]),
+    ("Layers", ["Linear", "Conv2d", "Embedding", "Sequential", "Flatten",
+                "BatchNorm2d", "LayerNorm", "Dropout",
+                "MultiheadAttention", "TransformerEncoderLayer",
+                "ReLU", "GELU", "Sigmoid", "Tanh", "MaxPool2d", "AvgPool2d"]),
+    ("Optimisers", ["Optimizer", "SGD", "Adam", "AdamW", "RMSProp"]),
+    ("Data and checkpoints", ["DataLoader", "ArrayDataset", "Checkpoint"]),
+]
+
+CLASS_LABEL = {"vkml.Tensor": "Tensor <span class=\"nav-note\">Python</span>",
+               "Tensor": "Tensor <span class=\"nav-note\">C++</span>"}
+
+
 def sidenav(active: str) -> str:
-    s = [
-        '<aside class="sidenav" id="sidenav"><h2>Documentation</h2>',
-        "<h3>Guide</h3><ol>",
-    ]
-    for slug, title, _ in PAGES:
-        cls = ' class="active"' if slug == active else ""
-        s.append(f'<li><a{cls} href="{slug}.html">{html.escape(title)}</a></li>')
-    s.append("</ol>")
-    if CLASSES:
-        s.append("<h3>Classes</h3><ol>")
-        for cname in CLASSES:
-            cslug = class_slug(cname)
-            ccls = ' class="active"' if cslug == active else ""
-            s.append(f'<li><a{ccls} href="{cslug}.html"><code>{cname}</code></a></li>')
+    """The section tree, built from the reader's structure rather than the build's."""
+    title_of = {slug: title for slug, title, _ in PAGES}
+    s = ['<aside class="sidenav" id="sidenav"><h2>Documentation</h2>']
+
+    for heading, slugs in NAV_SECTIONS:
+        s.append(f"<h3>{html.escape(heading)}</h3><ol>")
+        for slug in slugs:
+            if slug not in title_of:
+                continue
+            cls = ' class="active"' if slug == active else ""
+            s.append(f'<li><a{cls} href="{slug}.html">'
+                     f"{html.escape(title_of[slug])}</a></li>")
         s.append("</ol>")
+
+    # The API reference lists CATEGORIES, not the 103 operators. Every operator
+    # is one click further on its category page, and search now indexes all 278
+    # names, so the sidebar does not have to carry the whole surface -- carrying
+    # it was what made this three screens long.
     s.append("<h3>API reference</h3><ol>")
-    s.append(
-        f"<li><a{' class="active"' if active == 'api' else ''} "
-        f'href="api.html">Overview</a></li></ol>'
-    )
-    for gi, (gname, names) in enumerate(GROUPS, 1):
+    ov = ' class="active"' if active == "api" else ""
+    s.append(f'<li><a{ov} href="api.html">Overview</a></li>')
+    for gname, names in GROUPS:
         slug = group_slug(gname)
-        here = slug == active
-        # Only the section being read is expanded. All of them open at once is
-        # a wall of 99 links; none open is a reference you cannot scan.
-        s.append(
-            f'<div class="grp{"" if here else " closed"}">'
-            f'<button type="button"><span class="chev">▾</span>'
-            f"{html.escape(gname)}</button><ol>"
-        )
-        for ni, n in enumerate(names, 1):
-            href = f"#{n}" if here else f"{slug}.html#{n}"
-            s.append(
-                f'<li><a href="{href}"><span class="num">{gi}.{ni}</span>'
-                f"<code>{n}</code></a></li>"
-            )
-        s.append("</ol></div>")
+        cls = ' class="active"' if slug == active else ""
+        s.append(f'<li><a{cls} href="{slug}.html">{html.escape(gname)}'
+                 f'<span class="nav-count">{len(names)}</span></a></li>')
+    s.append("</ol>")
+
+    if CLASSES:
+        s.append("<h3>Classes</h3>")
+        listed = {n for _, names in CLASS_SECTIONS for n in names}
+        for heading, names in CLASS_SECTIONS + [
+                ("Other", sorted(set(CLASSES) - listed))]:
+            names = [n for n in names if n in CLASSES]
+            if not names:
+                continue
+            # Collapsed unless the reader is inside it. Grouping the classes
+            # was right; showing all twenty-seven at once was not -- Layers
+            # alone is sixteen entries and 528px, and the four sections came to
+            # a third of the whole sidebar. Same rule the operator categories
+            # already used: open the one you are in, fold the rest.
+            here = any(class_slug(n) == active for n in names)
+            s.append(f'<div class="grp{"" if here else " closed"}">'
+                     f'<button type="button" aria-expanded="{str(here).lower()}">'
+                     f'<span class="chev">▾</span>{html.escape(heading)}'
+                     f'<span class="nav-count">{len(names)}</span></button><ol>')
+            for cname in names:
+                cslug = class_slug(cname)
+                ccls = ' class="active"' if cslug == active else ""
+                label = CLASS_LABEL.get(cname, f"<code>{html.escape(cname)}</code>")
+                s.append(f'<li><a{ccls} href="{cslug}.html">{label}</a></li>')
+            s.append("</ol></div>")
+
     s.append("</aside>")
     return "\n".join(s)
 

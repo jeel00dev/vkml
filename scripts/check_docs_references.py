@@ -105,6 +105,7 @@ def main() -> int:
     problems += unrendered_markup()
     problems += headings_without_ids()
     problems += oversized_site_files()
+    problems += oversized_sidebar()
     if problems:
         print(f"  {len(problems)} problems:")
         for p in problems:
@@ -372,6 +373,45 @@ def oversized_site_files():
                        f"asset with scripts/make_assets.py, or raise the budget "
                        f"deliberately")
     return out
+
+
+# What the section tree may show at once. Not a style preference: a nav that
+# does not fit on a screen cannot be scanned, and the reader falls back to
+# search or to guessing.
+MAX_VISIBLE_NAV_LINKS = 34
+
+
+def oversized_sidebar():
+    """The section tree must stay scannable.
+
+    It grew to 144 links and 2.6 screens at 1440x900 because `sidenav()` walked
+    PAGES, CLASSES and GROUPS -- the containers the site is generated from -- so
+    every operator and every class appeared on every page. Grouping alone did
+    not fix it: with the classes grouped but all expanded it got WORSE, 52
+    visible links and 3 screens, because sixteen layer classes are as long as
+    the operator list they replaced.
+
+    Counted from the markup rather than rendered, so this runs without a
+    browser: a link is hidden if it sits inside a `grp closed` block.
+    """
+    site = ROOT / "web" / "_site"
+    if not site.exists():
+        return ["web/_site does not exist; run python web/build.py first"]
+    page = site / "get-started.html"
+    if not page.is_file():
+        return ["get-started.html missing; cannot check the section tree"]
+    m = re.search(r'<aside class="sidenav".*?</aside>', page.read_text(), re.S)
+    if not m:
+        return ["no .sidenav in get-started.html"]
+    nav = m.group(0)
+    # Drop collapsed groups, then count what is left.
+    visible = re.sub(r'<div class="grp closed">.*?</div>', "", nav, flags=re.S)
+    n = len(re.findall(r"<a\b", visible))
+    if n > MAX_VISIBLE_NAV_LINKS:
+        return [f"the section tree shows {n} links at once, over the "
+                f"{MAX_VISIBLE_NAV_LINKS} budget -- group them, or collapse a "
+                f"section that is not the one being read"]
+    return []
 
 if __name__ == "__main__":
     sys.exit(main())
