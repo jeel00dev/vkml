@@ -1,0 +1,76 @@
+name: Documentation site
+
+# WHY THIS EXISTS. `web/build.py` produced a complete static site that was only
+# ever written to a local `web/_site` and published nowhere. The repository's
+# About link and `SITE_URL` in web/build.py both named
+# https://jeel00dev.github.io/vkml, and nothing served it — a documented address
+# for a site that had never been deployed.
+#
+# Separate from ci.yml deliberately. The documentation GATES belong on every
+# push because they guard correctness; DEPLOYING belongs only on main, and a
+# failed deploy must not be able to mark a correct commit red.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: the deploy needs Pages and an OIDC token, nothing else. It
+# must not be able to write to the repository.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and do NOT cancel one in flight: a half-finished Pages
+# deployment leaves the live site in an unknown state, which is worse than
+# waiting for a superseded build to finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # The site imports vkml to derive signatures, the operator surface and the
+      # layer diagram from the real module — that is what makes the reference
+      # generated rather than typed. A CPU-only build is enough and needs no
+      # Vulkan SDK on the runner.
+      - name: Build vkml (CPU-only) and install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy nanobind scikit-build-core pillow
+          pip install --verbose . -C cmake.define.VKML_VULKAN=OFF
+
+      - name: Build the site
+        run: python web/build.py
+
+      # The same gates ci.yml runs. Publishing a site that fails them would put
+      # the project's own documentation discipline behind the deploy.
+      - name: Documentation gates
+        run: |
+          python scripts/check_docs_references.py
+          python scripts/check_docs_links.py
+          python scripts/docs_graph.py --check
+          python scripts/check_source_links.py
+          python scripts/check_design_system.py
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
