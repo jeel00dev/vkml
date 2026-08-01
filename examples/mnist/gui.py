@@ -16,11 +16,41 @@ each digit you draw -- runs there.
 from __future__ import annotations
 
 import argparse
-import tkinter as tk
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+
+# tkinter and Pillow are both optional and fail differently, so both are caught
+# with the fix named. tkinter in particular is a SYSTEM package on most Linux
+# distributions -- pip cannot install it, so a bare ImportError sends the reader
+# to `pip install tkinter`, which does not exist. Verified absent in a stock
+# ubuntu:24.04 container, which is what a reader following the README is likely
+# to have.
+try:
+    import tkinter as tk
+except ImportError as exc:  # pragma: no cover - depends on the system install
+    raise SystemExit(
+        "gui.py needs tkinter, which is part of Python but packaged separately on\n"
+        "most Linux distributions and cannot be installed with pip:\n"
+        "\n"
+        "    Debian/Ubuntu   sudo apt install python3-tk\n"
+        "    Fedora          sudo dnf install python3-tkinter\n"
+        "    Arch            sudo pacman -S tk\n"
+        "    macOS/Windows   already included in the python.org installer\n"
+        "\n"
+        "train.py does not need it -- only this viewer does."
+    ) from exc
+
+try:
+    from PIL import Image
+except ImportError as exc:  # pragma: no cover - optional dependency
+    raise SystemExit(
+        "gui.py needs Pillow:\n"
+        "\n"
+        "    pip install pillow\n"
+        "\n"
+        "train.py does not need it -- only this viewer does."
+    ) from exc
 
 HERE = Path(__file__).resolve().parent
 

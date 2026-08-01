@@ -508,7 +508,11 @@ they run.
 ```sh
 python examples/mnist/train.py          # trains on the GPU, compared to PyTorch
 
-pip install pillow                      # gui.py only; train.py does not need it
+# gui.py only -- train.py needs neither. tkinter is packaged separately on
+# most Linux distributions and pip cannot install it; gui.py names the command
+# for your distribution if it is missing.
+pip install pillow
+sudo apt install python3-tk             # Debian/Ubuntu; see gui.py for others
 python examples/mnist/gui.py            # draw a digit and watch it predict
 ```
 
