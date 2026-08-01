@@ -23,6 +23,48 @@ option(VKML_VULKAN       "Build the Vulkan backend"        OFF)
 option(VKML_WERROR       "Treat warnings as errors"       OFF)
 option(VKML_SANITIZE     "Enable ASan+UBSan"              OFF)
 
+# ---------------------------------------------------------------------------
+# Compiler floor
+#
+# The binding constraint is <format>, included by 20 source files. It is the
+# newest C++20 library feature this project depends on, and the versions below
+# are the releases that shipped it: libstdc++ in GCC 13, libc++ in LLVM 17,
+# and MSVC in 19.29 (Visual Studio 2019 16.10).
+#
+# Checked here so an old toolchain fails at CONFIGURE time with a message naming
+# the requirement, rather than part-way through the build with a "no such file
+# <format>" that sends the reader looking for a missing package. Documenting a
+# floor without enforcing it is how the previous stated minimum -- GCC 12 -- came
+# to be wrong without anyone noticing.
+#
+# Clang is checked only when it is using libc++: with libstdc++ the floor is
+# that library's, which CMake cannot see from the compiler version. That case
+# falls through and will fail at the include, which is the honest outcome for a
+# combination this cannot decide.
+# ---------------------------------------------------------------------------
+set(VKML_MIN_GNU 13)
+set(VKML_MIN_CLANG 17)
+set(VKML_MIN_MSVC 19.29)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS VKML_MIN_GNU)
+    message(FATAL_ERROR
+        "vkml needs GCC ${VKML_MIN_GNU} or newer; found ${CMAKE_CXX_COMPILER_VERSION}. "
+        "The constraint is <format>, which libstdc++ shipped in GCC ${VKML_MIN_GNU}.")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang"
+       AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS VKML_MIN_CLANG)
+    message(WARNING
+        "vkml needs <format>, which libc++ shipped in LLVM ${VKML_MIN_CLANG}; found "
+        "Clang ${CMAKE_CXX_COMPILER_VERSION}. This is fine if you are using a "
+        "libstdc++ from GCC ${VKML_MIN_GNU} or newer, and will fail at the include "
+        "otherwise.")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC"
+       AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS VKML_MIN_MSVC)
+    message(FATAL_ERROR
+        "vkml needs MSVC ${VKML_MIN_MSVC} or newer; found ${CMAKE_CXX_COMPILER_VERSION}. "
+        "The constraint is <format>.")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

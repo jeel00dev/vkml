@@ -23,6 +23,13 @@ them, because a duplicated rule is a rule that will drift.
 
 ---
 
+**Compiler floor.** GCC 13+, MSVC 19.29+, or Clang 17+ with libc++. The
+constraint is `<format>`, included by 20 source files, and CMake enforces it
+at configure time. Raising or lowering the floor means changing
+`VKML_MIN_GNU`/`VKML_MIN_CLANG`/`VKML_MIN_MSVC` in `CMakeLists.txt` and the
+statements in `README.md` and the get-started page — `scripts/check_versions.py`
+holds the three in agreement.
+
 ## 1. Reporting a bug
 
 The most useful thing you can tell us is **what you ran and what happened**. A

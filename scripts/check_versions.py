@@ -32,6 +32,9 @@ SOURCES: dict[str, tuple[Path, str]] = {
     "python": (ROOT / "pyproject.toml", r'requires-python\s*=\s*">=\s*([\d.]+)"'),
     "clang_format": (ROOT / ".github" / "workflows" / "ci.yml",
                      r"clang-format==([\d.]+)"),
+    "gcc": (ROOT / "CMakeLists.txt", r"set\(VKML_MIN_GNU\s+(\d+)\)"),
+    "clang": (ROOT / "CMakeLists.txt", r"set\(VKML_MIN_CLANG\s+(\d+)\)"),
+    "msvc": (ROOT / "CMakeLists.txt", r"set\(VKML_MIN_MSVC\s+([\d.]+)\)"),
 }
 
 # How each fact appears in prose. A match's group(1) is compared to the source.
@@ -40,6 +43,9 @@ MENTIONS: dict[str, list[str]] = {
     "cxx_standard": [r"C\+\+(\d\d)\b"],
     "python": [r"Python\s+([\d.]+)\s*\+"],
     "clang_format": [r"clang-format[^\n]{0,20}?([\d.]{4,})"],
+    "gcc": [r"GCC\s+(\d+)\s*\+"],
+    "clang": [r"Clang\s+(\d+)\s*\+"],
+    "msvc": [r"MSVC\s+([\d.]+)\s*\+"],
 }
 
 DOCS = (

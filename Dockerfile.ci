@@ -12,6 +12,14 @@
 # has no GPU, so the Vulkan suite never ran against real hardware in CI at all --
 # only against lavapipe. With `--device /dev/dri` this image sees RADV on the
 # real GPUs *and* llvmpipe, so the hardware and software drivers are one image.
+# ubuntu:24.04 ships GCC 13.3 and Clang 18.1, and GCC 13 is exactly vkml's
+# compiler floor -- the release in which libstdc++ shipped <format>. That makes
+# this image continuous PROOF that the floor builds, rather than a claim about
+# it, and it is the reason to pin the base image tag rather than track a rolling
+# one: a newer base would silently stop testing the minimum.
+#
+# If the floor is raised, change VKML_MIN_GNU in CMakeLists.txt and consider
+# whether this image should still be the oldest supported toolchain.
 FROM ubuntu:24.04
 
 # Nothing here is interactive, and tzdata will block forever if asked.

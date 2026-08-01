@@ -183,6 +183,9 @@ You need three things:
    ([download](https://visualstudio.microsoft.com/downloads/)). The free
    Community edition is fine.
 2. **CMake 3.25 or newer** ([download](https://cmake.org/download/)). Tick
+   Also needed: **a C++20 compiler with `<format>`** — GCC 13+, MSVC 19.29+,
+   or Clang 17+ with libc++. CMake fails at configure time with a message
+   naming the requirement if the toolchain is older.
    "Add CMake to the system PATH" during setup.
 3. **The Vulkan SDK** from LunarG ([download](https://vulkan.lunarg.com/sdk/home)).
    This includes the headers, the loader and `glslc`, so it covers everything
