@@ -43,7 +43,7 @@ from vkml import nn, optim
 
 vkml.init_vulkan(0)
 dev, why = vkml.best_device()
-print(why)          # using Vulkan device 1: AMD Radeon RX 5600M (discrete, …)
+print(why)          # using Vulkan device 0: AMD Radeon RX 5600M (discrete, …)
 
 model = nn.Sequential(nn.Linear(784, 128), nn.ReLU(), nn.Linear(128, 10)).to(dev)
 opt = optim.Adam(model.parameters(), lr=1e-3)
@@ -128,12 +128,13 @@ maintainers do not have.</p>
 <h2>Your first tensor</h2>
 <pre class="repl"><code><span class="p">&gt;&gt;&gt; </span>import numpy as np, vkml
 <span class="p">&gt;&gt;&gt; </span>vkml.init_vulkan(0)
+<span class="o">'vulkan:0'</span>
 <span class="p">&gt;&gt;&gt; </span>dev, why = vkml.best_device()
 <span class="p">&gt;&gt;&gt; </span>print(why)
-<span class="o">using Vulkan device 1: AMD Radeon RX 5600M (RADV NAVI10) (discrete, Vulkan 1.4.318, driver radv)</span>
+<span class="o">using Vulkan device 0: AMD Radeon RX 5600M (RADV NAVI10) (discrete, Vulkan 1.4.354, driver radv)   # differs per machine</span>
 <span class="p">&gt;&gt;&gt; </span>x = vkml.tensor(np.random.rand(1024, 1024).astype(np.float32), device=dev)
 <span class="p">&gt;&gt;&gt; </span>vkml.matmul(x, x).shape
-<span class="o">[1024, 1024]</span></code></pre>
+<span class="o">(1024, 1024)</span></code></pre>
 
 <h2>Train something</h2>
 <p>Both examples train end to end and compare against a PyTorch model step for step:</p>
@@ -192,7 +193,9 @@ check answers, not to get them.</p>
 <p>Tensors do not move on their own. An operation whose operands are on different devices
 raises rather than inserting a transfer, because an implicit copy across PCIe is the kind of
 cost that should appear in your code and not in a profile.</p>
-<pre class="repl"><code><span class="p">&gt;&gt;&gt; </span>vkml.matmul(cpu_tensor, gpu_tensor)
+<pre class="repl"><code><span class="p">&gt;&gt;&gt; </span>a = vkml.tensor(np.zeros((2, 2), dtype=np.float32))
+<span class="p">&gt;&gt;&gt; </span>b = vkml.tensor(np.zeros((2, 2), dtype=np.float32), device=vkml.device("vulkan:0"))
+<span class="p">&gt;&gt;&gt; </span>vkml.matmul(a, b)
 <span class="o">DeviceError: 'matmul' operands are on different devices: cpu and vulkan:0</span></code></pre>
 <p>Device <em>indices</em> are not stable across environments — the same machine can report a
 discrete GPU at index 0 natively and at index 1 inside a container. Prefer
@@ -219,8 +222,11 @@ deliberate divergence exists it is stated on the operator's own page.</p>
 """
 
 
+from .arch_tensor import PAGE as ARCH_TENSOR  # noqa: E402
+
 PAGES: list[tuple[str, str, str]] = [
     ("index", "vkML — machine learning on Vulkan", LANDING),
     ("get-started", "Get started", GET_STARTED),
     ("concepts", "Concepts", CONCEPTS),
+    ("arch-tensor", "Tensors, storage and views", ARCH_TENSOR),
 ]
