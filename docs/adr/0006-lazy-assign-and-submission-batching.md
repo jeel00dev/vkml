@@ -1,7 +1,14 @@
 # ADR 0006 — Lazy assign, and how work is batched into submissions
 
-**Status:** accepted; **stage A implemented and measured (7 below)**, stages B and C
-still proposed
+**Status:** accepted. **Stage A implemented and measured (7 below). Stage B is
+part built**: multi-root realize shipped and is measured in 9 — `realize()` takes
+a list of tensors, `dispatch/executor.h` takes `std::span<const NodePtr>` — but
+the Assign node did **not**, and is blocked on the two findings in 9. Stage C is
+still proposed.
+
+This line said "stages B and C still proposed" while 9 below described stage B's
+first half as built and measured, so the summary contradicted the body and a
+reader who stopped at the status would conclude multi-root realize did not exist.
 **Date:** 2026-07-29
 **Covers:** task #19 ("batch optimiser realize calls so a step is one submission"), whose
 premise this document corrects.
