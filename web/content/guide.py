@@ -225,6 +225,7 @@ deliberate divergence exists it is stated on the operator's own page.</p>
 from .arch_autograd import PAGE as ARCH_AUTOGRAD  # noqa: E402
 from .arch_cpu import PAGE as ARCH_CPU  # noqa: E402
 from .arch_numerics import PAGE as ARCH_NUMERICS  # noqa: E402
+from .reference_env import PAGE as REFERENCE_ENV  # noqa: E402
 from .arch_shaders import PAGE as ARCH_SHADERS  # noqa: E402
 from .arch_vulkan import PAGE as ARCH_VULKAN  # noqa: E402
 from .arch_graph import PAGE as ARCH_GRAPH  # noqa: E402
@@ -241,4 +242,5 @@ PAGES: list[tuple[str, str, str]] = [
     ("arch-vulkan", "The Vulkan backend", ARCH_VULKAN),
     ("arch-shaders", "Shaders and the GLSL layer", ARCH_SHADERS),
     ("arch-numerics", "Dtypes, devices and numerics", ARCH_NUMERICS),
+    ("reference-env", "Environment switches and build options", REFERENCE_ENV),
 ]

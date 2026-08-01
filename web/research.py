@@ -756,3 +756,46 @@ def python_classes() -> dict[str, ClassDoc]:
                         doc="", kind="field", access="public", line=item.lineno))
             out[node.name] = cls
     return out
+
+
+# ------------------------------------------------------- environment switches --
+
+ENV_CALL = re.compile(
+    r"env_(?P<how>flag|int|value)\(\s*\"(?P<name>VKML_\w+)\"(?:\s*,\s*(?P<default>[^)]+?))?\s*\)")
+
+
+def env_switches() -> dict[str, dict]:
+    """Every VKML_* variable the C++ reads, found at its call site.
+
+    Generated rather than listed, so a new switch appears in the documentation
+    the moment it is added. The default is captured verbatim from the call
+    because it is often an expression rather than a literal, and paraphrasing
+    it would be the drift this is guarding against.
+
+    Only src/ is scanned: these are the switches the LIBRARY reads. Build
+    options and test-harness variables are a separate surface and are collected
+    by cmake_options() and listed by hand where they are used.
+    """
+    out: dict[str, dict] = {}
+    for path in sorted((ROOT / "src").rglob("*.cpp")) + sorted((ROOT / "src").rglob("*.h")):
+        lines = path.read_text().split("\n")
+        for i, line in enumerate(lines):
+            for m in ENV_CALL.finditer(line):
+                name = m.group("name")
+                entry = out.setdefault(name, {
+                    "name": name, "kind": m.group("how"),
+                    "default": (m.group("default") or "").strip(),
+                    "sites": [],
+                })
+                entry["sites"].append({"path": rel(path), "line": i + 1,
+                                       "url": src_link(path, i + 1)})
+    return out
+
+
+def cmake_options() -> list[dict]:
+    """Project options from the top-level CMakeLists, with their real defaults."""
+    text = (ROOT / "CMakeLists.txt").read_text()
+    out = []
+    for m in re.finditer(r'option\(\s*(VKML_\w+)\s+"([^"]*)"\s+(\w+)\s*\)', text):
+        out.append({"name": m.group(1), "help": m.group(2), "default": m.group(3)})
+    return out
