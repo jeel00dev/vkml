@@ -222,6 +222,7 @@ deliberate divergence exists it is stated on the operator's own page.</p>
 """
 
 
+from .arch_graph import PAGE as ARCH_GRAPH  # noqa: E402
 from .arch_tensor import PAGE as ARCH_TENSOR  # noqa: E402
 
 PAGES: list[tuple[str, str, str]] = [
@@ -229,4 +230,5 @@ PAGES: list[tuple[str, str, str]] = [
     ("get-started", "Get started", GET_STARTED),
     ("concepts", "Concepts", CONCEPTS),
     ("arch-tensor", "Tensors, storage and views", ARCH_TENSOR),
+    ("arch-graph", "The lazy graph and execution", ARCH_GRAPH),
 ]
