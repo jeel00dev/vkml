@@ -362,6 +362,37 @@ def test_tiled_kernel_has_a_different_fold_tree():
     assert np.all(np.abs(gpu - cpu) <= gamma * scale + np.finfo(np.float32).tiny)
 
 
+@requires_vulkan
+def test_the_naive_kernel_agrees_with_the_selected_one_bit_for_bit():
+    """docs/THEORY.md N2, pinned: every kernel the dispatcher can choose folds
+    K in blocks of 32, so forcing the naive one changes nothing about the bytes.
+
+    N2 is labelled **Proven** and was, by experiment -- but nothing kept it that
+    way, which is the gap this closes. It is the one claim in THEORY.md that
+    rests on two independent literals staying equal, in two files, with no
+    reference between them:
+
+        src/backend/vulkan/vulkan_backend.cpp   kBK = 32
+        shaders/gemm_naive.comp                 for (uint t = 0; t < 32u; ...)
+
+    and neither is the value a reader would guess, because `gemm_reg.comp`
+    declares `const uint BK = 16` -- that is only the specialisation constant's
+    default, overridden to 32 at pipeline creation. Retuning kBK for speed is
+    an ordinary-looking change that would silently break a documented numerical
+    guarantee, and the existing tiled-differs test would not catch it: tiled and
+    reg would then both fold in 16s but still differ, since the carry stack and
+    the access pattern differ too.
+
+    This is deliberately the WHOLE dispatch surface, not naive against reg
+    specifically. `_SHAPES` spans 1x1x1 to 256x512x128, so the automatic path
+    picks gemv, naive and the register-blocked kernel across the set; the
+    property N2 states is that none of that changes a byte.
+
+    The complement -- that `tiled` DOES differ -- is pinned separately above.
+    """
+    assert _hash_matmuls({"VKML_GEMM_KERNEL": "naive"}) == _hash_matmuls_cached(())
+
+
 # ---------------------------------------------------------------------------
 # 3. Determinism
 # ---------------------------------------------------------------------------
