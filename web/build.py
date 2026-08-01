@@ -44,7 +44,8 @@ from content import CLASSES, PAGES, PROSE  # noqa: E402
 GROUPS: list[tuple[str, list[str]]] = [
     (
         "Creation",
-        ["tensor", "zeros", "ones", "full", "arange", "rand", "from_numpy", "asarray"],
+        ["tensor", "zeros", "ones", "full", "arange", "rand", "from_numpy", "asarray",
+         "zeros_like", "ones_like", "full_like"],
     ),
     (
         "Element-wise",

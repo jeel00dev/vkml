@@ -114,6 +114,9 @@ zeros = _C.zeros
 ones = _C.ones
 full = _C.full
 arange = _C.arange
+zeros_like = _C.zeros_like
+ones_like = _C.ones_like
+full_like = _C.full_like
 
 backward = _C.backward
 detach = _C.detach

@@ -53,6 +53,63 @@ array([[0., 0., 0.],
     "see": ["ones", "full", "tensor"],
 }
 
+PROSE["zeros_like"] = {
+    "summary": "Create a tensor of zeros with the same shape, dtype and device as the input.",
+    "detail": "Shorthand for `zeros(x.shape, dtype=x.dtype, device=x.device)`. Every "
+              "property is taken from the input, so an f16 input gives an f16 result — "
+              "nothing falls back to the `float32` default that the explicit form would "
+              "apply if you forgot to pass `dtype`.\n\n"
+              "The shape is the **logical** one, so a transposed view gives the "
+              "transposed shape.",
+    "params": [("input", "Tensor", "Tensor whose shape, dtype and device to copy.")],
+    "returns": "A new tensor shaped like `input`, every element zero.",
+    "note": "The input's *values* are not read and its graph is not realized — only its "
+            "shape, dtype and device are used.",
+    "example": """
+>>> x = vkml.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+>>> vkml.zeros_like(x).numpy()
+array([[0., 0., 0.],
+       [0., 0., 0.]], dtype=float32)
+>>> vkml.zeros_like(x.astype(vkml.dtype.float16)).dtype
+dtype.float16
+""",
+    "see": ["zeros", "ones_like", "full_like"],
+}
+
+PROSE["ones_like"] = {
+    "summary": "Create a tensor of ones with the same shape, dtype and device as the input.",
+    "detail": "Shorthand for `ones(x.shape, dtype=x.dtype, device=x.device)`. See "
+              "`zeros_like` for how the input's properties are inherited.",
+    "params": [("input", "Tensor", "Tensor whose shape, dtype and device to copy.")],
+    "returns": "A new tensor shaped like `input`, every element one.",
+    "example": """
+>>> x = vkml.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+>>> vkml.ones_like(x).numpy()
+array([[1., 1., 1.],
+       [1., 1., 1.]], dtype=float32)
+""",
+    "see": ["ones", "zeros_like", "full_like"],
+}
+
+PROSE["full_like"] = {
+    "summary": "Create a tensor filled with a value, shaped like the input.",
+    "detail": "Shorthand for `full(x.shape, value, dtype=x.dtype, device=x.device)`. The "
+              "value is given as a `float` and converted to the input's dtype, so a value "
+              "outside that type's range will not survive the conversion.",
+    "params": [
+        ("input", "Tensor", "Tensor whose shape, dtype and device to copy."),
+        ("value", "float", "The fill value, converted to `input`'s dtype."),
+    ],
+    "returns": "A new tensor shaped like `input`, every element `value`.",
+    "example": """
+>>> x = vkml.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+>>> vkml.full_like(x, 7.0).numpy()
+array([[7., 7., 7.],
+       [7., 7., 7.]], dtype=float32)
+""",
+    "see": ["full", "zeros_like", "ones_like"],
+}
+
 PROSE["arange"] = {
     "summary": "Create a 1-D tensor of evenly spaced values over a half-open interval.",
     "detail": "The interval is `[start, stop)` — `stop` is excluded, matching "

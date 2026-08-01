@@ -512,6 +512,12 @@ NB_MODULE(_vkml_core, m) {
             return Tensor::full(d, v, dt, dev);
         },
         "shape"_a, "value"_a, "dtype"_a = DType::F32, "device"_a = Device::cpu());
+    // Forwarded to the C++ free functions rather than reimplemented here, so the
+    // rule for which properties are inherited from the input lives in exactly
+    // one place and the two surfaces cannot drift apart.
+    m.def("zeros_like", &vkml::zeros_like, "input"_a);
+    m.def("ones_like", &vkml::ones_like, "input"_a);
+    m.def("full_like", &vkml::full_like, "input"_a, "value"_a);
     m.def("arange", &Tensor::arange, "start"_a, "stop"_a, "step"_a = 1.0, "dtype"_a = DType::F32,
           "device"_a = Device::cpu());
 

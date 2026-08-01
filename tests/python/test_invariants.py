@@ -23,6 +23,7 @@ import functools
 import hashlib
 import math
 import os
+import re
 import subprocess
 import sys
 
@@ -1210,3 +1211,86 @@ def test_gelu_gradient_keeps_relative_accuracy_in_its_negative_tail():
         f"the pre-fix cancelling cdf now passes at {mutant_rel.max():.3e}, so this "
         f"domain no longer exercises the loss of significance the test exists for"
     )
+
+
+# ---------------------------------------------------------------------------
+# 9. Cross-surface parity: C++ and Python must expose the same operators
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dtype", [V.dtype.float32, V.dtype.float16],
+                         ids=["f32", "f16"])
+@pytest.mark.parametrize("name,args", [("zeros_like", ()), ("ones_like", ()),
+                                       ("full_like", (7.0,))])
+def test_like_matches_the_explicit_form(name, args, dtype):
+    """`f_like(x)` must equal `f(x.shape, dtype=x.dtype, device=x.device)`.
+
+    The `*_like` family is a convenience wrapper and nothing more, so the
+    property that matters is that it stays one: every property of the result
+    is taken from the input, and none is quietly defaulted. A wrapper that
+    silently produced f32 for an f16 input would be a plausible bug that no
+    value-based test would notice, because the VALUES would still be right.
+
+    They existed in the C++ API and were bound to Python only after a parity
+    audit found them missing, which is also why the parity check below exists.
+    """
+    src = V.tensor([[1.0, 2.0], [3.0, 4.0]]).astype(dtype)
+    got = getattr(V, name)(src, *args)
+    explicit = {
+        "zeros_like": lambda: V.zeros(list(src.shape), dtype=src.dtype, device=src.device),
+        "ones_like": lambda: V.ones(list(src.shape), dtype=src.dtype, device=src.device),
+        "full_like": lambda: V.full(list(src.shape), args[0], dtype=src.dtype,
+                                    device=src.device),
+    }[name]()
+    assert got.dtype == explicit.dtype
+    assert str(got.device) == str(explicit.device)
+    assert tuple(got.shape) == tuple(explicit.shape)
+    assert np.array_equal(got.numpy(), explicit.numpy())
+
+
+def test_like_takes_shape_from_a_non_contiguous_input():
+    """The shape must be the LOGICAL one, not the underlying storage's.
+
+    A transpose is a view with permuted strides and unchanged storage, so an
+    implementation that reached for the storage extents rather than `shape()`
+    would return the untransposed shape and pass every contiguous test.
+    """
+    view = V.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]).T
+    assert tuple(view.shape) == (3, 2)
+    assert tuple(V.zeros_like(view).shape) == (3, 2)
+
+
+def test_cpp_operators_are_reachable_from_python():
+    """Every function in the C++ ops.h has a Python spelling, or a stated reason.
+
+    This is the gate for a whole class of gap rather than for three functions:
+    an operator added to the C++ API and never bound is invisible from Python
+    and equally invisible to every value-based test, because there is nothing
+    to call. `zeros_like`, `ones_like` and `full_like` sat in exactly that state
+    until an audit compared the two surfaces by name.
+
+    The allow-list holds names that are deliberately absent, each with the
+    reason. A new entry is a decision that has to be written down, which is the
+    point -- silence is what this test removes.
+    """
+    intentionally_unbound = {
+        # Exposed with PyTorch's names for axis reductions; `max`/`min` in torch
+        # return (values, indices), which these do not, so reusing the name
+        # would promise an interface that is not implemented.
+        "max": "bound as amax",
+        "min": "bound as amin",
+        # A factory function in C++; in Python the device is the value
+        # `vkml.cpu`, so a callable would be redundant.
+        "cpu": "exposed as the value vkml.cpu",
+    }
+
+    header = os.path.join(REPO, "include", "vkml", "api", "ops.h")
+    with open(header, encoding="utf-8") as fh:
+        text = fh.read()
+    declared = set(re.findall(r"\bTensor\s+(\w+)\s*\(", text))
+
+    missing = sorted(n for n in declared
+                     if not hasattr(V, n) and n not in intentionally_unbound)
+    assert not missing, (
+        f"declared in ops.h but not reachable from Python: {missing}. "
+        "Bind them, or add them to intentionally_unbound with the reason.")
