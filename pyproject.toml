@@ -49,7 +49,28 @@ Issues = "https://github.com/jeel00dev/vkml/issues"
 
 [tool.scikit-build]
 minimum-version = "0.10"
-build-dir = "build/wheel"
+# Keyed by interpreter, NOT a bare "build/wheel". The same checkout gets built
+# by the host (CPython 3.14, CMake 4.2) and by the CI container (CPython 3.12,
+# CMake 3.28), and a single shared directory hands the second builder the
+# first one's CMakeCache. Two CMake version directories were found sitting side
+# by side in one such tree.
+#
+# Sharing it is not merely wasteful, it is unrecoverable without knowing to
+# delete the directory. A configure that fails partway caches what it managed
+# to detect, and CMake trusts the cache on the next run: after one interrupted
+# build, `CMAKE_EXECUTABLE_FORMAT` was cached as `Unknown` instead of `ELF`,
+# and every later `pip install -e .` failed with
+#
+#     The install of the _vkml_core target requires changing an RPATH from the
+#     build tree, but this is not supported with the Ninja generator unless on
+#     an ELF-based or XCOFF-based platform.
+#
+# on a platform that is ELF-based. The message names RPATH, Ninja and the
+# generator, and nothing that would lead you to a stale cache entry.
+#
+# `cache_tag` is `sys.implementation.cache_tag` -- cpython-314 here,
+# cpython-312 in the container -- so the two builders can no longer collide.
+build-dir = "build/wheel/{cache_tag}"
 wheel.packages = ["python/vkml"]
 
 [tool.scikit-build.metadata.version]
