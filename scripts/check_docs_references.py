@@ -28,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "web"))
 
-from content import PROSE  # noqa: E402
+from content import CLASSES, PROSE  # noqa: E402
 
 # A backticked token that looks like a repository path, optionally with :line.
 #
@@ -100,6 +100,7 @@ def main() -> int:
                     problems.append(f"{op} ({where}): `{const}` appears nowhere in the sources")
 
     print(f"  {checked_paths} path references, {checked_consts} constant references")
+    problems += unlisted_native_members()
     if problems:
         print(f"  {len(problems)} problems:")
         for p in problems:
@@ -107,6 +108,40 @@ def main() -> int:
         return 1
     print("  all resolve")
     return 0
+
+
+def unlisted_native_members():
+    """Every public member of a nanobind class must appear in a group on its page.
+
+    The page for a class defined in C++ is built by introspecting the BUILT
+    module, so a newly bound member appears on it the moment it is bound --
+    but only in the catch-all "Other members" bucket, silently and with no
+    prose. That is how the Python `Tensor` came to have six members documented
+    nowhere at all (`T`, `astype`, `max`, `min`, `numpy`, `view`) while the
+    page still looked complete.
+
+    Checked against `dir()` on the real class rather than against a list kept
+    here, because a list kept here would need the same discipline it is meant
+    to enforce.
+    """
+    import importlib
+    out = []
+    for name, spec in sorted(CLASSES.items()):
+        if spec.get("lang") != "native":
+            continue
+        try:
+            cls = getattr(importlib.import_module("vkml"), spec.get("symbol", name))
+        except (ImportError, AttributeError):
+            out.append(f"{name}: cannot import to verify its members")
+            continue
+        grouped = {m for _, members in spec.get("groups", []) for m in members}
+        for attr in sorted(dir(cls)):
+            if attr.startswith("_") and attr not in spec.get("extra_members", ()):
+                continue
+            if attr not in grouped:
+                out.append(f"{name}: `{attr}` is bound but listed in no group "
+                           f"-- add it to a group in web/content/classes.py")
+    return out
 
 
 if __name__ == "__main__":

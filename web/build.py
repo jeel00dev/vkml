@@ -525,7 +525,15 @@ def class_page(name: str, spec: dict) -> tuple[str, list[tuple[str, str, int]]]:
     misrepresents the class.
     """
     lang = spec.get("lang", "cpp")
-    doc = (R.all_classes() if lang == "cpp" else R.python_classes()).get(name)
+    # `symbol` lets a page be keyed differently from the class it documents,
+    # which is what allows the C++ `Tensor` and the Python `Tensor` -- one type,
+    # two surfaces, and one place where they disagree -- to be separate pages.
+    symbol = spec.get("symbol", name)
+    if lang == "native":
+        doc = R.nanobind_class(symbol, tuple(spec.get("extra_members", ())))
+    else:
+        doc = (R.all_classes() if lang == "cpp"
+               else R.python_classes()).get(symbol)
     if doc is None:
         return f"<h1>{html.escape(name)}</h1>" + admon(
             "warning", f"`{name}` was not found by the extractor."), []

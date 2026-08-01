@@ -710,6 +710,7 @@ def all_classes() -> dict[str, ClassDoc]:
 
 
 PY_PACKAGE = ROOT / "python" / "vkml"
+BINDINGS = ROOT / "bindings" / "module.cpp"
 
 
 def python_classes() -> dict[str, ClassDoc]:
@@ -756,6 +757,85 @@ def python_classes() -> dict[str, ClassDoc]:
                         doc="", kind="field", access="public", line=item.lineno))
             out[node.name] = cls
     return out
+
+
+# The forms nanobind uses to name a member, and to register a class. The quoted
+# string is the PYTHON name, which is the only reliable key -- it is frequently
+# not the C++ one. `\s*` spans newlines because the binding TU wraps long
+# `.def(` calls with the name on the following line, and anchoring to `.def(`
+# rather than to a bare quoted string is what keeps `"shape"_a` parameter
+# annotations and string literals in unrelated expressions out of the results.
+NB_BIND = re.compile(
+    r"\.def(?:_prop_ro|_prop_rw|_static|_ro|_rw)?\(\s*\"(?P<name>\w+)\""
+    r"|nb::class_<[^>]+>\s*\w*\s*\(\s*\w+\s*,\s*\"(?P<cls>\w+)\"")
+
+
+def _nb_binding_lines() -> dict[str, int]:
+    """Python member name -> the line in the binding TU that defines it.
+
+    Found by scanning the binding source, because that is the ONLY place the
+    Python name is decided and it routinely differs from the C++ one --
+    `.def_prop_ro("size", &Tensor::numel)` being the case that motivated this.
+    Linking a Python member to its C++ declaration would therefore link to the
+    wrong function; linking to the binding shows the reader the rename itself.
+    """
+    text = BINDINGS.read_text()
+    out: dict[str, int] = {}
+    for m in NB_BIND.finditer(text):
+        name = m.group("name") or m.group("cls")
+        out.setdefault(name, text.count("\n", 0, m.start()) + 1)
+    return out
+
+
+def nanobind_class(name: str, extra: tuple[str, ...] = ()) -> ClassDoc | None:
+    """A class defined in C++ through nanobind, introspected from the built module.
+
+    WHY THIS IS NOT python_classes(). That function parses `python/vkml/*.py`
+    with ast, so it can only see classes written in Python. `Tensor` is defined
+    in C++ and injected by nanobind, so it is invisible to a source parse at
+    every level -- which is why the site had 25 Python class pages and no page
+    for the type all 99 operators return.
+
+    The built extension is therefore the source of truth here, and it is a good
+    one: nanobind embeds the real signature in the first line of each member's
+    docstring, so signatures still cannot go stale. What it does NOT carry is a
+    source location, so lines come from the binding TU by name.
+    """
+    import importlib
+    try:
+        mod = importlib.import_module("vkml")
+        cls = getattr(mod, name)
+    except (ImportError, AttributeError):
+        return None
+
+    lines = _nb_binding_lines()
+    doc = ClassDoc(name=name, kind="class", bases="",
+                   doc=(cls.__doc__ or "").strip(),
+                   file=BINDINGS, line=lines.get(name, 1))
+
+    for attr in sorted(set(dir(cls)) - {"__init__"} | set(extra)):
+        if attr.startswith("_") and attr not in extra:
+            continue
+        obj = getattr(cls, attr, None)
+        if obj is None:
+            continue
+        # nanobind puts the signature on the first line and any docstring after
+        # it -- properties as "(self) -> T", methods as "name(self, ...) -> T".
+        # A property given an explicit docstring in the binding gets that text
+        # ALONE, with no signature line at all, so the leading "(" is what
+        # distinguishes the two cases rather than the member's kind.
+        head, _, rest = (obj.__doc__ or "").strip().partition("\n")
+        is_prop = isinstance(obj, property)
+        if is_prop:
+            sig, body = (f"{attr}{head}", rest) if head.startswith("(") \
+                else (attr, f"{head}\n{rest}")
+        else:
+            sig, body = head, rest
+        doc.members.append(Member(
+            name=attr, signature=sig or attr, doc=body.strip(),
+            kind="field" if is_prop else "method",
+            access="public", line=lines.get(attr, doc.line)))
+    return doc
 
 
 # ------------------------------------------------------- environment switches --

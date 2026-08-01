@@ -2,7 +2,7 @@
 import io, re, sys, contextlib, traceback
 sys.path.insert(0, "web"); sys.path.insert(0, "python")
 import numpy as np, vkml
-from content import PAGES, PROSE
+from content import PAGES, PROSE, CLASSES
 
 def run_example(src):
     """Execute a REPL transcript; return (claimed, actual) output pairs."""
@@ -56,30 +56,38 @@ def guide_examples():
             yield f"guide:{slug}", block
 
 
-bad = 0
-for name, block in guide_examples():
+def all_examples():
+    """Every REPL transcript the site publishes, from all three content sources.
+
+    Enumerated in ONE place because the sources were previously walked by two
+    hand-written loops, and a third -- the examples on class pages -- was simply
+    never added to either. That gap was invisible while it existed: the gate
+    reported PASS over content it had not opened, which is the failure mode a
+    gate is supposed to prevent rather than exhibit.
+    """
+    yield from guide_examples()
+    for name, entry in sorted(PROSE.items()):
+        if entry.get("example"):
+            yield f"op:{name}", entry["example"]
+    for name, spec in sorted(CLASSES.items()):
+        if spec.get("example"):
+            yield f"class:{name}", spec["example"]
+
+
+norm = lambda s: re.sub(r"\s+", " ", s).strip()
+
+bad = checked = 0
+for name, block in all_examples():
     for stmt, claimed, actual in run_example(block):
-        norm = lambda s: re.sub(r"\s+", " ", s).strip()
         # A line marked as machine-specific is reported, not failed: the device
         # index and driver version legitimately differ per machine.
         if "differs per machine" in claimed:
             continue
+        checked += 1
         if norm(claimed) != norm(actual):
             bad += 1
             print(f"  MISMATCH {name}: {stmt}")
             print(f"    claimed: {claimed}")
             print(f"    actual : {actual}")
-
-for name, entry in sorted(PROSE.items()):
-    ex = entry.get("example")
-    if not ex:
-        continue
-    for stmt, claimed, actual in run_example(ex):
-        norm = lambda s: re.sub(r"\s+", " ", s).strip()
-        if norm(claimed) != norm(actual):
-            bad += 1
-            print(f"  MISMATCH {name}: {stmt}")
-            print(f"    claimed: {claimed}")
-            print(f"    actual : {actual}")
-print(f"\n  {bad} mismatches")
+print(f"\n  {checked} statements checked, {bad} mismatches")
 sys.exit(1 if bad else 0)
