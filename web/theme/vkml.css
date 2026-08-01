@@ -273,6 +273,14 @@ h1 { margin: 0 0 .5rem; font-size: 2.1rem; font-weight: 700; }
 h2 { margin: 2.9rem 0 .9rem; font-size: 1.55rem; font-weight: 600;
      padding-bottom: .35rem; border-bottom: 1px solid var(--border); }
 h3 { margin: 2.1rem 0 .5rem; font-size: 1.15rem; font-weight: 650; }
+/* An entry's NAME. It is marked up as <code> inside the heading, so it was
+   inheriting the inline-code chip and rendering smaller and lighter than the
+   signature box below it -- the page scanned as a list of signatures rather
+   than a list of operators. Plain, full size, heading weight. */
+h2 > code, h3 > code, h4 > code {
+    background: none; border: 0; padding: 0;
+    font-size: 1em; font-weight: inherit; color: inherit;
+}
 h4 { margin: 1.4rem 0 .4rem; font-size: .9rem; font-weight: 650; }
 h5 { margin: 1.2rem 0 .35rem; font-size: .82rem; font-weight: 650;
      text-transform: uppercase; letter-spacing: .06em; color: var(--fg-muted); }
@@ -292,8 +300,14 @@ strong { color: var(--fg-strong); font-weight: 650; }
 
 /* ------------------------------------------------------------------ code -- */
 
+/* No border. Measured across twelve reference sites, seven mark inline code
+   with a tint alone (rust-book, react, tailwind, astro, shadcn, kubernetes,
+   huggingface) and four add a hairline. With border + background + radius +
+   padding, the matmul page's "six pipelines" sentence became six boxes in two
+   lines and the reading rhythm broke. The tint carries the distinction; the
+   size stays .875em, which already matched the peer median of 0.86. */
 code { font: .875em/1.5 var(--mono); background: var(--bg-code);
-       border: 1px solid var(--border); border-radius: var(--radius); padding: .1em .35em; }
+       border: 0; border-radius: var(--radius); padding: .1em .35em; }
 a > code, code.xref { color: var(--accent-fg); border-color: var(--border-strong); }
 a:hover > code { border-color: var(--accent); text-decoration: none; }
 
@@ -340,7 +354,7 @@ pre:hover .copy { opacity: 1; }
 /* ------------------------------------------------------------ API blocks -- */
 
 .sig { margin: 0 0 1rem; padding: .8rem 1rem; background: var(--bg-panel);
-       border: 1px solid var(--border); border-left: 3px solid var(--accent);
+       border: 1px solid var(--border); border-left: 1px solid var(--border);
        border-radius: var(--radius); font: .89rem/1.7 var(--mono); overflow-x: auto; }
 .sig .name { color: var(--fg-strong); font-weight: 600; }
 .sig .param { font-style: italic; }
@@ -363,7 +377,7 @@ pre:hover .copy { opacity: 1; }
 .support { display: flex; flex-wrap: wrap; gap: .35rem; margin: 0 0 1.1rem; }
 .chip { padding: .15rem .55rem; border: 1px solid var(--border-strong);
         border-radius: 999px; font: 500 .74rem/1.45 var(--sans); color: var(--fg-muted); }
-.chip.yes { border-color: var(--accent); color: var(--accent-fg); }
+.chip.yes { border-color: var(--border-strong); color: var(--fg); background: var(--bg-panel); }
 .chip.no { text-decoration: line-through; opacity: .55; }
 
 /* The implementation table: header, shader, kernel, gradient, tests. This is
@@ -430,7 +444,18 @@ footer.page { max-width: none; margin-top: 2.5rem; padding-top: 1.1rem;
 
 /* ------------------------------------------------------------- responsive */
 
-@media (max-width: 88rem) { .toc { display: none; } }
+/* The contents rail. This was hidden below 88rem (1408px), which is every
+   common laptop -- 1280, 1366 and 1440 all lost it, on exactly the pages that
+   need it most: an API category page carries ten independent operator entries
+   and an architecture page runs to a dozen sections.
+
+   Measured at 1280 across twelve reference sites, seven keep a right-hand rail
+   (tailwind 288, astro 280, shadcn 288, jax 272, huggingface 270, nextjs 224,
+   kubernetes 209) and five do not (rust-book, react, stripe, pytorch, godot).
+   The five that drop it are single-narrative reading pages; none of them drops
+   it as late as 1408px. 76rem is 1216px, so 1280 and up keep the rail, and the
+   budget above leaves the prose at its full measure. */
+@media (max-width: 76rem) { .toc { display: none; } }
 @media (max-width: 64rem) {
     #nav-toggle { display: grid; }
     .sidenav { position: fixed; left: 0; top: var(--topbar-h); z-index: 45;
