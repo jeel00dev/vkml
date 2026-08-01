@@ -265,7 +265,7 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
    markup that does not exist and the headings rendered flush against the
    panel edge with no padding at all. */
 .sidenav h3, .sidenav .sect { margin: 1.8rem 0 .5rem; padding: 0 1.2rem;
-                 font: 700 var(--fs-6)/1.25 var(--sans); color: var(--fg-strong); }
+                 font: 700 var(--fs-7)/1.25 var(--sans); color: var(--fg-strong); }
 .sidenav ol { list-style: none; margin: 0; padding: 0; }
 
 .sidenav a {
@@ -318,7 +318,12 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
 .toc a { display: block; padding: .22rem .55rem; border-left: 2px solid transparent;
          color: var(--fg-muted); font-size: var(--fs-3); text-decoration: none; overflow-wrap: anywhere; }
 .toc a:hover { color: var(--fg-strong); }
-.toc a.active { color: var(--accent-fg); border-left-color: var(--accent); font-weight: 600; }
+/* The active entry is the one the reader is looking for when they glance
+   right, so it gets size as well as colour. Weight and an accent rule alone
+   left it identical in size to seven neighbours, which is a lot of scanning
+   for the one line that answers "where am I". */
+.toc a.active { color: var(--accent-fg); border-left-color: var(--accent);
+                font-weight: 600; font-size: var(--fs-5); }
 .toc a.lvl3 { padding-left: 1.15rem; font-family: var(--mono); font-size: var(--fs-2); }
 .toc .side-links { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
 .toc .side-links a { padding-left: 0; font-size: var(--fs-3); }
