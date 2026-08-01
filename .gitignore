@@ -64,3 +64,9 @@ web/_site/
 # this covers the repository root, where two were committed by accident before
 # the examples were changed to use a temporary directory.
 *.vkml
+
+# Packaging artifacts. The wheel job builds an sdist into dist-sdist/ to
+# check that the published artifact -- not the checkout -- actually builds.
+dist/
+dist-sdist/
+*.egg-info/

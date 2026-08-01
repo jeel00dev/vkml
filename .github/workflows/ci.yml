@@ -245,6 +245,31 @@ jobs:
           assert vkml.has_vulkan, 'the wheel should carry the Vulkan backend'
           "
 
+      - name: Build an sdist and install from THAT
+        # `pip install .` above builds from the checkout, so it sees every file
+        # in the tree whether or not the sdist ships it. The sdist is a
+        # different artifact with different contents, and it is what `pip
+        # install vkml` downloads on any platform without a matching wheel --
+        # so a file that the build needs and the sdist omits breaks users while
+        # every job here stays green.
+        #
+        # Installed into a throwaway venv rather than over the top of the wheel,
+        # so this cannot pass by importing what the previous step installed.
+        run: |
+          python -m pip install --quiet build
+          python -m build --sdist --outdir dist-sdist .
+          python -m venv /tmp/sdist-venv
+          /tmp/sdist-venv/bin/pip install --quiet dist-sdist/*.tar.gz
+          cd /tmp
+          /tmp/sdist-venv/bin/python -c "
+          import os, vkml, numpy as np
+          assert os.environ['GITHUB_WORKSPACE'] not in os.path.realpath(vkml.__file__)
+          assert vkml.has_vulkan, 'the sdist build lost the Vulkan backend'
+          a = vkml.tensor(np.eye(3, dtype=np.float32))
+          assert (a @ a).numpy().tolist() == np.eye(3).tolist()
+          print('sdist', vkml.__version__, 'builds, installs and computes')
+          "
+
   second-driver:
     name: Linux / Vulkan suite on a second driver (lavapipe)
     runs-on: [self-hosted, Linux]
