@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/jeel00dev/vkml/main/assets/vkml_logo.png" alt="vkML — Vulkan based machine learning library" width="440">
+<img src="assets/derived/logo-880.png" alt="vkML — Vulkan based machine learning library" width="440">
 
 **A deep learning framework that runs on Vulkan compute.**
 

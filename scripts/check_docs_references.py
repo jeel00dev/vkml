@@ -100,6 +100,7 @@ def main() -> int:
                     problems.append(f"{op} ({where}): `{const}` appears nowhere in the sources")
 
     print(f"  {checked_paths} path references, {checked_consts} constant references")
+    problems += markdown_images_resolve()
     problems += unlisted_native_members()
     problems += stale_docs_references()
     problems += unrendered_markup()
@@ -208,6 +209,55 @@ def stale_docs_references():
                            f"that long (closest: {cands[0].relative_to(ROOT)}, "
                            f"{cands[0].read_text(errors='ignore').count(chr(10)) + 1} lines)")
     return out
+
+
+MD_IMG_RE = re.compile(r'<img[^>]+src="([^"]+)"|!\[[^\]]*\]\(([^)\s]+)')
+SELF_RAW_RE = re.compile(r'https://raw\.githubusercontent\.com/[^/]+/vkml/')
+
+
+def markdown_images_resolve():
+    """Every image a markdown file points at must exist, and locally.
+
+    THE README LOGO WAS BROKEN FOR EVERY VIEWER, INCLUDING THE OWNER. It was
+    served from an absolute raw.githubusercontent.com URL, and this repository is
+    private -- raw.githubusercontent does not accept a browser session, so it
+    answers 404 for anonymous and authenticated readers alike. The file existed,
+    was committed, and was pushed. Nothing was missing; the address was wrong.
+
+    Two rules, because the second is what actually bit:
+
+      the target must exist   an <img> or ![]() pointing at a path that is not
+                              there
+      no self-referential     an absolute URL into this repo's own raw host. It
+      raw URLs                is broken while the repo is private, it hardcodes
+                              owner, repo name and branch, and it breaks on
+                              every fork. A relative path is resolved by GitHub
+                              against whatever ref is being viewed, so it works
+                              in all four cases and in a local editor too.
+
+    Not checked: external images (shields.io badges and the like). Their
+    liveness is a network question, and a gate that needs the network is a gate
+    that fails on a train.
+    """
+    problems = []
+    docs = sorted(ROOT.glob("docs/**/*.md")) + sorted(ROOT.glob("*.md"))
+    for md in docs:
+        if "third_party" in md.parts or "actions-runner" in md.parts:
+            continue
+        text = md.read_text(errors="ignore")
+        where = md.relative_to(ROOT)
+        for m in MD_IMG_RE.finditer(text):
+            src = m.group(1) or m.group(2)
+            if SELF_RAW_RE.match(src):
+                problems.append(
+                    f"{where}: `{src}` is an absolute raw URL into this repo — "
+                    f"404s while the repo is private, and hardcodes the branch. "
+                    f"Use a path relative to the file instead")
+            elif not src.startswith(("http://", "https://", "data:", "#")):
+                target = (md.parent / src).resolve()
+                if not target.is_file():
+                    problems.append(f"{where}: image `{src}` does not exist")
+    return problems
 
 
 def unlisted_native_members():

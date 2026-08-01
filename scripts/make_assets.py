@@ -24,12 +24,22 @@ ROOT = Path(__file__).resolve().parent.parent
 MASTER = ROOT / "assets" / "vkml_logo.png"
 OUT = ROOT / "assets" / "derived"
 
-# (filename, longest edge in px, why)
+# (filename, longest edge in px, palette colours or None for full RGBA, why)
+#
+# The palette entry is only set where full colour costs more than the 80 kB
+# per-asset budget check_docs_references enforces on the built site. At 880 px
+# the logo is 235 kB as RGBA and 47 kB quantised to 256 colours, and the two are
+# indistinguishable: alpha survives (corners still measure 0, 96 distinct
+# levels), 0.47% of visible pixels differ by more than 32/255, and the parts
+# that carry the brand -- the metallic gradient in the wordmark, the brush ring,
+# the particle squares -- are unchanged. Below 256 px there is nothing to gain,
+# so those stay RGBA rather than being quantised on principle.
 SIZES = [
-    ("favicon-32.png", 32, "browser tab"),
-    ("apple-touch-icon.png", 180, "iOS home screen, the one size it asks for"),
-    ("logo-64.png", 64, "topbar, rendered at 25.6px"),
-    ("logo-256.png", 256, "hero, rendered at 120px"),
+    ("favicon-32.png", 32, None, "browser tab"),
+    ("apple-touch-icon.png", 180, None, "iOS home screen, the one size it asks for"),
+    ("logo-64.png", 64, None, "topbar, rendered at 25.6px"),
+    ("logo-256.png", 256, None, "hero, rendered at 120px"),
+    ("logo-880.png", 880, 256, "README, rendered at 440px"),
 ]
 
 OG = (1200, 630)
@@ -53,16 +63,21 @@ def main() -> int:
           f"{MASTER.stat().st_size / 1e6:.2f} MB")
 
     total = 0
-    for name, edge, why in SIZES:
+    for name, edge, colors, why in SIZES:
         im = master.copy()
         im.thumbnail((edge, edge), Image.LANCZOS)
+        if colors:
+            # FASTOCTREE rather than the default: it is the one Pillow method
+            # that quantises RGBA, and alpha is not optional here.
+            im = im.quantize(colors=colors, method=Image.FASTOCTREE)
         dst = OUT / name
         # Alpha is preserved: the corners measure 0 and the glow is part of the
         # artwork, so flattening onto a background would put a box round it.
         im.save(dst, optimize=True)
         total += dst.stat().st_size
         print(f"  {name:22} {im.width:>4}x{im.height:<4} "
-              f"{dst.stat().st_size / 1000:>6.1f} kB   {why}")
+              f"{dst.stat().st_size / 1000:>6.1f} kB   {why}"
+              f"{'' if not colors else f' ({colors} colours)'}")
 
     # The social card. Composed on the brand background because transparency
     # renders unpredictably in preview cards -- some clients put it on white,
