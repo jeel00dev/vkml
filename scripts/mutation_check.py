@@ -294,8 +294,48 @@ def build() -> bool:
     return r.returncode == 0
 
 
+def check_patterns() -> int:
+    """Does every mutation still match the source it targets? 130 ms.
+
+    THE CAMPAIGN CANNOT NOTICE ITS OWN DECAY. Each mutation is a literal string
+    lifted from the source, so a refactor silently stops it applying -- the file
+    says PATTERN-MISSING and fails the run, but only if somebody runs it, and
+    nothing does. One had already rotted: the strided-indexing mutation targeted
+    `op.nb[i]` in operand_offset after that loop moved into offset_from, and it
+    had been reporting a missing pattern to nobody.
+
+    A full campaign rebuilds the extension for each of ~17 compiled mutations
+    and takes about an hour, which is far too slow for every push on a
+    workstation runner that also serves the GPU jobs. This is the part that is
+    affordable per-push, and it catches the whole decay class: a mutation whose
+    anchor no longer exists is a mutation that will never run again.
+
+    What it deliberately does NOT check is whether the suite kills them. That
+    needs the full campaign, and it belongs on a schedule.
+    """
+    missing = []
+    for label, rel, find, _replace, _sel in MUTATIONS:
+        path = ROOT / rel
+        if not path.is_file():
+            missing.append(f"{label}: {rel} does not exist")
+        elif find not in path.read_text():
+            missing.append(f"{label}: the anchor is no longer in {rel}")
+
+    print(f"  {len(MUTATIONS)} mutations, {len(MUTATIONS) - len(missing)} still anchored")
+    if missing:
+        print(f"  {len(missing)} decayed:")
+        for m in missing:
+            print(f"    {m}")
+        print("\n  A mutation that cannot be applied is a test of nothing. Re-point")
+        print("  it at where the code moved, or remove it deliberately.")
+        return 1
+    return 0
+
+
 def main() -> int:
-    only = sys.argv[1] if len(sys.argv) > 1 else None
+    if "--patterns" in sys.argv:
+        return check_patterns()
+    only = next((a for a in sys.argv[1:] if not a.startswith("-")), None)
     results = []
 
     target = imported_extension_dir()

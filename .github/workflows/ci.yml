@@ -90,6 +90,26 @@ jobs:
       - name: Design system
         run: python scripts/check_design_system.py
 
+      # The mutation campaign cannot notice its own decay. Each mutation is a
+      # literal string lifted from the source, so a refactor silently stops it
+      # applying -- and one already had: the strided-indexing mutation pointed
+      # at `op.nb[i]` after that loop moved into offset_from, reporting a
+      # missing pattern to nobody, because nothing ran the campaign at all.
+      #
+      # A full campaign rebuilds the extension ~17 times and takes about an
+      # hour, which does not belong on a push. This is the 130 ms part, and it
+      # catches the whole decay class: a mutation whose anchor no longer exists
+      # will never run again.
+      - name: Mutation anchors
+        run: python scripts/mutation_check.py --patterns
+
+      # Every gate proves it can fail. check_docs_links.py printed the broken
+      # links it found and exited 0 for its entire life, reporting PASS in this
+      # very job. This breaks something on purpose for each gate and checks the
+      # exit status, so a gate that has gone blind fails the build.
+      - name: Verification dashboard
+        run: python scripts/verify_gates.py
+
       # LAST, deliberately: it checks what the steps above just wrote. While this
       # container ran as root it left root-owned build output in the bind-mounted
       # workspace -- 551 files accumulated -- and the first symptom was a
@@ -368,6 +388,32 @@ jobs:
         # proves the harness still runs and every benchmark completes. Real
         # baselines are recorded in docs/BASELINE-CPU.md from a known machine.
         run: ./build/relwithdebinfo/bin/vkml_bench --json > bench-results.json
+
+      # The job built, ran and uploaded, and NOTHING read the artifact -- a 10x
+      # regression would have uploaded cleanly and gone green. It was the only
+      # job in this file that asserted nothing.
+      #
+      # It does not compare against a baseline, and deliberately: measured over
+      # three back-to-back runs on an unchanged tree, the median benchmark moved
+      # 13.3% and the worst moved 105.6%, so a flat threshold would fire on half
+      # the suite for no reason. Recording a baseline needs the noise-floor and
+      # governance work tracked in #71 and #77.
+      #
+      # What IS checkable now is that the run produced a complete, parseable
+      # result for every benchmark rather than dying half way and leaving a
+      # truncated file that looks like success.
+      - name: The benchmark actually produced results
+        run: |
+          python - <<'PY'
+          import json, sys
+          rows = json.load(open("bench-results.json"))
+          if len(rows) < 20:
+              sys.exit(f"only {len(rows)} benchmark results; the run did not complete")
+          bad = [r["name"] for r in rows if not r.get("ns_min") or r["ns_min"] <= 0]
+          if bad:
+              sys.exit(f"{len(bad)} benchmark(s) reported no time: {bad[:5]}")
+          print(f"{len(rows)} benchmarks, all with a positive minimum")
+          PY
 
       - uses: actions/upload-artifact@v6
         with:
