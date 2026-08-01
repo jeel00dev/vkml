@@ -377,6 +377,19 @@ def inline(text: str, xref: bool = True) -> str:
         body = m.group(1)
         if xref and body in ALL_NAMES:
             return f'<a href="{PAGE_OF[body]}.html#{body}"><code>{body}</code></a>'
+        # Classes too. This linked the 102 operators and not the 27 classes, so
+        # 65 mentions of `Tensor`, `Module`, `Adam`, `DataLoader` and the rest
+        # rendered as dead chips -- and 26 of the 27 class pages had no prose
+        # anywhere on the site linking to them. They were reachable only from
+        # the sidebar and search, which is not how a reader meets a name: they
+        # meet it mid-sentence, on a page about something else.
+        #
+        # Matched on the exact key, which is what keeps `Tensor` (C++) and
+        # `vkml.Tensor` (Python) apart -- two real pages documenting two real
+        # surfaces, and guessing between them would send Python readers to the
+        # wrong one.
+        if xref and body in CLASSES:
+            return f'<a href="{class_slug(body)}.html"><code>{body}</code></a>'
         return f"<code>{body}</code>"
 
     t = re.sub(r"`([^`]+)`", code, t)
