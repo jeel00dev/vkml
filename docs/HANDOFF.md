@@ -44,7 +44,9 @@ predicting the next one** (`docs/adr/0006` §10, §11, §12):
 
 No kernel changed and every result is bit-identical.
 
-**Then two kernel changes, each found by re-running the same measurement.**
+**Then three kernel changes, and all three were the same surprise**: they looked
+memory-bound and were **addressing-bound**. The diagnosis needs a comparison
+against an equal-traffic kernel — `relu` — which is cheap and was not being done.
 
 `docs/adr/0010` — `reduce.comp` launched one workgroup per output, so a weight
 gradient folding 64 samples into 73,728 values launched 73,728 workgroups to do
@@ -52,22 +54,25 @@ gradient folding 64 samples into 73,728 values launched 73,728 workgroups to do
 at four elements per output. A second lane-per-output structure, chosen on
 coalescing and occupancy, gives **up to 83× on the kernel**.
 
-`docs/adr/0011` — `im2col` and `col2im` were **ALU-bound on integer division**.
-`relu` moving the same bytes ran at 228–235 GB/s while `im2col` managed 29–44,
-because it performed nine integer divisions per output element and a 3×3
-`col2im` performed *thirty-six*. Specialising the geometry lets the compiler
-strength-reduce every one, unroll the loops, and delete the `x % stride` test
-where stride is 1.
+`docs/adr/0011` — `im2col`/`col2im`, then `max_pool2d`. `relu` moving the same
+bytes ran at 228–235 GB/s while `im2col` managed 29–44, because it performed
+nine integer divisions per output element; a 3×3 `col2im` performed
+*thirty-six*, and a 2×2 pool backward about twenty. Specialising the geometry
+lets the compiler strength-reduce every one, unroll the loops, and delete the
+`x % stride` test where stride is 1.
 
 ```
-                 at P0  scheduling  reductions  unfold
-  sum, share       —      14.9%       4.7%       3.6%+1.7%
-  im2col + col2im  —      15.9%      15.9%       6.1%
-  step wall     13.57 ms  10.07 ms    8.87 ms    8.07 ms
+                     start  optimiser  backward  assign  reduce  unfold   pool
+  step wall        13.57 ms  12.09 ms  11.71 ms 10.07 ms 8.87 ms 8.07 ms 8.04 ms
+  GPU busy /20         —        —         —        —    128.4 ms 112.1 ms 105.2 ms
+  host and driver    42.0%    35.7%     33.7%    24.0%   30.1%   30.4%   34.3%
 ```
 
-**13.57 ms → 8.07 ms, a 1.68× end-to-end speedup**, every result bit-identical.
-`matmul` at 30.3% is now by far the largest line in the table.
+**13.57 ms → 8.04 ms, a 1.69× end-to-end speedup**, every result bit-identical.
+`matmul` at 30.9% is now the largest line **by a factor of five**.
+
+Note the host share *rising* while the step shrinks — the same host cost against
+a smaller step. A percentage has two moving ends; read the milliseconds.
 
 **P1 module completeness: 28 → 31 of 34.** `PositionalEncoding`, `Conv1d` and
 DataLoader transforms built; the list is now *generated* by
@@ -92,6 +97,13 @@ DataLoader transforms built; the list is now *generated* by
 - **Fewer submissions is not the same as faster.** An intermediate optimiser arm
   removed seven submissions and was slower; the saving appeared only once both
   passes batched.
+- **"It only moves memory" is not a reason to believe a kernel is memory-bound.**
+  Three in a row were not. The check is one line: run an equal-traffic kernel
+  with trivial addressing — `relu` — and compare. It cost nothing and reframed
+  three optimisations.
+- **A 12% regression that did not exist** was nearly accepted on a 25 µs
+  dispatch whose *unchanged* control varied by 32%. The frozen-baseline A/B
+  (rule 7) at sizes where the kernel dominates its bracket is what disproved it.
 - **Barrier-separated dispatches do not report disjoint intervals.** Brackets
   open at `TOP_OF_PIPE` and close at `ALL_COMMANDS`, so consecutive ones overlap
   by 0.2–4 µs — a fixed cost per boundary. Quantified in `MEASUREMENT-AUDIT` §3b.
@@ -131,28 +143,30 @@ driver below 20% of a batch-64 MNIST step, say.
 
 So the open question is what comes next, and the profile now answers most of it:
 
-1. **`matmul`, at 30.3% and now by far the largest line.** `M3_ROADMAP`'s
-   sixteen GEMM items were deferred on the argument that arithmetic was a
-   quarter of a step; it is ~70%, and `matmul` alone is nearly a third. At the
-   CNN's shapes it reaches 890–2320 GFLOP/s. The headroom is real, and unlike
-   ADR 0010 and 0011 it is an *arithmetic* problem rather than an addressing
-   one — which is why it was hard and they were not.
-2. **`max_pool2d_backward` at 9.6%**, the second-largest and entirely
-   unexamined. It recomputes the argmax rather than storing it, so it re-reads
-   the whole forward input. Worth measuring against its bandwidth roof before
-   assuming that is the cost — the last two kernels that looked memory-bound
-   were not.
-3. **Convolution's structure, and #101 is verified.** The weight-gradient path
+1. **`matmul`, at 30.9% and the largest line by a factor of five.** This is now
+   `M3_ROADMAP`'s territory, and **that document's premise has been measured
+   for the first time** — a table is appended to it. Three findings reweight
+   its sixteen items:
+   - **Two of the CNN's four GEMMs are memory-bound** (intensity 7.3 and 19.1
+     against the ~24 flop/byte crossover). Every tiling item aims at the
+     compute roof and can do nothing for them.
+   - **The compute-bound two run at 23–24% of peak where the same kernel
+     reaches 34–37% on square shapes.** So the headroom is ~1.5×, not the 3–4×
+     "23% of peak" suggests.
+   - **All four are batched with a broadcast operand and M ∈ {32, 64, 128}.**
+     The benchmark the items were scored against is M = 1024, unbatched. Item 2
+     (runtime shape dispatch) is exactly right for this and was scored blind.
+2. **Convolution's structure, and #101 is verified.** The weight-gradient path
    materialises a per-sample gradient — **18.9 MB for one layer of one step** —
    before reducing it. ADR 0010 made that reduction 20× faster, which was the
    cheap half; the expensive half is that the intermediate exists at all.
    Folding the batch into the GEMM's K axis removes it. Implicit GEMM (CUTLASS
    is cloned) would delete `im2col` rather than speed it up.
-4. **Remaining P1 completeness.** Conv3d needs a genuinely 3-D `im2col` and does
+3. **Remaining P1 completeness.** Conv3d needs a genuinely 3-D `im2col` and does
    not compose. **Autograd checkpointing needs an autograd extension point that
    does not exist** — `apply_backward` is a closed switch over `OpKind`, so a
    user-defined backward has nowhere to go. That is an ADR before it is code.
-5. **The R-series** (#119–#123): release verification, mutation coverage, a
+4. **The R-series** (#119–#123): release verification, mutation coverage, a
    performance regression gate, and a public claim generated from measurement.
 
 ## The one open decision, unchanged

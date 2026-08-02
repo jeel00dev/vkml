@@ -175,7 +175,9 @@ T: dict[int, tuple] = {
     101: ("open", DESIGN,   PRODUCT, "VERIFIED: it IS materialised im2col+GEMM -- im2col 10.7% + "
                                      "col2im 5.2% of a step. Plus the weight grad materialises "
                                      "18.9 MB per layer before reducing it", SHARED),
-    102: ("open", DEFERRED, PRODUCT, "M3.2: P0+P1 showing arithmetic is not the remaining cost", SHARED),
+    102: ("open", PLANNED,  PRODUCT, "UNBLOCKED: arithmetic IS the remaining cost -- matmul 30.9%, "
+                                     "5x the next line. M3_ROADMAP's premise now measured; 2 of 4 "
+                                     "GEMMs are memory-bound and headroom is ~1.5x not 3-4x", SHARED),
     103: ("open", DEFERRED, PRODUCT, "M3.3: the #102 search finding no configuration the two-level "
                                      "hierarchy ceilings", LOCAL),
     104: ("open", DEFERRED, PRODUCT, "M3.5: attribution showing epilogue stores are not measurable", LOCAL),

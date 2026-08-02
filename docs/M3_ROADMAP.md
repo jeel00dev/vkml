@@ -39,6 +39,54 @@ Hopper-specific machinery.
 
 ---
 
+## The workload this now has to be re-read against (measured 2026-08-02)
+
+This document was written before vkML could attribute a training step, and its scoring says
+*"expected effect on vkML's real workloads … not on the 1024³ square-GEMM benchmark alone"*
+— an intention it had no way to check. It can be checked now, and it changes what the table
+means.
+
+`matmul` is **30.9% of a CIFAR-100 step and the largest line by a factor of five**
+(`EXTENSIBILITY-ROADMAP.md` §4a), so this roadmap is no longer mis-sequenced. But the GEMMs
+it has to serve are not the ones the items were researched against:
+
+```
+  the CNN's actual GEMMs        ms    GFLOP/s  % compute   GB/s  % mem  intensity  bound by
+  conv1 (32,27)@(N,27,1024)  0.1425     794.8     11.5%   108.6  37.7%       7.3   memory
+  conv2 (64,288)@(N,288,256) 0.3664    1648.4     23.8%    63.2  21.9%      26.1   compute
+  conv3 (128,576)@(N,576,64) 0.3726    1620.8     23.4%    31.7  11.0%      51.1   compute
+  head  (64,2048)@(2048,100) 0.0707     370.9      5.4%    19.4   6.7%      19.1   memory
+  --- for reference ---
+  square 1024                0.8975    2392.8     34.6%    14.0   4.9%     170.7   compute
+  square 2048                6.7006    2563.9     37.1%     7.5   2.6%     341.3   compute
+```
+
+Roofs: ~6.9 TFLOP/s fp32 (36 CU × 64 lanes × 2 × 1.5 GHz) and 288 GB/s, so the memory roof
+binds below ~24 flop/byte.
+
+**Three findings, each of which reweights the table above.**
+
+1. **Two of the four are memory-bound, and one is the smallest of them.** `conv1` has an
+   arithmetic intensity of 7.3 — every tiling item in this roadmap is aimed at the compute
+   roof and can do nothing for it. Its 108.6 GB/s against a 288 GB/s roof is a *bandwidth*
+   problem, which is item 13's territory (operand layout) and nobody else's.
+2. **The compute-bound ones run at 23–24% of peak where the square reference reaches
+   34–37%.** So the headroom on `conv2`/`conv3` is real and is roughly **1.5×**, not the
+   3–4× a naive reading of "23% of peak" suggests — the kernel's own demonstrated ceiling on
+   this device is 37%, and closing to *that* is what items 2, 3 and 6 are for.
+3. **Every one is batched with a broadcast operand, and M is 32–128.** The square benchmark
+   has M = 1024 and no batch axis. Item 2 (runtime shape dispatch) and item 1 (GEMV) are
+   scored against a shape distribution this workload does not have; a tile geometry chosen
+   for M = 1024 is being asked to serve M = 32.
+
+> **What that makes this roadmap.** Still correctly ordered — M3.1's shape dispatch is
+> exactly what a workload with M ∈ {32, 64, 128, 1024} needs — but its *benefit* column was
+> estimated against square shapes and should be re-read with the table above in hand. The
+> first thing any of these items should do is reproduce that table, because it is now cheap
+> to produce and was not when this was written.
+
+---
+
 ## Recommended implementation order
 
 The ordering is not the score ranking. Three constraints reshape it:
