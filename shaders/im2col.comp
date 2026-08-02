@@ -6,6 +6,24 @@
 // writes zero where the window falls outside the padded image, so this is a
 // gather with no accumulation and nothing to synchronise. Its adjoint,
 // col2im.comp, is where that stops being true.
+//
+// THE COST IS ADDRESSING, NOT MEMORY, and that is measured rather than assumed.
+// This kernel moves 4 bytes per thread and spent nine integer divisions by
+// runtime values working out which 4. A GPU has no integer divide instruction,
+// so each is a multi-instruction sequence. Against `relu` -- same traffic, same
+// output size, one flat index -- on the CIFAR CNN's three layers:
+//
+//     im2col      29.0    43.7    39.5 GB/s
+//     relu       227.7   234.9   233.2 GB/s      3.0x to 4.4x apart
+//
+// SO THE DIVISORS ARE SPECIALISATION CONSTANTS. The compiler turns a division
+// by a known constant into a multiply and a shift, which is what closes the
+// gap: 62.8 / 103.0 / 68.1 GB/s, a 1.7x to 2.4x improvement on the kernel.
+//
+// The cost is a pipeline per distinct geometry. Measured: three variants for
+// the whole CIFAR CNN -- one per convolution layer -- and 2 ms to compile each,
+// paid once. A workload with many distinct input sizes pays that per size; 32
+// sizes cost 0.07 s in total. See docs/adr/0011.
 
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
@@ -14,6 +32,18 @@
 // Storage type of the operands and result. Conversion happens at the memory
 // boundary; everything between is float (docs/ARCHITECTURE.md 7.3).
 layout(constant_id = 1) const uint DTYPE = T_F32;
+
+// The divisors, as constants so the compiler can strength-reduce them. Only
+// values this kernel DIVIDES by are here: adding one it merely multiplies by
+// would cost a pipeline variant and buy nothing.
+layout(constant_id = 2) const int KERNEL_W = 3;
+layout(constant_id = 3) const int PATCH = 9;         // kernel_h * kernel_w
+layout(constant_id = 4) const int OUT_W = 1;
+layout(constant_id = 5) const int POSITIONS = 1;     // out_h * out_w
+layout(constant_id = 6) const int ROWS = 1;          // channels * PATCH
+// Whether the source can be walked with a flat index. When it can, the
+// four-axis stride decode below is the identity and is compiled out.
+layout(constant_id = 7) const uint SRC_CONTIGUOUS = 0;
 
 layout(push_constant, scalar) uniform Params {
     uint64_t src;
@@ -34,24 +64,23 @@ void main() {
     const uint i = global_index();
     if (i >= p.n) { return; }
 
-    const int positions = p.out_h * p.out_w;
-    const int patch_size     = p.kernel_h * p.kernel_w;
+    const int pos = int(i) % POSITIONS;
+    const int row = (int(i) / POSITIONS) % ROWS;
+    const int b   = int(i) / (POSITIONS * ROWS);
 
-    const int pos = int(i) % positions;
-    const int row = (int(i) / positions) % p.rows;
-    const int b   = int(i) / (positions * p.rows);
+    const int c  = row / PATCH;
+    const int ki = (row % PATCH) / KERNEL_W;
+    const int kj = (row % PATCH) % KERNEL_W;
 
-    const int c  = row / patch_size;
-    const int ki = (row % patch_size) / p.kernel_w;
-    const int kj = (row % patch_size) % p.kernel_w;
-
-    const int h = (pos / p.out_w) * p.stride_h - p.pad_h + ki * p.dilation_h;
-    const int x = (pos % p.out_w) * p.stride_w - p.pad_w + kj * p.dilation_w;
+    const int h = (pos / OUT_W) * p.stride_h - p.pad_h + ki * p.dilation_h;
+    const int x = (pos % OUT_W) * p.stride_w - p.pad_w + kj * p.dilation_w;
 
     float value = 0.0;
     if (h >= 0 && h < p.image_h && x >= 0 && x < p.image_w) {
-        const int from = ((b * p.channels + c) * p.image_h + h) * p.image_w + x;
-        value = load_f(p.src, operand_offset(uint(from), p.in_op), DTYPE);
+        const uint from = uint(((b * p.channels + c) * p.image_h + h) * p.image_w + x);
+        value = load_f(p.src,
+                       SRC_CONTIGUOUS == 1u ? from : operand_offset(from, p.in_op),
+                       DTYPE);
     }
     store_f(p.dst, i, value, DTYPE);
 }

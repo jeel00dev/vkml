@@ -1429,9 +1429,47 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 push.channels = rows / (up.kernel_h * up.kernel_w);
                 push.in_op = to_gpu_operand(src.shape, esz);
 
+                // THE GEOMETRY IS SPECIALISED, not pushed. Both kernels are
+                // pure data movement whose cost was measured to be ADDRESSING
+                // rather than memory: im2col ran at 29-44 GB/s where `relu`
+                // moving the same bytes ran at 228-235, and col2im performed
+                // thirty-six integer divisions per output element for a 3x3
+                // kernel. A GPU has no integer divide instruction.
+                //
+                // Only values the shader DIVIDES by or ITERATES over are here.
+                // Adding one it merely multiplies by would cost a pipeline
+                // variant and buy nothing, so the two lists differ: they are
+                // different shaders with different arithmetic.
+                //
+                // The variant count is bounded by distinct layer geometries --
+                // three for the whole CIFAR CNN, at 2 ms to compile each, paid
+                // once (docs/adr/0011).
+                const auto sc = [](int32_t v) { return static_cast<uint32_t>(v); };
+                const uint32_t src_contiguous = src.shape.is_contiguous() ? 1U : 0U;
+
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg, spec_dtype(node->dtype)};
+                if (extracting) {
+                    cfg.spec_constants = {wg,
+                                          spec_dtype(node->dtype),
+                                          sc(push.kernel_w),
+                                          sc(push.kernel_h * push.kernel_w),
+                                          sc(push.out_w),
+                                          sc(push.out_h * push.out_w),
+                                          sc(push.rows),
+                                          src_contiguous};
+                } else {
+                    cfg.spec_constants = {wg,
+                                          spec_dtype(node->dtype),
+                                          sc(push.kernel_h),
+                                          sc(push.kernel_w),
+                                          sc(push.stride_h),
+                                          sc(push.stride_w),
+                                          sc(push.image_h),
+                                          sc(push.image_w),
+                                          sc(push.channels),
+                                          src_contiguous};
+                }
 
                 const char* name = extracting ? "im2col" : "col2im";
                 const uint32_t* code = extracting ? spv::im2col : spv::col2im;

@@ -244,6 +244,9 @@ T: dict[int, tuple] = {
     135: ("done", DEFECT,   PRODUCT, "CLOSED: reduce.comp was launch-bound -- one workgroup per "
                                      "output. Second lane-per-output structure, up to 83x on the "
                                      "kernel, -12.9% end to end; ADR 0010", None),
+    136: ("done", DEFECT,   PRODUCT, "CLOSED: im2col/col2im were ALU-bound on integer division "
+                                     "(36 per element for a 3x3 col2im). Geometry as spec "
+                                     "constants: 1.8-3.6x, -9% end to end; ADR 0011", None),
     117: ("open", PLANNED,  OBSERVE, "MEASURED 58.8ns / 131.7ns per publish; end-to-end could not "
                                      "resolve it (4 orders under noise). Regression gate remains", SHARED),
 }

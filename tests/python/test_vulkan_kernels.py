@@ -2045,3 +2045,112 @@ def test_argmax_keeps_the_first_extremum_in_both_structures(name, shape, axis):
         f"argmax over {name} disagrees with the oracle on tied values; the first "
         f"extremum must win, and this returned {np.unique(got)[:4]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Geometry as specialisation constants
+# ---------------------------------------------------------------------------
+#
+# im2col and col2im compile the divisors into the pipeline (docs/adr/0011).
+# That makes two new things possible to get wrong, neither of which existed
+# when the geometry was pushed:
+#
+#   1. A constant wired to the wrong field. Every one is an int, so the
+#      compiler cannot tell out_h from out_w, or kernel_h from kernel_w.
+#   2. A pipeline cache that does not key on the constants, which would hand
+#      layer 2 the pipeline compiled for layer 1 — silently, and only for the
+#      second distinct geometry in a process.
+#
+# Both are addressed by ASYMMETRY: every extent below differs from every other,
+# so transposing any pair changes the answer.
+
+
+ASYMMETRIC_UNFOLD = [
+    # (name, image (h, w), kernel (h, w), stride, padding, dilation, channels)
+    ("everything distinct", (7, 11), (2, 3), (1, 1), (0, 0), (1, 1), 3),
+    ("asymmetric stride", (9, 13), (3, 2), (2, 1), (1, 0), (1, 1), 2),
+    ("asymmetric dilation", (11, 9), (2, 3), (1, 2), (0, 1), (2, 1), 2),
+]
+
+
+@requires_vulkan
+@pytest.mark.parametrize("name,image,kernel,stride,pad,dil,channels", ASYMMETRIC_UNFOLD)
+def test_im2col_geometry_is_wired_to_the_right_constants(name, image, kernel, stride,
+                                                          pad, dil, channels):
+    """Asymmetric in every axis, so a transposed constant cannot survive.
+
+    A square image with a square kernel and equal strides passes against an
+    implementation that has `out_h` and `out_w` the wrong way round. That is
+    exactly what a specialisation constant makes possible, so the check has to
+    be built out of values that differ.
+    """
+    x = np.random.default_rng(4).standard_normal((2, channels, *image)).astype(np.float32)
+    got = V.im2col(V.tensor(x, device=gpu_device()), kernel, stride, pad, dil).numpy()
+    want = V.im2col(V.tensor(x, device=V.cpu), kernel, stride, pad, dil).numpy()
+    assert got.shape == want.shape, f"{name}: shape {got.shape} != {want.shape}"
+    assert np.array_equal(got, want), (
+        f"{name}: im2col disagrees with the CPU oracle. It gathers elements and writes "
+        f"zero padding, so it must be exact"
+    )
+
+
+@requires_vulkan
+@pytest.mark.parametrize("name,image,kernel,stride,pad,dil,channels", ASYMMETRIC_UNFOLD)
+def test_col2im_geometry_is_wired_to_the_right_constants(name, image, kernel, stride,
+                                                          pad, dil, channels):
+    """The adjoint, on the same asymmetric geometries.
+
+    col2im also compiles the kernel bounds in, so its two loops are unrolled —
+    a transposed pair changes which windows are scanned, not just where they
+    read from.
+    """
+    x = np.random.default_rng(5).standard_normal((2, channels, *image)).astype(np.float32)
+    cols_gpu = V.im2col(V.tensor(x, device=gpu_device()), kernel, stride, pad, dil)
+    cols_cpu = V.im2col(V.tensor(x, device=V.cpu), kernel, stride, pad, dil)
+
+    got = V.col2im(cols_gpu, image, kernel, stride, pad, dil).numpy()
+    want = V.col2im(cols_cpu, image, kernel, stride, pad, dil).numpy()
+    assert got.shape == want.shape, f"{name}: shape {got.shape} != {want.shape}"
+    assert np.array_equal(got, want), (
+        f"{name}: col2im disagrees with the CPU oracle. Both fold in ascending (ki, kj), "
+        f"so the sum is EXACT rather than merely close"
+    )
+
+
+@requires_vulkan
+def test_distinct_geometries_do_not_share_a_pipeline():
+    """A cache key missing the constants would be silent and catastrophic.
+
+    The second geometry in a process would be handed the pipeline compiled for
+    the first, and would compute addresses for the wrong shape. Every test
+    above would still pass if run one geometry per process.
+
+    So this runs SEVERAL distinct geometries in one process, interleaved, and
+    checks each against the oracle — then asserts the cache really did make a
+    variant per geometry rather than reusing one.
+    """
+    geometries = [g for _, *g in ASYMMETRIC_UNFOLD]
+
+    # Interleaved twice: a cache that collides gives the wrong answer on the
+    # SECOND distinct geometry, so a single pass in order could get lucky.
+    for _ in range(2):
+        for image, kernel, stride, pad, dil, channels in geometries:
+            x = np.random.default_rng(6).standard_normal(
+                (2, channels, *image)).astype(np.float32)
+            got = V.im2col(V.tensor(x, device=gpu_device()), kernel, stride, pad, dil).numpy()
+            want = V.im2col(V.tensor(x, device=V.cpu), kernel, stride, pad, dil).numpy()
+            assert np.array_equal(got, want), (
+                f"im2col at image={image} kernel={kernel} disagrees with the oracle when "
+                f"run alongside other geometries but not alone — the pipeline cache is "
+                f"keying on something that does not distinguish them"
+            )
+
+    # Corroboration, on the ABSOLUTE count rather than on new arrivals: another
+    # test in this file may have compiled these already, and a delta of zero
+    # would then mean "cached correctly" rather than "collided".
+    variants = {p["name"] for p in V.vulkan_pipeline_stats(VULKAN_DEVICE)
+                if p["name"].startswith("im2col")}
+    assert len(variants) >= len(geometries), (
+        f"{len(variants)} im2col pipeline(s) exist for at least {len(geometries)} distinct "
+        f"geometries; the cache key does not include the specialisation constants"
+    )

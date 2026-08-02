@@ -468,8 +468,13 @@ CIFAR is a CNN and `M3_ROADMAP` does not mention convolution once. vkML exposes 
 `col2im` as operators, which implies convolution is lowered to explicit im2col followed by
 GEMM — materialising a K×N expansion of the input in memory before any arithmetic happens.
 **Verified, 2026-08-02**: `src/api/ops.cpp`'s `conv2d` does exactly that, and the expansion
-is now measurable — `im2col` is **10.7%** of a CIFAR step and `col2im` **5.2%**, together
-larger than every kernel but `matmul`.
+was measurable — `im2col` was **10.7%** of a CIFAR step and `col2im` **5.2%**, together
+larger than every kernel but `matmul`. `docs/adr/0011` then found that most of that was
+*addressing* rather than memory: both performed a dozen or more integer divisions per
+element. Specialising the geometry took them to **4.5%** and **1.6%**, and `col2im` now
+runs at 62–82% of the card's bandwidth — memory-bound, with nothing further to win from
+its addressing. `im2col` is at 22–31% and its residual is the gather's access pattern,
+which is a different problem.
 
 A second finding from reading the same function, and it is not about im2col. The forward
 broadcasts the weight across the batch, so matmul's backward produces a **per-sample weight

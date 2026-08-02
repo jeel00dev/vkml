@@ -14,6 +14,20 @@
 // Unlike scatter_add the scan is BOUNDED: only kernel_h * kernel_w offsets can
 // reach a given image position, and each determines at most one window. So this
 // costs O(kh*kw) per element rather than a full pass over the input.
+//
+// AND THAT BOUND IS WHY THE DIVISORS ARE SPECIALISATION CONSTANTS. The scan
+// runs a stride test per kernel position -- `top % stride_h`, `top / stride_h`
+// and the same across -- so a 3x3 kernel performed THIRTY-SIX integer divisions
+// by runtime values per output element, plus four to decode the index. A GPU
+// has no integer divide instruction.
+//
+// With the divisors known, the compiler strength-reduces every one of them,
+// and where stride is 1 -- the common case -- it removes the test entirely,
+// because `x % 1 == 0` is a tautology it can now see. It also unrolls the two
+// loops, since their bounds are constants.
+//
+// The cost is a pipeline per distinct geometry, measured at three variants for
+// the whole CIFAR CNN and 2 ms to compile each. See docs/adr/0011.
 
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
@@ -22,6 +36,20 @@
 // Storage type of the operands and result. Conversion happens at the memory
 // boundary; everything between is float (docs/ARCHITECTURE.md 7.3).
 layout(constant_id = 1) const uint DTYPE = T_F32;
+
+// The divisors and the loop bounds, as constants. Only values this kernel
+// divides by or iterates over are here: one it merely multiplies by would cost
+// a pipeline variant and buy nothing.
+layout(constant_id = 2) const int KERNEL_H = 3;
+layout(constant_id = 3) const int KERNEL_W = 3;
+layout(constant_id = 4) const int STRIDE_H = 1;
+layout(constant_id = 5) const int STRIDE_W = 1;
+layout(constant_id = 6) const int IMAGE_H = 1;
+layout(constant_id = 7) const int IMAGE_W = 1;
+layout(constant_id = 8) const int CHANNELS = 1;
+// Whether the source can be walked with a flat index. When it can, the
+// four-axis stride decode is the identity and is compiled out.
+layout(constant_id = 9) const uint SRC_CONTIGUOUS = 0;
 
 layout(push_constant, scalar) uniform Params {
     uint64_t src;
@@ -43,32 +71,37 @@ void main() {
     if (i >= p.n) { return; }
 
     const int positions = p.out_h * p.out_w;
-    const int patch_size     = p.kernel_h * p.kernel_w;
+    const int patch_size = KERNEL_H * KERNEL_W;
 
-    const int x = int(i) % p.image_w;
-    const int h = (int(i) / p.image_w) % p.image_h;
-    const int c = (int(i) / (p.image_w * p.image_h)) % p.channels;
-    const int b =  int(i) / (p.image_w * p.image_h * p.channels);
+    const int x = int(i) % IMAGE_W;
+    const int h = (int(i) / IMAGE_W) % IMAGE_H;
+    const int c = (int(i) / (IMAGE_W * IMAGE_H)) % CHANNELS;
+    const int b =  int(i) / (IMAGE_W * IMAGE_H * CHANNELS);
 
     // Ascending (ki, kj): the fold order, and why this is reproducible.
+    // Unrolled by the compiler now that the bounds are constants -- which does
+    // not change the order, only who writes it out.
     float acc = 0.0;
-    for (int ki = 0; ki < p.kernel_h; ++ki) {
+    for (int ki = 0; ki < KERNEL_H; ++ki) {
         const int top = h + p.pad_h - ki * p.dilation_h;
         // A window only reaches this row if the offset lands exactly on a
-        // stride boundary; otherwise no window position maps here at all.
-        if (top < 0 || (top % p.stride_h) != 0) { continue; }
-        const int oh = top / p.stride_h;
+        // stride boundary; otherwise no window position maps here at all. With
+        // STRIDE_H == 1 this is a tautology and the compiler drops it.
+        if (top < 0 || (top % STRIDE_H) != 0) { continue; }
+        const int oh = top / STRIDE_H;
         if (oh >= p.out_h) { continue; }
 
-        for (int kj = 0; kj < p.kernel_w; ++kj) {
+        for (int kj = 0; kj < KERNEL_W; ++kj) {
             const int left = x + p.pad_w - kj * p.dilation_w;
-            if (left < 0 || (left % p.stride_w) != 0) { continue; }
-            const int ow = left / p.stride_w;
+            if (left < 0 || (left % STRIDE_W) != 0) { continue; }
+            const int ow = left / STRIDE_W;
             if (ow >= p.out_w) { continue; }
 
-            const int row  = c * patch_size + ki * p.kernel_w + kj;
-            const int from = (b * p.rows + row) * positions + oh * p.out_w + ow;
-            acc += load_f(p.src, operand_offset(uint(from), p.in_op), DTYPE);
+            const int row  = c * patch_size + ki * KERNEL_W + kj;
+            const uint from = uint((b * p.rows + row) * positions + oh * p.out_w + ow);
+            acc += load_f(p.src,
+                          SRC_CONTIGUOUS == 1u ? from : operand_offset(from, p.in_op),
+                          DTYPE);
         }
     }
     store_f(p.dst, i, acc, DTYPE);
