@@ -274,19 +274,15 @@ major versions format the same code differently, and CI checks one of them:
 ```sh
 pip install clang-format==18.1.8
 
-# Linux, macOS, and Git Bash on Windows
-find include src tests/cpp bench/cpp bindings -name '*.h' -o -name '*.cpp' \
-  | xargs clang-format -i
+python scripts/check_format.py          # what CI runs; names the files that differ
+python scripts/check_format.py --fix    # rewrite them
 ```
 
-`find` and `xargs` are POSIX tools. In PowerShell or a Developer Command Prompt
-neither is available — Windows' own `find` is a text search, not a file finder —
-so use Git Bash, or PowerShell's equivalent:
-
-```powershell
-Get-ChildItem include, src, tests/cpp, bench/cpp, bindings -Recurse -Include *.h, *.cpp `
-  | ForEach-Object { clang-format -i $_.FullName }
-```
+One command on every platform, `find` and `xargs` being POSIX tools that a
+PowerShell or Developer Command Prompt does not have. The script refuses to run
+on any clang-format but the pinned one: different releases format the same
+untouched code differently, so a mismatched binary reports style churn as a
+defect and the gate's verdict starts depending on the date.
 
 `.clang-format` governs C++ layout and CI enforces it; run `clang-format -i` on
 what you touch. Beyond formatting, the standard the codebase is held to is that

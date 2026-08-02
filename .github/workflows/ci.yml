@@ -47,12 +47,16 @@ jobs:
       #
       # The PyPI package is the same binary on every platform, so `pip install
       # clang-format==18.1.8` reproduces this exactly on Linux, macOS and
-      # Windows. Keep the version here and in CONTRIBUTING.md in step.
+      # Windows. Keep the version here, in CONTRIBUTING.md and in
+      # scripts/check_format.py in step -- the script refuses any other.
+      #
+      # A SCRIPT, not the find | xargs this used to be. As a shell step it was
+      # invisible to check_gate_coverage.py and unreachable by verify_gates.py,
+      # and it stayed red for fifteen commits with nothing able to say so.
       - name: clang-format
         run: |
           python -m pip install --quiet clang-format==18.1.8
-          find include src tests/cpp bench/cpp bindings -name '*.h' -o -name '*.cpp' \
-            | xargs clang-format --dry-run --Werror
+          python scripts/check_format.py
 
       # Push-constant budget. This one guards the CODE, not the documentation.
       #

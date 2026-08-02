@@ -143,6 +143,7 @@ The commands below are still the convenient local sweep:
 
 ```sh
 python scripts/check_layering.py
+python scripts/check_format.py            # clang-format, at the pinned version
 python scripts/check_push_constants.py
 python scripts/check_precise_gemm.py
 python scripts/check_docs_references.py
@@ -155,12 +156,15 @@ python scripts/check_gate_coverage.py   # ...and something actually runs it
 python scripts/check_file_ownership.py    # root-owned files from a container run
 python web/build.py && python scripts/check_docs_links.py \
   && python scripts/docs_graph.py --check && python scripts/check_source_links.py
-
-# POSIX shells, including Git Bash on Windows. CONTRIBUTING.md sec8 has the
-# PowerShell equivalent -- `find` and `xargs` do not exist there.
-find include src tests/cpp bench/cpp bindings -name '*.h' -o -name '*.cpp' \
-  | xargs clang-format --dry-run --Werror
 ```
+
+`check_format.py` used to be a `find | xargs clang-format` typed by hand, here
+and in CI. That is why it went red at `f595d73` and stayed red for fifteen
+commits: a shell line inside `ci.yml` is invisible to `check_gate_coverage.py`,
+unreachable by `verify_gates.py`, and locally exists only as a sentence someone
+has to read. It is a script now, it runs on every platform without `xargs`, and
+it refuses to run on a clang-format other than the pinned one rather than
+reporting a difference of opinion between two releases as a defect.
 
 `check_push_constants.py` reads the GLSL and fails if any push-constant block
 exceeds the 128 bytes Vulkan guarantees. It is the cheapest gate here -- no

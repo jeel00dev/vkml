@@ -99,6 +99,17 @@ CONTROLS: list[Control] = [
         artifacts="the generated layer diagram on arch-overview",
     ),
     Control(
+        gate="check_format.py",
+        guards="C++ that does not match the pinned clang-format",
+        source_of_truth=".clang-format, at clang-format 18.1.8",
+        target="src/util/env.cpp",
+        find="namespace vkml {",
+        replace="namespace     vkml {",
+        defect="formatting drift -- which went unnoticed for fifteen commits "
+               "while this check was a shell line in ci.yml that nothing local ran",
+        artifacts="none -- this one guards the source",
+    ),
+    Control(
         gate="check_versions.py",
         guards="a version stated in prose disagreeing with the file that decides it",
         source_of_truth="CMakeLists.txt, pyproject.toml",
