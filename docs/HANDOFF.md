@@ -5,8 +5,7 @@ next session has absorbed it — it is a note, not a document.
 
 ## Exact state
 
-`main` is **36 commits ahead of `origin/main`** and has not been pushed.
-Working tree clean.
+`main` is **pushed** — `origin/main` is at `d7740ac`. Working tree clean.
 
 Green: 123 C++ cases · 1576 Python tests · **the same suite re-run in lazy
 mode** · CPU-only · `VKML_MIN_SPEC=1` · all 17 gates, 11 with an automated
@@ -231,6 +230,50 @@ L2-resident**; the real optimiser runs after a forward and backward have flushed
 a 4 MiB L2. The same contiguous dispatch is 13.0 µs in a tight loop and 42.3 µs
 in situ. The per-dispatch profile of the real workload answered in one run what
 the benchmarks got wrong.
+
+## Session 4 — the CI failures, and two gaps that let them through
+
+`main` had not been pushed for 41 commits, so every failure below was measured
+against `origin/main` at `b5954de` and then re-verified locally or in the CI
+container. Six jobs were red; three shared one cause.
+
+| Job | Cause | Where fixed |
+|---|---|---|
+| ASan Python suite · PyTorch validation · Windows MSVC | `_C.configuration` missing on a CPU-only build | already fixed locally (session 1) |
+| layering + format | clang-format on `bindings/module.cpp` | already fixed locally (session 1) |
+| Vulkan suite on lavapipe | `sign()` returned `-0.0` | `730aef0` |
+| Wheel builds and installs | the check asserted one install scheme | `89adfc4` |
+
+### `sign()` on lavapipe, and two wrong fixes before the right one
+
+Reproduced in the CI container. Reading the bits back, lavapipe returned `-0.0`
+for **+NaN, -NaN, +0.0 and -0.0 alike** — every input reaching the fall-through,
+not just NaN as the test name suggests. RADV returns `+0.0` for the same SPIR-V.
+
+- Spelling the zero `uintBitsToFloat(0u)` compiles to **byte-identical SPIR-V**
+  — glslang folds it before any driver sees it. Verified by hashing the module.
+- `float(x > 0.0) - float(x < 0.0)` fixes lavapipe and is **wrong on RADV**:
+  NaN comes back as `-1.0`. Only the CPU oracle caught it.
+
+The branches stay and the sign bit is cleared when the magnitude is zero.
+
+### Two gaps worth more than the fixes
+
+**No CI job compiles `src/backend/vulkan/` under `-Werror`.** The C++ matrix
+sets `VKML_WERROR=ON` but not `VKML_VULKAN=ON`; the jobs that enable Vulkan do
+not set `VKML_WERROR`. Building `--preset asan -DVKML_VULKAN=ON` locally
+surfaces two dead private fields immediately — `Recorder::allocator_` and
+`StagingBuffer::ctx_`, both assigned in a constructor and never read, and both
+predating this session. Not fixed here: closing the gap means enabling that
+configuration, which then requires removing the fields, and that is a change of
+its own. **Recommended as the next small piece of work.**
+
+**An incremental build does not re-emit warnings for files it did not
+recompile.** `-Wdouble-promotion` is on locally, and every "grep the build for
+warnings" after an incremental rebuild was reading nothing at all. That is how
+`bb1d39b`'s float→double promotion reached CI from a machine where the build
+looked clean. `cmake --preset asan` from scratch is the check that would have
+caught it.
 
 ## The next concrete step
 
