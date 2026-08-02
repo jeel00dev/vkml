@@ -99,6 +99,16 @@ CONTROLS: list[Control] = [
         artifacts="the generated layer diagram on arch-overview",
     ),
     Control(
+        gate="check_css_bindings.py",
+        guards="markup and stylesheet disagreeing about which classes exist",
+        source_of_truth="web/_site against web/theme/vkml.css",
+        target="web/_site/concepts.html",
+        find="<p>", replace='<p class="admonition-title">x</p><p>',
+        defect="a class no rule defines -- the element renders as a bare div, "
+               "which every other gate passes because none compares the two files",
+        artifacts="every page's admonitions, cards and code blocks",
+    ),
+    Control(
         gate="check_format.py",
         guards="C++ that does not match the pinned clang-format",
         source_of_truth=".clang-format, at clang-format 18.1.8",

@@ -253,6 +253,17 @@ jobs:
           python scripts/check_docs_links.py
           python scripts/docs_graph.py --check
 
+      # Markup and stylesheet agreeing about which classes exist. Two
+      # admonitions shipped using Sphinx's `admonition`/`admonition-title`
+      # rather than this project's `admon warn` -- they rendered as bare divs,
+      # and the build, the link check and the design-system check all passed
+      # because none of them compares the two files. The other direction is
+      # dead rules: seven selectors matched nothing on the site.
+      #
+      # Same build as the steps above, so the site is already there.
+      - name: CSS bindings
+        run: python scripts/check_css_bindings.py
+
       - name: Run validation suite
         # Coverage is recorded on the same run: it costs nothing measurable and
         # the gate below needs it.

@@ -110,7 +110,6 @@
     --t-com: #71757f;
     --t-fn: #c9a2ff;
     --t-bi: #7fb8ff;
-    --t-ty: #ffc978;
 }
 
 :root[data-theme="light"] {
@@ -132,7 +131,7 @@
     --tip-bar: #d6f0e3;   --tip-fg: #10553a;
 
     --t-kw: #b3120a; --t-str: #8a5a00; --t-num: #06697c;
-    --t-com: #6b6f78; --t-fn: #6b3fb5; --t-bi: #0b5aa8; --t-ty: #8a5200;
+    --t-com: #6b6f78; --t-fn: #6b3fb5; --t-bi: #0b5aa8;
 
     /* Darker than the dark theme's, which the light theme previously reused.
        Measured against white, the shared values gave 3.06:1 (warn), 3.68 (note)
@@ -260,12 +259,13 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
                 font: var(--fw-semibold) var(--fs-5)/1 var(--sans); color: var(--fg-strong); }
 
 /* Section headings -- PyTorch's "Core", "C++ Frontend", "Extensions".
-   Targets h3 as well as .sect: the builder emits a bare <h3>, and
-   `class="sect"` appeared ZERO times in the built site, so this rule styled
-   markup that does not exist and the headings rendered flush against the
-   panel edge with no padding at all. */
-.sidenav h3, .sidenav .sect { margin: 1.8rem 0 .5rem; padding: 0 1.2rem;
-                 font: 700 var(--fs-7)/1.25 var(--sans); color: var(--fg-strong); }
+   Targets h3, which is what the builder emits. It also targeted `.sect`, a
+   class that appeared ZERO times in the built site: the rule styled markup
+   that does not exist, and until h3 was added the headings rendered flush
+   against the panel edge with no padding at all. `.sect` is gone, and
+   scripts/check_css_bindings.py now fails on any rule in that state. */
+.sidenav h3 { margin: 1.8rem 0 .5rem; padding: 0 1.2rem;
+              font: 700 var(--fs-7)/1.25 var(--sans); color: var(--fg-strong); }
 .sidenav ol { list-style: none; margin: 0; padding: 0; }
 
 .sidenav a {
@@ -283,9 +283,6 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
     color: var(--accent-fg); font-weight: 700; font-size: var(--fs-4);
     border-left-color: var(--accent); background: var(--bg-panel);
 }
-.sidenav .sub a { padding-left: 2.3rem; font-size: var(--fs-4); }
-.sidenav .sub a.active { font-size: var(--fs-4); }
-.sidenav .num { color: var(--fg-muted); opacity: .5; margin-right: .4rem; }
 .sidenav code { font-size: .88em; background: none; padding: 0; border: 0; }
 
 .grp > button {
@@ -308,7 +305,7 @@ pre::-webkit-scrollbar-thumb { border-color: var(--bg-code); }
    which is what makes the column look deliberate rather than pushed left. */
 .content { flex: 1 1 auto; min-width: 0; padding: 1.6rem 3.5rem 5rem; }
 .content > * { max-width: var(--measure); }
-.content > .wide, .content > .hero, .content > .cards, .content > .pagenav { max-width: none; }
+.content > .cards, .content > .pagenav { max-width: none; }
 
 .toc { flex: 0 0 var(--toc-w); width: var(--toc-w); padding: 1.6rem 1rem 4rem;
        border-left: 1px solid var(--border); }
@@ -382,7 +379,7 @@ strong { color: var(--fg-strong); font-weight: var(--fw-semibold); }
    size stays .875em, which already matched the peer median of 0.86. */
 code { font: .875em/1.5 var(--mono); background: var(--bg-code);
        border: 0; border-radius: var(--radius); padding: .1em .35em; }
-a > code, code.xref { color: var(--accent-fg); border-color: var(--border-strong); }
+a > code { color: var(--accent-fg); border-color: var(--border-strong); }
 a:hover > code { border-color: var(--accent); text-decoration: none; }
 
 pre {
@@ -402,7 +399,7 @@ pre:hover .copy { opacity: 1; }
 
 .tok-k { color: var(--t-kw); } .tok-s { color: var(--t-str); }
 .tok-n { color: var(--t-num); } .tok-c { color: var(--t-com); font-style: italic; }
-.tok-f { color: var(--t-fn); } .tok-b { color: var(--t-bi); } .tok-t { color: var(--t-ty); }
+.tok-f { color: var(--t-fn); } .tok-b { color: var(--t-bi); }
 .repl .p { color: var(--fg-muted); user-select: none; }
 .repl .o { color: var(--fg-muted); }
 

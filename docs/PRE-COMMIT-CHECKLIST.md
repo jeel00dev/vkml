@@ -155,7 +155,8 @@ python scripts/verify_gates.py          # every gate proves it can fail
 python scripts/check_gate_coverage.py   # ...and something actually runs it
 python scripts/check_file_ownership.py    # root-owned files from a container run
 python web/build.py && python scripts/check_docs_links.py \
-  && python scripts/docs_graph.py --check && python scripts/check_source_links.py
+  && python scripts/docs_graph.py --check && python scripts/check_source_links.py \
+  && python scripts/check_css_bindings.py
 ```
 
 `check_format.py` used to be a `find | xargs clang-format` typed by hand, here

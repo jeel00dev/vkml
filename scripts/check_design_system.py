@@ -101,6 +101,30 @@ def main() -> int:
     if rgba:
         problems.append(f"{len(rgba)} rgb()/rgba() literal(s) outside the palette")
 
+    # --- tokens nobody spends -------------------------------------------
+    #
+    # The same defect as an unused rule, one level down, and it arrives the same
+    # way: a token outlives the thing it coloured and nothing says so. `--t-ty`
+    # coloured a `tok-t` span the syntax highlighter has never emitted -- its
+    # token groups are c/s/n/f/w and there is no `t` -- so the value sat in both
+    # themes being maintained by whoever edited the palette next.
+    # SCALES ARE EXEMPT, and the distinction is the point rather than a
+    # loophole. `--fs-*`, `--s-*` and `--fw-*` are the steps of a declared
+    # scale: they exist to be CHOSEN FROM, a complete scale with a gap in it is
+    # worse than one with an unused step, and deleting `--s-1` only guarantees
+    # that whoever next needs the smallest spacing invents a different value
+    # for it. A token naming one specific thing has no such defence.
+    scale = re.compile(r"^--(fs|s|fw)-")
+    declared = {m.group(1) for m in re.finditer(r"(--[\w-]+)\s*:", css)}
+    referenced = {m.group(1) for m in re.finditer(r"var\(\s*(--[\w-]+)", css)}
+    orphans = sorted(t for t in declared - referenced if not scale.match(t))
+    if orphans:
+        problems.append(
+            f"{len(orphans)} custom propert(y/ies) declared and never used: "
+            f"{', '.join(orphans)}. Delete them, or the palette accumulates "
+            f"values nothing spends. Scale steps (--fs-* --s-* --fw-*) are "
+            f"exempt: they exist to be chosen from.")
+
     print(f"  {total} font sizes ({len(tokens)} tokens), "
           f"{len(weights)} weights, {len(hexes) + len(rgba)} stray colours")
     if problems:

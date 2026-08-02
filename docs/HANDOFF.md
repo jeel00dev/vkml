@@ -90,12 +90,17 @@ Then #118 (8 unmet P1 modules), #119-123, #124.
 - `vulkan_backend.cpp` has exactly one `set_label` call site.
 - A control can rot exactly like a gate: adding `pages.yml` silently disarmed
   `check_gate_coverage`'s control, and `verify_gates` caught it.
-- The site's `assets/derived/logo-256.png` returns 404 — `web/build.py` does not
-  copy `assets/derived/` into `_site`. `og-card.png` and the favicon are likely
-  the same. **Not yet fixed.**
-- Two gates that would have caught earlier UI defects still do not exist: a CSS
-  selector matching zero elements, and raw `<pre>` in `web/content/` bypassing
-  the renderer.
+- **Disproven:** an earlier handoff said `assets/derived/logo-256.png` returns
+  404 because `web/build.py` does not copy `assets/derived/` into `_site`. It
+  does — `build.py:1426` makes `_site/assets/` and copies every file into it,
+  and all five referenced assets resolve in the built site. Checked, not
+  inferred. `logo-256.png` is referenced by `index.html` and present.
+- **`scripts/check_css_bindings.py` now exists** and covers one of the two gates
+  that earlier handoffs asked for: a class the stylesheet does not define
+  (renders unstyled) and a rule matching nothing (dead). It found seven dead
+  selectors and one dead palette token on its first run. The other requested
+  gate — raw `<pre>` in `web/content/` bypassing the renderer — still does not
+  exist.
 
 ## The one open decision
 
