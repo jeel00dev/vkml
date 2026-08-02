@@ -90,8 +90,13 @@ P1_MODULES: list[tuple[str, str | None, str]] = [
     ("DataLoader", "data.DataLoader", ""),
     ("DataLoader batching", "data.DataLoader", "the batch_size argument"),
     ("DataLoader shuffling", "data.DataLoader", "the shuffle argument"),
-    ("DataLoader prefetch", None, "absent; tracker #22"),
-    ("DataLoader transforms", None, "absent; tracker #23"),
+    ("DataLoader prefetch", None,
+     "absent; tracker #22. Its ceiling was 0.2% of a step and is 21% for an "
+     "augmented run -- the trigger is met and the work is queued, see "
+     "python/vkml/data.py's module docstring"),
+    ("DataLoader transforms", "data.Compose",
+     "the hook is DataLoader(transform=...), taking f(rng, arrays) -> arrays; "
+     "Compose, RandomHorizontalFlip and RandomCrop are the standard CIFAR pipeline"),
     ("model save / load / checkpoint", "Checkpoint", ""),
     ("autograd checkpointing", None,
      "absent, and NOT the same thing as `Checkpoint`, which is model "

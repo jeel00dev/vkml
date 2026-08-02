@@ -45,7 +45,8 @@ if importlib.util.find_spec("vkml") is None:
     sys.path.insert(0, str(HERE.parent.parent / "python"))
 
 import vkml as V  # noqa: E402
-from vkml.data import ArrayDataset, DataLoader  # noqa: E402
+from vkml.data import (ArrayDataset, Compose, DataLoader,  # noqa: E402
+                       RandomCrop, RandomHorizontalFlip)
 
 import data as cifar_data  # noqa: E402
 
@@ -56,9 +57,14 @@ CLASSES = 100
 # work through the conv path, and the third block is where the channel count
 # gets large enough for the GEMM inside im2col to matter.
 #
-# No BatchNorm and no augmentation. Both would raise the accuracy and neither
-# would make the comparison against torch any sharper, which is what this run is
-# for. Stated so their absence reads as a decision.
+# No BatchNorm, and augmentation is OFF BY DEFAULT. Both would raise the
+# accuracy and neither would make the step-by-step comparison against torch any
+# sharper, which is what the default run is for -- an augmented batch is not the
+# batch torch sees unless the augmentation is replicated there too, and
+# replicating numpy's generator inside torch proves nothing about vkML.
+#
+# `--augment` turns on the standard CIFAR pipeline (pad 4, random crop 32,
+# random horizontal flip) and implies `--no-compare` for exactly that reason.
 CONV_CHANNELS = (32, 64, 128)
 FEATURES = CONV_CHANNELS[-1] * 4 * 4
 
@@ -84,6 +90,20 @@ def build_torch_cnn():
         torch.nn.Flatten(),
         torch.nn.Linear(FEATURES, CLASSES),
     )
+
+
+def build_augmentation():
+    """The standard CIFAR-10/100 augmentation, unchanged since Lee et al. 2015.
+
+    Pad by 4 and crop back to 32 -- translation, which stops a convolution
+    memorising absolute position -- then flip horizontally half the time, which
+    is label-preserving for natural images and doubles the effective dataset.
+
+    No colour jitter and no rotation: both are label-preserving too, and both
+    would be a second thing to explain in an example whose subject is the
+    framework rather than the recipe.
+    """
+    return Compose(RandomCrop(32, padding=4), RandomHorizontalFlip(p=0.5))
 
 
 def resolve_device(name: str):
@@ -273,7 +293,8 @@ def train(args) -> dict:
     seconds = {"batch": 0.0, "transfer": 0.0, "compute": 0.0}
 
     loader = DataLoader(ArrayDataset(train_x, train_y), batch_size=args.batch_size,
-                        shuffle=True, drop_last=True, seed=args.seed)
+                        shuffle=True, drop_last=True, seed=args.seed,
+                        transform=build_augmentation() if args.augment else None)
 
     for epoch in range(args.epochs):
         epoch_started = time.perf_counter()
@@ -400,6 +421,9 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--no-compare", dest="compare", action="store_false",
                         help="skip the PyTorch reference run")
+    parser.add_argument("--augment", action="store_true",
+                        help="pad-4 random crop and horizontal flip; implies --no-compare, "
+                             "because torch does not see the same augmented batches")
     parser.add_argument("--attribute", type=int, default=0, metavar="STEPS",
                         help="profile STEPS training steps and print where their time "
                              "went, instead of training")
@@ -407,6 +431,11 @@ def main() -> None:
                         help="repeat the profiled block N times and report the fastest "
                              "round; this machine's clock state varies runs by 60%%")
     args = parser.parse_args()
+    if args.augment:
+        # Not a warning: the comparison is meaningless rather than merely noisy,
+        # so silently keeping it would produce a divergence figure that looks
+        # like a defect and is not.
+        args.compare = False
 
     if args.attribute:
         attribute_steps(args)

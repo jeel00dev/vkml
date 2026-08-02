@@ -17,7 +17,8 @@ import numpy as np
 import pytest
 
 import vkml as V
-from vkml.data import ArrayDataset, DataLoader, split
+from vkml.data import (ArrayDataset, Compose, DataLoader, RandomCrop,
+                       RandomHorizontalFlip, split)
 from vkvalidate import gpu_device, vulkan_ready
 
 #: Applied per test rather than to the file: the CPU direction of the
@@ -703,3 +704,233 @@ def test_load_state_dict_preserves_dtype_and_requires_grad_with_the_device(tmp_p
              for n, t in [*restored.named_parameters(), *restored.named_buffers()]}
 
     assert after == before, f"a property changed across the load: {before} -> {after}"
+
+
+# ---------------------------------------------------------------------------
+# Transforms
+# ---------------------------------------------------------------------------
+#
+# The failure these are written against is not a crash. An augmentation that
+# draws one coin for the whole batch, or that draws the same coin every epoch,
+# still runs, still trains, and quietly does something other than augmenting —
+# it correlates a step's samples, or doubles the dataset instead of multiplying
+# it. Every test below is aimed at that class rather than at shapes.
+
+
+def _images(n=8, c=3, h=6, w=6, seed=0):
+    return np.random.default_rng(seed).random((n, c, h, w)).astype(np.float32)
+
+
+def test_a_transform_sees_the_whole_batch_and_can_change_it():
+    seen = []
+
+    def record(rng, arrays):
+        seen.append(arrays[0].shape)
+        return (arrays[0] * 0.0,) + tuple(arrays[1:])
+
+    x, y = _images(8), np.arange(8, dtype=np.int64)
+    loader = DataLoader(ArrayDataset(x, y), batch_size=4, transform=record)
+    batches = list(loader)
+
+    assert seen == [(4, 3, 6, 6), (4, 3, 6, 6)], "the transform did not receive whole batches"
+    assert all(np.all(bx == 0.0) for bx, _ in batches), "the transform's output was discarded"
+    assert all(len(b) == 2 for b in batches), "the label was dropped"
+
+
+def test_a_transform_is_reproducible_from_the_seed():
+    """The property the rng-as-argument contract exists to guarantee."""
+    x = _images(16)
+
+    def run(seed):
+        loader = DataLoader(ArrayDataset(x), batch_size=4, shuffle=True, seed=seed,
+                            transform=RandomHorizontalFlip(p=0.5))
+        return [b[0].copy() for b in loader]
+
+    a, b = run(7), run(7)
+    assert all(np.array_equal(p, q) for p, q in zip(a, b)), (
+        "the same seed produced different augmentation"
+    )
+    c = run(8)
+    assert any(not np.array_equal(p, q) for p, q in zip(a, c)), (
+        "a different seed produced identical augmentation; the seed is being ignored"
+    )
+
+
+def test_augmentation_differs_between_epochs():
+    """Augmentation that repeats each epoch is a bigger fixed dataset, not
+    augmentation."""
+    x = _images(16)
+    loader = DataLoader(ArrayDataset(x), batch_size=16,
+                        transform=RandomHorizontalFlip(p=0.5))
+    first = next(iter(loader))[0].copy()
+    second = next(iter(loader))[0].copy()
+    assert not np.array_equal(first, second), (
+        "two epochs produced identical augmentation; the generator is not advancing"
+    )
+
+
+def test_the_transform_draws_from_its_own_stream_not_the_shuffle():
+    """The two generators are separate on purpose.
+
+    Sharing one between the shuffle and the transform would make the same seed
+    give different augmentation depending on whether shuffling was on — a
+    difference nobody asked for and nobody would look for.
+
+    Checked by recording what the transform DRAWS, which is the thing that must
+    not move. Comparing output arrays cannot do it: the samples arrive in a
+    different order, so equal draws produce unequal batches either way.
+    """
+    def run(shuffle):
+        drawn = []
+        loader = DataLoader(ArrayDataset(_images(8)), batch_size=4, shuffle=shuffle, seed=3,
+                            transform=lambda rng, a: (drawn.append(float(rng.random())), a)[1])
+        list(loader)
+        return drawn
+
+    assert run(True) == run(False), (
+        "the transform's random draws changed when shuffling was turned on; the two "
+        "streams are not independent"
+    )
+
+
+def test_random_horizontal_flip_decides_per_sample():
+    """One coin for the whole batch is the classic way this goes wrong."""
+    x = _images(64, seed=1)
+    loader = DataLoader(ArrayDataset(x), batch_size=64,
+                        transform=RandomHorizontalFlip(p=0.5))
+    out = next(iter(loader))[0]
+
+    flipped = [np.array_equal(out[i], x[i][:, :, ::-1]) for i in range(64)]
+    kept = [np.array_equal(out[i], x[i]) for i in range(64)]
+    assert all(f or k for f, k in zip(flipped, kept)), "a sample is neither flipped nor kept"
+    assert any(flipped) and any(kept), (
+        f"{sum(flipped)} of 64 flipped; a per-sample decision should give both outcomes "
+        f"in a batch this size, and all-or-nothing means one coin was drawn for the batch"
+    )
+
+
+@pytest.mark.parametrize("p,want", [(0.0, False), (1.0, True)])
+def test_random_horizontal_flip_endpoints(p, want):
+    x = _images(4, seed=2)
+    out = RandomHorizontalFlip(p=p)(np.random.default_rng(0), (x,))[0]
+    assert np.array_equal(out, x[:, :, :, ::-1] if want else x)
+
+
+def test_random_crop_with_no_padding_and_a_full_size_window_is_the_identity():
+    x = _images(4, h=8, w=8, seed=3)
+    out = RandomCrop(8, padding=0)(np.random.default_rng(0), (x,))[0]
+    assert np.array_equal(out, x)
+
+
+def test_random_crop_translates_each_sample_independently():
+    """The point of the crop: a sample must be able to move differently from its
+    neighbour, or the batch is translated as a block and a convolution still
+    sees a fixed relationship.
+
+    The offset is RECOVERED rather than guessed at. Each image is filled with
+    `row * W + col`, so the padded window's top-left value names the offset
+    exactly — and the assertion is that several distinct offsets occur, which is
+    a statement about the batch rather than about a particular seed. An earlier
+    version asked whether any sample landed on the identity crop; with 25
+    possible offsets that is true 92% of the time, so it was a test that failed
+    one run in thirteen for no reason.
+    """
+    h = w = 8
+    grid = (np.arange(h * w, dtype=np.float32).reshape(1, 1, h, w))
+    x = np.repeat(grid, 64, axis=0)
+    out = RandomCrop(8, padding=2, fill=-1.0)(np.random.default_rng(5), (x,))[0]
+    assert out.shape == x.shape
+
+    corners = {float(out[i, 0, 0, 0]) for i in range(64)}
+    assert len(corners) > 1, (
+        f"every sample in the batch was cropped at the same offset ({corners}); "
+        f"the offset is drawn once per batch rather than once per sample"
+    )
+
+
+def test_random_crop_keeps_the_layout_and_contiguity():
+    """The gather reorders axes internally; (N, C, H, W) has to come back out."""
+    x = _images(4, c=3, h=10, w=12, seed=6)
+    out = RandomCrop((6, 8), padding=1)(np.random.default_rng(0), (x,))[0]
+    assert out.shape == (4, 3, 6, 8)
+    assert out.dtype == x.dtype
+    assert out.flags["C_CONTIGUOUS"], "a non-contiguous batch would copy again at upload"
+
+
+def test_random_crop_pads_with_fill():
+    """With enough padding the window can land entirely outside the image."""
+    x = np.ones((1, 1, 2, 2), dtype=np.float32)
+    out = RandomCrop(2, padding=2, fill=0.0)(np.random.default_rng(0), (x,))[0]
+    assert out.shape == (1, 1, 2, 2)
+    assert set(np.unique(out)).issubset({0.0, 1.0})
+
+
+def test_compose_runs_in_order_and_shares_one_generator():
+    order = []
+
+    class Mark:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def __call__(self, rng, arrays):
+            order.append((self.tag, float(rng.random())))
+            return arrays
+
+    Compose(Mark("a"), Mark("b"))(np.random.default_rng(0), (np.zeros((1, 1, 1, 1)),))
+    assert [tag for tag, _ in order] == ["a", "b"]
+    assert order[0][1] != order[1][1], (
+        "both transforms drew the same number; they are not sharing one generator"
+    )
+
+
+def test_transforms_pass_the_label_through_untouched():
+    x, y = _images(8), np.arange(8, dtype=np.int64)
+    pipeline = Compose(RandomHorizontalFlip(p=1.0), RandomCrop(6, padding=1))
+    out_x, out_y = pipeline(np.random.default_rng(0), (x, y))
+    assert np.array_equal(out_y, y), "a spatial transform altered the labels"
+    assert out_x.shape[0] == 8
+
+
+def test_transforms_reject_what_they_cannot_operate_on():
+    rng = np.random.default_rng(0)
+    flat = np.zeros((4, 16), dtype=np.float32)
+    with pytest.raises(ValueError, match=r"\(N, C, H, W\)"):
+        RandomHorizontalFlip()(rng, (flat,))
+    with pytest.raises(ValueError, match=r"\(N, C, H, W\)"):
+        RandomCrop(4)(rng, (flat,))
+    with pytest.raises(ValueError, match="does not fit"):
+        RandomCrop(9)(rng, (_images(2, h=6, w=6),))
+    with pytest.raises(ValueError):
+        RandomHorizontalFlip(p=1.5)
+    with pytest.raises(ValueError):
+        RandomCrop(4, padding=-1)
+    with pytest.raises(TypeError):
+        Compose(object())
+
+
+def test_a_transform_returning_a_bare_array_is_rejected():
+    """It would silently change the batch's arity, and the unpack error would
+    surface at the caller rather than here."""
+    loader = DataLoader(ArrayDataset(_images(4)), batch_size=4,
+                        transform=lambda rng, arrays: arrays[0])
+    with pytest.raises(TypeError, match="tuple of arrays"):
+        list(loader)
+
+
+def test_a_non_callable_transform_is_rejected_at_construction():
+    with pytest.raises(TypeError):
+        DataLoader(ArrayDataset(_images(4)), batch_size=2, transform="flip")
+
+
+@pytest.mark.parametrize("device_arg", [False, True])
+def test_the_transform_runs_before_the_device_transfer(device_arg):
+    """Augmenting after the upload would need every transform written twice."""
+    if device_arg and not V.vulkan_available():
+        pytest.skip("no Vulkan device")
+    x = _images(4)
+    device = V.device("vulkan:0") if device_arg else None
+    loader = DataLoader(ArrayDataset(x), batch_size=4, device=device,
+                        transform=RandomHorizontalFlip(p=1.0))
+    got = next(iter(loader))[0]
+    got = got.numpy() if device_arg else got
+    assert np.allclose(got, x[:, :, :, ::-1])

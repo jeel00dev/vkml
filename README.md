@@ -589,7 +589,7 @@ comparison is what checks the numbers agree, and it does — see
 | `vkml` | Tensors, 66 operators, dtypes, devices, lazy evaluation |
 | `vkml.nn` | `Module`, Linear, Conv2d, MaxPool2d, AvgPool2d, BatchNorm2d, LayerNorm, Dropout, Embedding, Conv1d, MultiheadAttention, PositionalEncoding, TransformerEncoderLayer, activations, and the MSE, cross-entropy, BCE-with-logits, KL-divergence and Huber losses |
 | `vkml.optim` | SGD (with momentum), Adam, AdamW, RMSProp |
-| `vkml.data` | `Dataset`, `ArrayDataset`, `DataLoader`, reproducible shuffling, `split` |
+| `vkml.data` | `Dataset`, `ArrayDataset`, `DataLoader`, reproducible shuffling, batch transforms (`Compose`, `RandomCrop`, `RandomHorizontalFlip`), `split` |
 | `vkml.serialize` | Checkpoints stored as a zip of `.npy` arrays plus JSON metadata |
 
 Autograd is reverse-mode, with 47 backward rules. Each rule is written using

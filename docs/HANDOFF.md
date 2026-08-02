@@ -161,9 +161,35 @@ algorithm. Validated against *torch's* Conv1d, not against vkML's Conv2d:
 comparing a composition to the thing it composes from proves the reshapes are
 consistent and nothing about whether the result is a 1-D convolution.
 
-**30 of 34 P1 modules present.** The four left are Conv3d (needs a genuinely
-3-D `im2col`; does not compose), DataLoader prefetch (#22), DataLoader
-transforms (#23) and autograd checkpointing.
+**DataLoader transforms too** (#23), which the `data.py` docstring had deferred
+with an explicit trigger — *"revisit when augmentation is wanted"* — that the
+CIFAR example's own comment had already met. `DataLoader(transform=...)` takes
+`f(rng, arrays) -> arrays`; `Compose`, `RandomHorizontalFlip` and `RandomCrop`
+are the standard CIFAR pipeline, and `examples/cifar100 --augment` uses them.
+
+The generator is **passed in, never reached for**, so a transform cannot quietly
+become irreproducible — `nn.manual_seed` exists because layers called an
+unseeded `default_rng()` and a divergence could not be re-observed.
+
+**31 of 34 P1 modules present.** The three left are Conv3d (needs a genuinely
+3-D `im2col`; does not compose), DataLoader prefetch (#22) and autograd
+checkpointing.
+
+### #22's deferral changed its own premise
+
+`data.py` deferred prefetch on a measurement: batch production was **0.2% of a
+step**, so prefetch's whole ceiling was two tenths of one percent. With
+transforms it is **21.2%** — the crop and the flip are real host work:
+
+```
+  no augmentation    batch  1.7%   transfer 5.8%   compute 92.6%
+  --augment          batch 21.2%   transfer 4.9%   compute 73.9%
+```
+
+Still deferred, but for a different reason and with a smaller design than the
+docstring assumed: numpy releases the GIL inside a vectorised call, so a
+**thread** may be enough and the worker-process pool that paragraph imagined may
+never be needed. Measure a thread before designing anything.
 
 Found while documenting these: **a class naming another class in its `see` list
 rendered nothing** — the filter held operators only, so `MultiheadAttention`

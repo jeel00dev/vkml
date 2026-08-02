@@ -79,10 +79,12 @@ T: dict[int, tuple] = {
     19: ("done", DEFECT,   PRODUCT, "", None),
     20: ("done", DEBT,     PRODUCT, "", None),
     21: ("done", PLANNED,  VERIFY,  "", None),
-    22: ("open", PLANNED,  PRODUCT, "RECLASSIFIED from speculative: PHASE2-MANIFESTO P1 names "
-                                     "DataLoader prefetch as functional completeness", LOCAL),
-    23: ("open", PLANNED,  PRODUCT, "RECLASSIFIED from speculative: PHASE2-MANIFESTO P1 names "
-                                     "DataLoader transforms as functional completeness", LOCAL),
+    22: ("open", PLANNED,  PRODUCT, "TRIGGER NOW MET: prefetch's ceiling was 0.2% of a step and "
+                                     "is 21% with augmentation on. Measure a thread before "
+                                     "designing a worker pool -- numpy drops the GIL", LOCAL),
+    23: ("done", PLANNED,  PRODUCT, "CLOSED: DataLoader(transform=f(rng, arrays)) plus Compose, "
+                                    "RandomHorizontalFlip and RandomCrop; the rng is passed in so "
+                                    "augmentation cannot quietly become irreproducible", None),
     24: ("done", DESIGN,   CORRECT, "", None),
     25: ("done", DEBT,     PRODUCT, "AMBIGUOUS: legal/distribution, fits no purpose well", None),
     26: ("done", DESIGN,   PRODUCT, "", None),
@@ -192,8 +194,8 @@ T: dict[int, tuple] = {
     114: ("open", DESIGN,   KNOW,    "PREMISE DISPROVEN: the manifesto defines scope. Residual is "
                                      "O-A..O-F in PROJECT-SCOPE-ANALYSIS.md", SHARED),
     118: ("open", DEFECT,   PRODUCT, "PARTLY DISPROVEN then mostly closed: 3 of the 8 existed "
-                                     "under torch's names; PositionalEncoding (#131) and Conv1d "
-                                     "(#132) built. 30 of 34, 4 gaps, generated not asserted", FOUND),
+                                     "under torch's names; PositionalEncoding (#131), Conv1d "
+                                     "(#132) and transforms (#23) built. 31 of 34, 3 gaps", FOUND),
     # ---- First release (R-series) ----
     119: ("open", PLANNED,  VERIFY,  "none -- this is the release's definition of tested", SHARED),
     120: ("open", PLANNED,  VERIFY,  "none -- PyTorch is the stated oracle", SHARED),

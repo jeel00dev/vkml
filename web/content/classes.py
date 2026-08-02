@@ -494,14 +494,54 @@ CLASSES["RMSProp"] = {
 
 CLASSES["DataLoader"] = {
     "lang": "python",
-    "summary": "Iterate a dataset in batches, optionally shuffled.",
+    "summary": "Iterate a dataset in batches, optionally shuffled and augmented.",
     "detail": "Single-process and synchronous: batches are assembled on the calling thread. "
-              "Prefetching and worker processes are tracked as future work, not implemented.",
-    "note": "Shuffling is seeded, so a run replays. The final batch is smaller when the "
-            "dataset size is not a multiple of the batch size — it is **not** dropped, so "
-            "every sample is seen exactly once per epoch.",
+              "Prefetching and worker processes are tracked as future work, not "
+              "implemented.\n\n"
+              "`transform=` takes a callable **`f(rng, arrays) -> arrays`**, applied to each "
+              "batch before it is moved to the device. Two things about that signature are "
+              "deliberate:\n\n"
+              "- **It receives the whole batch**, because `Dataset.__getitem__` is batched "
+              "too. A flip is one vectorised operation over 64 images rather than 64 Python "
+              "calls.\n"
+              "- **The generator is passed in, never reached for.** Augmentation that draws "
+              "from NumPy's global state is irreproducible, and this project has already "
+              "paid for exactly that once — `nn.manual_seed` exists because layers called an "
+              "unseeded `default_rng()` and a divergence could not be re-observed. A "
+              "transform would have to import NumPy and ignore its argument to become "
+              "non-deterministic.",
+    "note": "Shuffling is seeded, so a run replays. The transform draws from a **separate "
+            "stream**: sharing one with the shuffle would make the same seed give different "
+            "augmentation depending on whether shuffling was on.\n\n"
+            "The final batch is smaller when the dataset size is not a multiple of the batch "
+            "size — it is **not** dropped unless `drop_last` says so, so every sample is "
+            "seen exactly once per epoch.",
+    "warning": "Augmentation is real host work: it takes CIFAR-100's batch-production time "
+               "from **1.7% of a step to 21.2%**, measured. That is also the number that "
+               "decides whether prefetching is worth building.",
     "groups": [("Construction", ["__init__"]), ("Iteration", ["__iter__", "__len__"])],
-    "see": ["ArrayDataset", "rand"],
+    "see": ["ArrayDataset", "Compose", "rand"],
+}
+
+CLASSES["Compose"] = {
+    "lang": "python",
+    "summary": "Run several transforms in order, threading one generator through them.",
+    "detail": "One generator, not one each: two transforms seeded independently draw the "
+              "same numbers whenever their call counts line up, which is the classic way "
+              "correlated \"randomness\" gets into an augmentation pipeline.\n\n"
+              "**Three transforms ship, not a library.** `Compose`, `RandomHorizontalFlip` "
+              "and `RandomCrop` are the standard CIFAR augmentation, and between them they "
+              "exercise every part of the contract: composition, a per-sample random "
+              "decision, and a shape-changing spatial operation. Anything else is a "
+              "five-line function with the same signature, and a transform zoo would be a "
+              "maintenance surface built ahead of a user.",
+    "note": "Every shipped transform decides **per sample**, not per batch. A flip that "
+            "draws one coin for the whole batch is not augmentation — it doubles the "
+            "dataset instead of multiplying it, and it correlates every sample in a step. "
+            "The decision is drawn per sample and applied with a vectorised select.",
+    "groups": [("Construction", ["__init__"]), ("Call", ["__call__"]),
+               ("Internals", ["__repr__"])],
+    "see": ["DataLoader", "ArrayDataset"],
 }
 
 CLASSES["ArrayDataset"] = {

@@ -869,7 +869,7 @@ CLASS_SECTIONS: list[tuple[str, list[str]]] = [
                 "MultiheadAttention", "PositionalEncoding", "TransformerEncoderLayer",
                 "ReLU", "GELU", "Sigmoid", "Tanh", "MaxPool2d", "AvgPool2d"]),
     ("Optimisers", ["Optimizer", "SGD", "Adam", "AdamW", "RMSProp"]),
-    ("Data and checkpoints", ["DataLoader", "ArrayDataset", "Checkpoint"]),
+    ("Data and checkpoints", ["DataLoader", "ArrayDataset", "Compose", "Checkpoint"]),
 ]
 
 CLASS_LABEL = {"vkml.Tensor": "Tensor <span class=\"nav-note\">Python</span>",
