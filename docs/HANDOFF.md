@@ -5,236 +5,134 @@ next session has absorbed it — it is a note, not a document.
 
 ## Exact state
 
-`main` is **24 commits ahead of `origin/main`** and has not been pushed. Working
-tree clean.
+`main` is **32 commits ahead of `origin/main`** and has not been pushed.
+Working tree clean.
 
-Green: `ctest` on release · 1550 Python tests · 1544 at `VKML_MIN_SPEC=1` ·
-the CPU-only suite · all 17 gates, 11 with an automated control · the site at
-61 pages, 113 documented members, every link resolving.
+Green: 123 C++ cases · 1553 Python tests · **the same suite re-run in lazy
+mode** · CPU-only · `VKML_MIN_SPEC=1` · all 17 gates, 11 with an automated
+control · the site at 61 pages, every link resolving.
 
 ---
 
-## What this session did, in one line each
+## What this session did
 
-**Two latent CI failures, both from `f595d73`, neither visible from any report.**
-The clang-format gate had been red for fifteen commits — it was a `find | xargs`
-inside `ci.yml`, so `check_gate_coverage` could not see it and `verify_gates`
-had no gate to name. And `import vkml` failed on a CPU-only build, because the
-observability bindings were inside `#ifdef VKML_HAS_VULKAN` while the Python
-layer exported them unconditionally with a comment saying why it should. Three
-CI jobs build CPU-only. **Both were found by running the gates locally, not by
-reading anything.**
+**A realistic MNIST step went 1603 µs → 1045 µs, 1.53×, against the frozen
+baseline at `d399fdd`.** No kernel changed.
 
-**#99 closed: attribution.** `vkml.attribution` joins Decision to Measurement on
-`DispatchId` and partitions a step's wall time. Two producer changes were needed
-first, because the fact model could not carry the question — `ProfileEntry`
-became an *interval* (`start_ms`), and the recorder can *retain* submissions
-rather than only the last.
+### 1. The measurement record was wrong, in two ways
 
-**Three slices of P1, each found by re-running that measurement rather than by
-predicting the next one** (`docs/adr/0006` §10, §11, §12):
+`SMALL-STEP-LATENCY.md` was written from an ad-hoc session with nothing
+committed, and neither conclusion survived being re-run.
 
-```
-                     at P0   optimiser   backward   batched assign
-  submissions/step     39        25          15            8
-  step wall        13.57 ms  12.09 ms   11.71 ms      10.07 ms
-  host and driver   42.0%     35.7%      33.7%         24.0%
-  GPU / wall         0.58      0.64       0.66          0.76
-```
+- **The validation layers were on.** They are on **by default** — a measurement
+  takes them unless it *acts*, and `MEASUREMENT-AUDIT` rule 5 is phrased as a
+  prohibition, which assumes enabling them is an act. Cost: 39% of a one-node
+  realise, 31% of a step. Rule 5 now says so, as §6c.
+- **The per-node cost was attributed to the host and it is the GPU.** The
+  experiment subtracted a graph of *views* from a graph of *compute nodes*; a
+  view graph issues no dispatches, so the subtraction cancelled no GPU time.
+  Host cost per dispatch is **0.24 µs**, measured directly. The roadmap item
+  asking it to fall "from ~13 µs to ~1–2 µs" was aimed at nothing and is
+  withdrawn.
 
-No kernel changed and every result is bit-identical.
+**The default itself stays.** It is deliberate and recorded, and CI depends on
+it *without setting it* — `macos-moltenvk.yml` reasons about what validation
+reports and never exports the switch, so flipping the default would silently
+disable validation in three jobs. That was checked before deciding, and it is
+the reason the answer is "fix the measurement path", not "fix the default".
 
-**Then three kernel changes, and all three were the same surprise**: they looked
-memory-bound and were **addressing-bound**. The diagnosis needs a comparison
-against an equal-traffic kernel — `relu` — which is cheap and was not being done.
+`bench/latency_bench.py` is the tool that was missing.
 
-`docs/adr/0010` — `reduce.comp` launched one workgroup per output, so a weight
-gradient folding 64 samples into 73,728 values launched 73,728 workgroups to do
-64 loads each. Throughput tracked the workgroup count, not the bytes: 1.6 GB/s
-at four elements per output. A second lane-per-output structure, chosen on
-coalescing and occupancy, gives **up to 83× on the kernel**.
+### 2. Asynchronous submission — ADR 0012
 
-`docs/adr/0011` — `im2col`/`col2im`, then `max_pool2d`. `relu` moving the same
-bytes ran at 228–235 GB/s while `im2col` managed 29–44, because it performed
-nine integer divisions per output element; a 3×3 `col2im` performed
-*thirty-six*, and a 2×2 pool backward about twenty. Specialising the geometry
-lets the compiler strength-reduce every one, unroll the loops, and delete the
-`x % stride` test where stride is 1.
+Two thirds of a submission was the host asleep in `vkWaitSemaphores`. `Recorder`
+now holds a **ring of four command buffers** and `compute()` submits without
+waiting.
+
+Four is measured: 59.3 µs blocking, 36.3 with a ring of two, 17.7 with four,
+17.4 with eight. **Command-buffer replay was prototyped in the same run and
+rejected with its number** — 15.2 µs, only 1.14× better than the ring, because
+recording is ~2 µs against a ~17 µs submission.
 
 ```
-                     start  optimiser  backward  assign  reduce  unfold   pool
-  step wall        13.57 ms  12.09 ms  11.71 ms 10.07 ms 8.87 ms 8.07 ms 8.04 ms
-  GPU busy /20         —        —         —        —    128.4 ms 112.1 ms 105.2 ms
-  host and driver    42.0%    35.7%     33.7%    24.0%   30.1%   30.4%   34.3%
+                             before      after
+  per submission (fixed)   66.32 us   19.52 us    3.4x
+  per node (marginal)       4.83 us    2.40 us
+  MNIST step (no upload)     1189 us     883 us   1.35x
 ```
 
-**13.57 ms → 8.04 ms, a 1.69× end-to-end speedup**, every result bit-identical.
-`matmul` at 30.9% is now the largest line **by a factor of five**.
+The projection written down *before* the work was 1.4×.
 
-Note the host share *rising* while the step shrinks — the same host cost against
-a smaller step. A percentage has two moving ends; read the milliseconds.
+### 3. An upload was draining the queue — a regression this session caused
 
-**P1 module completeness: 28 → 31 of 34.** `PositionalEncoding`, `Conv1d` and
-DataLoader transforms built; the list is now *generated* by
-`scripts/check_module_coverage.py` rather than asserted.
+`StagingBuffer::upload` waited on its copy's ticket **after** submitting. Once
+submissions stopped blocking, that drained every earlier submission too, because
+the timeline is monotonic. Moved to immediately *before* the next memcpy, which
+is what it actually protects: 477 µs → 40 µs behind queued work.
+
+Found by attributing the step, not by anything failing.
+
+### 4. Selective barriers: prototyped, measured, deleted
+
+llama.cpp does **not** barrier between every dispatch — `overlaps_unsynced`
+compares buffer ranges and barriers only on a real overlap. `vk_command.h` cited
+llama.cpp as authority for the opposite policy for months.
+
+Implemented behind a switch, **bit-identical** on both workloads, and worth
+**4% on an MLP step, 3% on a CNN**. Deleted: a training graph is mostly a
+dependency chain, only a quarter of its barriers are elidable, and — decisively —
+**it cannot be verified here** (below).
 
 ---
 
 ## Findings worth not re-deriving
 
-- **`PROJECT-SCOPE-ANALYSIS`'s P1 table was wrong three ways** — `Attention`,
-  `TransformerBlock` and `FeedForward` existed under torch's spellings five days
-  before the audit. The document had already confessed the same mistake one row
-  down, for the losses. The cause is permanent: vkML uses torch's names on
-  purpose and the manifesto uses its own. The mapping is declared and gated now.
-- **A class naming another class in its `see` list rendered nothing.** The filter
-  was `if t in PAGE_OF`, which holds operators only. `MultiheadAttention` pointed
-  at `TransformerEncoderLayer` for its whole life and the link never existed.
-  Fixing it took prose links 101 → 142 and un-orphaned fourteen class pages.
-- **"Vectorise, never loop in Python" lost, measured.** Both DataLoader
-  transforms were 3–4× *slower* vectorised than as loops, because the vectorised
-  form does the work for samples it discards. Output byte-identical.
-- **Fewer submissions is not the same as faster.** An intermediate optimiser arm
-  removed seven submissions and was slower; the saving appeared only once both
-  passes batched.
-- **"It only moves memory" is not a reason to believe a kernel is memory-bound.**
-  Three in a row were not. The check is one line: run an equal-traffic kernel
-  with trivial addressing — `relu` — and compare. It cost nothing and reframed
-  three optimisations.
-- **A 12% regression that did not exist** was nearly accepted on a 25 µs
-  dispatch whose *unchanged* control varied by 32%. The frozen-baseline A/B
-  (rule 7) at sizes where the kernel dominates its bracket is what disproved it.
-- **A roadmap item can often be tested before it is built.** Item 2's whole
-  premise was answerable in one sweep because the alternatives were already
-  behind environment switches. It cost twenty minutes and removed a High-scored
-  item from the plan.
-- **Barrier-separated dispatches do not report disjoint intervals.** Brackets
-  open at `TOP_OF_PIPE` and close at `ALL_COMMANDS`, so consecutive ones overlap
-  by 0.2–4 µs — a fixed cost per boundary. Quantified in `MEASUREMENT-AUDIT` §3b.
-- **The whole validation suite runs eager.** 1,456 tests could not distinguish
-  two versions of the backward rules that differ only in lazy mode.
-  `test_lazy_execution_gives_the_same_gradients_as_eager` now covers it, on both
-  backends.
-- `train()`'s `compute` bucket is host wall time, not GPU time. Reading "96.3%
-  compute" as "96.3% arithmetic" produced a wrong conclusion in two documents.
-- **Disproven:** an earlier handoff said `assets/derived/` is not copied into
-  `_site`. It is — `build.py:1426` — and all five referenced assets resolve.
+- **The extension in `site-packages` is not the one `cmake --build` wrote.**
+  CLAUDE.md documents this and it still cost an hour: every Python measurement
+  and *every test run* for a stretch of this session exercised the pre-change
+  binary, including a negative control that "passed" because the code it broke
+  was not the code under test. `md5sum` both before believing any Python result.
+- **Cross-submission synchronisation cannot be verified on this machine.** The
+  leading barrier was removed on purpose and all 1550 tests passed; a probe
+  built to provoke the hazard found zero corruption in 20 attempts with *both*
+  protections removed. RADV serialises submissions to one queue in practice. The
+  barrier stays because the specification requires it, not because anything here
+  demonstrates it.
+- **The validation suite runs eager, and eager mode now synchronises**, so a
+  green run says nothing about the asynchronous path. Run it lazily by
+  overriding the autouse fixture — that is a real second suite, and it is how
+  this change was actually checked.
+- **`vulkan_last_profile()` was implicitly valid after `realize()`** because
+  `realize()` waited. It is not any more. This bit `latency_bench.py` during the
+  very change that caused it and understated GPU time by 3×.
+- **Do not subtract a profiled GPU total from an unprofiled wall clock.** Rule 4
+  forbids comparing them and the derived "host = wall − GPU" is the same
+  mistake wearing a hat; it put the GPU at 69% of a step. The clean form needs
+  no profiler: time `realize()`, then time `realize()` followed by a drain, and
+  subtract. Host 408–428 µs against GPU 416–429 µs — now within a few percent of
+  each other, where before they were strictly additive.
+- **An under-warmed script can be wrong by 3.4×**, not the 1.8× the audit
+  records. Two throwaway scripts measuring the same CNN step disagreed 5817 vs
+  1711 µs, and the difference was warm-up alone.
+- A negative control that passes is not a control. Three of the four written
+  this session fail correctly; the one that did not was the stale-binary case.
 
-## Three things tried and rejected, with the reason left at the code
+## The next concrete step
 
-- **Realising the root inside `backward()`** removes one submission per step and,
-  on `sum(a @ b)`, adds the whole forward — 4 dispatches to 6, caught by
-  `test_backward_emits_no_degenerate_reductions`. The reasoning is in
-  `src/autograd/autograd.cpp` beside the code that would do it.
-- **Batched uploads** are worth 0.065 ms — 4% of a batch-64 step — and need a new
-  public API. Deferred with the number in `EXTENSIBILITY-ROADMAP` §4a P1.
-- **DataLoader prefetch (#22) is not a DataLoader problem.** Measured: the
-  bindings hold the GIL through the GPU wait (17–24% available to another
-  thread), so no producer thread can overlap. Releasing it needs a threading
-  contract — `Recorder` is not thread-safe — which is ADR-sized. Recorded in
-  `python/vkml/data.py`.
+The step is now **balanced** — host ~420 µs, GPU ~420 µs — so neither side is
+the obvious target and the order has changed:
 
----
-
-## Next concrete step — a decision, not an implementation
-
-**P1's exit criterion is met and spent.** The discrete and integrated GPUs
-separate on MNIST above batch 256 (1.47× at 512, 1.72× at 1024) and cannot
-separate at 64, where the step is 0.61 ms of arithmetic. It was a good criterion
-— it stayed red through three real fixes — and it is satisfiable by changing the
-batch size, so a successor should name a **step at a fixed shape**: host and
-driver below 20% of a batch-64 MNIST step, say.
-
-So the open question is what comes next, and the profile now answers most of it:
-
-1. **`matmul`, at 30.9% and the largest line by a factor of five.** This is now
-   `M3_ROADMAP`'s territory, and **that document's premise has been measured
-   for the first time** — two tables are appended to it.
-
-   Where the headroom is:
-   - **Two of the CNN's four GEMMs are memory-bound** (intensity 7.3 and 19.1
-     against the ~24 flop/byte crossover). Every tiling item aims at the
-     compute roof and can do nothing for them.
-   - **The compute-bound two run at 23–24% of peak where the same kernel
-     reaches 34–37% on square shapes.** The headroom is ~1.5×, not the 3–4×
-     "23% of peak" suggests — 37% is this kernel's demonstrated ceiling here.
-
-   And **two things it is not**, both measured rather than assumed:
-   - **Not tile geometry. Item 2 (runtime shape dispatch) is DISPROVEN for this
-     workload** — scored High/Low/4-of-5, and testable today because the tile
-     alternatives are already behind env switches. 32×32 wins on four of five
-     shapes and ties the fifth; every alternative is 1.1–2.0× *worse*. Best
-     possible per-shape selection: **1.00×**. In hindsight, every M in the
-     workload is a multiple of 32.
-   - **Not occupancy.** `gemm_reg` uses 41 VGPRs of 1024 per SIMD with nothing
-     spilled — the 20-wave cap, already reached.
-
-   That leaves the K loop and the shapes themselves (K of 288/576 vs 1024, plus
-   a batch axis the benchmark lacks), which is items 6/10/13 and is unmeasured.
-2. **Convolution's structure, and #101 is verified.** The weight-gradient path
-   materialises a per-sample gradient — **18.9 MB for one layer of one step** —
-   before reducing it. ADR 0010 made that reduction 20× faster, which was the
-   cheap half; the expensive half is that the intermediate exists at all.
-   Folding the batch into the GEMM's K axis removes it. Implicit GEMM (CUTLASS
-   is cloned) would delete `im2col` rather than speed it up.
-3. **Remaining P1 completeness.** Conv3d needs a genuinely 3-D `im2col` and does
-   not compose. **Autograd checkpointing needs an autograd extension point that
-   does not exist** — `apply_backward` is a closed switch over `OpKind`, so a
-   user-defined backward has nowhere to go. That is an ADR before it is code.
-4. **The R-series** (#119–#123): release verification, mutation coverage, a
-   performance regression gate, and a public claim generated from measurement.
-
-## PERFORMANCE CAMPAIGN — the central measurement
-
-`docs/SMALL-STEP-LATENCY.md` (new) answers the objective *"15–20× faster than
-PyTorch CPU"* with measurements. The short version:
-
-**MNIST at batch 64 cannot reach it, and the reason is a constant, not a
-kernel.** A submission costs **57–77 µs of host time** to carry 13 µs of GPU
-work, and a step makes **seven**. The 15–20× target is 32–43 µs/step — *below
-the cost of one submission*. The step's arithmetic floor is 5.7 µs and it
-currently takes 1406 µs.
-
-The cost is the **block**, not the call: an idle `synchronize()` is 1.95 µs, so
-what is expensive is the host sleeping in `vkWaitSemaphores` and being woken by
-an interrupt. `Recorder` has **one command buffer**, so `begin()` must wait for
-the previous submission — host and GPU never overlap.
-
-**CIFAR-100 already beats PyTorch CPU by 3.4×** and its remaining gap is
-`matmul` at 30.9%, a genuinely arithmetic problem. The two facts are consistent:
-any workload whose per-step GPU time is under ~100 µs is dominated by this
-constant.
-
-**Rejected, with the measurement:** `PipelineCache::get` builds a string key
-with a dozen `std::format` calls on every dispatch and looked like the
-per-dispatch cost. Replacing it with a POD key measured **0.3% — indistinguishable**
-(min 14.129 µs vs 14.167 µs, ranges overlapping) and was reverted. **The 12–14 µs/dispatch is now decomposed** (no `perf` here, so by
-comparing a graph of views — which walks and binds but neither allocates nor
-dispatches — against one of compute nodes):
-
-```
-  traversal + binding, no alloc/dispatch   3.83 µs/node   25%
-  allocate + record + barrier + dispatch  11.30 µs/node   75%
-```
-
-**A quarter is the graph walk itself**, before Vulkan is touched —
-`topological_order` builds vectors and an `unordered_set` every realise. The
-remaining three quarters are not yet separated from each other; that is the
-next measurement, and it decides whether the allocator or the recorder is the
-target.
-
-### Next concrete step — asynchronous submission, ADR first
-
-It changes a stated invariant, so it is an ADR before it is code:
-1. A **ring of command buffers**, so `begin()` need not wait.
-2. `realize()` submits without waiting; `copy_to_host`/`item()` wait first.
-3. A **cross-submission hazard argument**, made on the specification —
-   `docs/adr/0006` §8 records that vkML's synchronisation cannot be
-   machine-checked, because buffer device addresses make the validation layer
-   blind to resource access.
-
-Honest projection, stated before the work: seven blocking waits per step become
-one, worth ~340–460 µs of 1406. That is **1.9–2.4×**, not 15×.
+1. **`loss.item()`, 371 µs of 863.** Not a regression: it is where the whole
+   step's GPU work now lands, because nothing before it blocks. The remaining
+   win on this workload is not reading the loss every step, which is a user-level
+   change and belongs in the examples.
+2. **The optimiser, 295 µs**, and **backward, 149 µs** — both host-side graph
+   construction, and neither has been attributed further. That is the next
+   measurement.
+3. **`vkQueueSubmit2` at ~16.5 µs, six per step.** The only lever is fewer
+   submissions. ADR 0006 already took this 39 → 8.
+4. `matmul` remains `M3_ROADMAP`'s subject for CIFAR-100, unchanged by any of
+   this.
 
 ## The one open decision, unchanged
 
