@@ -216,9 +216,16 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             // one. `scale_grad` uses the second operand as a dummy with a zero
             // coefficient: one dispatch rather than the two a scalar multiply
             // would cost, since a scalar operand is materialised as a tensor.
+            //
+            // The cast is explicit because the coefficients are stored as f32 --
+            // that is what the shader receives -- while `scaled_add` takes
+            // double. Clang rejects the implicit widening under
+            // -Wdouble-promotion, which the asan preset turns into an error and
+            // GCC does not enable; this built cleanly here and broke the ASan
+            // job.
             const ScaledAddParams p = node.params.get<ScaledAddParams>();
             const auto scale_grad = [&](float k) {
-                return k == 1.0F ? grad : scaled_add(grad, grad, k, 0.0);
+                return k == 1.0F ? grad : scaled_add(grad, grad, static_cast<double>(k), 0.0);
             };
             accumulate(grads, a, scale_grad(p.alpha));
             accumulate(grads, b, scale_grad(p.beta));
