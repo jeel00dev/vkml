@@ -2418,11 +2418,7 @@ void VulkanBackend::copy_to_host(void* dst, const Storage& src, int64_t src_offs
     impl_->staging.download(dst, it->second, static_cast<uint64_t>(src_offset), nbytes);
 }
 
-void VulkanBackend::copy_device_to_device(Storage& dst, int64_t dst_offset, const Storage& src,
-                                          int64_t src_offset, size_t nbytes) {
-    if (nbytes == 0) {
-        return;
-    }
+void VulkanBackend::copy_device_to_device(std::span<const BufferCopy> copies) {
     const std::lock_guard<std::mutex> lock(impl_->map_mutex);
 
     const auto find = [this](const Storage& s, const char* what) {
@@ -2432,22 +2428,43 @@ void VulkanBackend::copy_device_to_device(Storage& dst, int64_t dst_offset, cons
                     what);
         return it->second;
     };
-    const vk::Allocation dst_alloc = find(dst, "destination");
-    const vk::Allocation src_alloc = find(src, "source");
 
-    // No staging buffer, so no chunking: this is one command whatever the size,
-    // which is the whole point of the method. The download path next door has to
-    // loop because it is bounded by the staging capacity.
+    // ONE submission for the whole span, which is the point of taking a span.
+    // The recorder must not be begun for an empty one: that would submit a
+    // command buffer containing nothing and pay full submission cost for it.
     vk::Recorder& rec = impl_->recorder;
-    rec.begin();
-    // Ordered against any shader still writing the source, exactly as
-    // StagingBuffer::download is.
-    rec.barrier();
-    rec.copy(impl_->allocator.buffer_of(src_alloc),
-             src_alloc.offset + static_cast<uint64_t>(src_offset),
-             impl_->allocator.buffer_of(dst_alloc),
-             dst_alloc.offset + static_cast<uint64_t>(dst_offset), nbytes);
-    rec.wait(rec.submit());
+    bool recording = false;
+
+    for (const BufferCopy& c : copies) {
+        if (c.nbytes == 0) {
+            continue;
+        }
+        VKML_ASSERT(c.dst != nullptr && c.src != nullptr, "null storage in copy_device_to_device");
+        const vk::Allocation dst_alloc = find(*c.dst, "destination");
+        const vk::Allocation src_alloc = find(*c.src, "source");
+
+        if (!recording) {
+            rec.begin();
+            // Ordered against any shader still writing a source, exactly as
+            // StagingBuffer::download is. ONE barrier covers every copy in the
+            // span: it is global, so repeating it per copy would order nothing
+            // extra (see the strategy note in vk_command.h).
+            rec.barrier();
+            recording = true;
+        }
+
+        // No staging buffer, so no chunking: one command whatever the size,
+        // which is the whole point of the method. The download path next door
+        // has to loop because it is bounded by the staging capacity.
+        rec.copy(impl_->allocator.buffer_of(src_alloc),
+                 src_alloc.offset + static_cast<uint64_t>(c.src_offset),
+                 impl_->allocator.buffer_of(dst_alloc),
+                 dst_alloc.offset + static_cast<uint64_t>(c.dst_offset), c.nbytes);
+    }
+
+    if (recording) {
+        rec.wait(rec.submit());
+    }
 }
 
 std::vector<PipelineStats> VulkanBackend::pipeline_stats() const {

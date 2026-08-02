@@ -39,12 +39,37 @@ RT["realize"] = {
               "explicit trigger; `.numpy()`, `.item()` and a backward pass trigger it "
               "implicitly.\n\n"
               "Batching work this way is what lets many operations share one submission, and "
-              "on this hardware a submission costs about **105 µs against 9 µs for a "
-              "dispatch**. Reducing submissions is worth far more than making any single "
+              "on this hardware a submission costs the host **40–105 µs** — measured three "
+              "ways: by regressing wall time on the number of trivial realizes, by "
+              "batching eight parameter copies into one, and earlier against a ~9 µs "
+              "dispatch. Reducing submissions is worth far more than making any single "
               "kernel faster, which is why the laziness is a performance mechanism and not "
               "just an API style.",
     "params": [("tensor", "Tensor", "The graph root to evaluate.")],
-    "see": ["set_eager", "is_eager", "backward"],
+    "see": ["set_eager", "is_eager", "backward", "assign"],
+}
+
+RT["assign"] = {
+    "summary": "Assign sources[i] into destinations[i], as one unit of work.",
+    "detail": "The batched form of `dst.assign_(src)`, and the same implementation "
+              "underneath — but a loop pays one submission per assignment, and an "
+              "optimiser step is one assignment per parameter.\n\n"
+              "Measured on eight parameters: 8 submissions and 0.499 ms one at a time, "
+              "1 submission and 0.096 ms batched. This is why an optimiser step now costs "
+              "a **constant three submissions regardless of the parameter count**.\n\n"
+              "Batching is not expressible above the backend, because only the backend "
+              "knows what a submission is. That is why this exists as an operation rather "
+              "than as advice to call `assign_` less often.",
+    "params": [("destinations", "Sequence[Tensor]", "Tensors to overwrite, in place."),
+               ("sources", "Sequence[Tensor]", "Values to write, one per destination.")],
+    "returns": "None.",
+    "note": "Validation runs over the whole batch before any bytes move: a batch that "
+            "throws halfway has overwritten some destinations and not others, which is "
+            "worse than either outcome.",
+    "warning": "Same hazard as `assign_`: any already-computed node that read a "
+               "destination keeps its old result. Harmless when the graph is rebuilt each "
+               "step, which is the intended use, and a trap mid-graph.",
+    "see": ["realize", "backward"],
 }
 
 RT["set_eager"] = {

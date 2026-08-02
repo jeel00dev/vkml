@@ -709,3 +709,124 @@ and reverting turns it green.
 **What let the defect exist:** a rule that must hold for every backward rule was
 enforced by a helper the two exceptional rules did not use, and nothing checked
 the property directly. The test now checks the property.
+
+---
+
+## 12. Stage B's premise, re-checked — and most of it taken without stage B (2026-08-02)
+
+10 and 11 left the optimiser at `2 + N` submissions, the `N` being one
+`assign_` per parameter. 4 named the Assign node as the way to remove it, and 9
+put two ADR-sized changes in front of that. **Both of those claims were re-run
+before starting, and one of them is no longer true.**
+
+### 9's finding 1 does not block anything any more
+
+> *"`detach()` must stop forcing evaluation for batching to be worth anything."*
+
+Measured today:
+
+```
+  detach on an UNREALISED node    1 submission
+  detach on a REALISED node       0 submissions
+```
+
+The forcing is real and unchanged. What changed is that §10 **ordered around**
+it — state is detached in pass 2, *after* the batched realise, so every
+`detach()` in every optimiser now sees a realised node and costs nothing. The
+finding was correct when written and is no longer a blocker. It stays worth
+doing on its own merits; it is not on the path to anything.
+
+### The remaining `N` needed a batched copy, not a graph node
+
+`assign_` did not need to become lazy. It needed to stop being **one submission
+per call**, and only the backend knows what a submission is. So
+`Backend::copy_device_to_device` now takes a **span** of ranges, and
+`vkml::assign(dst, src)` is the batched sibling of
+`realize(std::span<const NodePtr>)` — same shape, same reason.
+
+| | |
+|---|---|
+| **Benefit** | Removes the whole per-parameter term. No new OpKind, no aliasing analysis, no ownership rule, no change to when work happens |
+| **Cost** | One more method on the `Backend` interface, and a second public entry point that does what `assign_` does |
+| **Worthwhile when** | The cost is the submission rather than the scheduling — which is what §11's attribution says it is |
+| **Not worthwhile when** | The assignments need to *participate in* a graph rather than merely happen together. That is still stage B, and this does not reach it |
+
+The single-tensor `assign_` is now a call into the span form with a span of
+one, so there is one implementation and the two cannot disagree. The span form
+is the primitive **because only it can amortise a submission**: making the
+single form the primitive and the batch a loop over it is precisely the
+arrangement that cost 8 submissions per step.
+
+Mixed batches work. An assignment needing the host-staged path — the
+overlapping `t[0:5].assign_(t[2:7])` case — takes it for itself while the rest
+still share a submission.
+
+### Results
+
+Assignment alone, the CIFAR CNN's eight parameters (1.14 MiB), minimum of 200
+warm repeats:
+
+```
+                  submissions        ms
+  one at a time        8         0.4994
+  batched              1         0.0957 - 0.2208
+```
+
+The implied cost of a copy submission is **40–80 µs**, which agrees with the
+~80 µs marginal host cost measured independently by regressing wall time on the
+number of trivial realises.
+
+Optimiser phase, minimum of 40 warm steps, and the **parameters are again
+bit-identical** across all seven configurations:
+
+```
+                    submissions              ms
+                  §11    §12        §11     §12
+  SGD               9      2       0.675   0.552
+  SGD momentum     10      3       1.134   1.109
+  SGD nesterov     10      3       1.147   1.254
+  RMSProp          10      3       1.255   1.241
+  RMSProp cent+mom 10      3       1.790   1.963
+  Adam             10      3       1.719   1.645
+  AdamW            10      3       1.911   1.820
+```
+
+**The wall column does not move, and that is the honest reading.** The
+optimiser phase is dominated by the two batched realises — GPU work plus the
+wait for it — so a 0.3–0.4 ms saving sits inside a measurement whose run-to-run
+spread on this machine is larger than that. The submission count is exact and
+clock-independent, which is why it is the primary evidence and why the gate is
+written against it.
+
+The saving is visible where it is not buried:
+
+```
+  submissions per CIFAR step       15  ->  8
+       upload 2 · backward 1 · optimiser 3 · item 2
+  step wall                     11.71 ms  ->  10.07 ms
+  host and driver                  33.7%  ->  24.0%
+  GPU / wall                        0.66  ->  0.76
+```
+
+### What is left, and what stage B is now for
+
+Eight submissions per step: 2 uploads, 1 backward, 3 optimiser, 2 for
+`.item()`. **The optimiser is no longer the largest item.** Stage B's remaining
+value is no longer the optimiser at all — it is `nn.BatchNorm2d`, which calls
+`assign_` on the FORWARD pass of every layer and cannot batch across layers the
+way an optimiser batches across parameters, because each layer's assignment is
+separated by the next layer's arithmetic. That is the case only a graph node
+fixes, and it should be the argument for stage B when it is written.
+
+Stage C (horizontal fusion) stays deferred and its trigger is unchanged.
+
+**Regression-tested.** The optimiser budget is now a **constant 3, independent
+of the parameter count**, over eight parameters and all seven configurations —
+a budget of the previous `2 + N` form would have passed every intermediate
+version and still scaled with the model.
+`test_batched_assign_is_one_submission` pins the primitive, and four more cover
+correctness against the one-at-a-time path, all-or-nothing validation, length
+mismatch and the overlapping fallback inside a batch, **on both backends**.
+Verified by breaking two things: restoring one submission per copy turns eight
+tests red, and validating lazily instead of up front turns the
+all-or-nothing test red.

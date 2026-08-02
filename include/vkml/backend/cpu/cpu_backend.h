@@ -35,8 +35,8 @@ public:
     void copy_from_host(Storage& dst, int64_t dst_offset, const void* src, size_t nbytes) override;
 
     void copy_to_host(void* dst, const Storage& src, int64_t src_offset, size_t nbytes) override;
-    void copy_device_to_device(Storage& dst, int64_t dst_offset, const Storage& src,
-                               int64_t src_offset, size_t nbytes) override;
+    void copy_device_to_device(std::span<const BufferCopy> copies) override;
+    using Backend::copy_device_to_device;  // keep the single-copy convenience visible
 
 private:
     DeviceCapabilities caps_;

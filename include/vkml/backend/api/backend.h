@@ -11,6 +11,18 @@
 
 namespace vkml {
 
+/// One byte range to copy within a backend. See `copy_device_to_device`.
+///
+/// Raw pointers rather than references so a span of these is buildable; they
+/// are borrowed for the duration of the call and never stored.
+struct BufferCopy {
+    Storage* dst = nullptr;
+    int64_t dst_offset = 0;
+    const Storage* src = nullptr;
+    int64_t src_offset = 0;
+    size_t nbytes = 0;
+};
+
 /// A device that can allocate memory and evaluate graph nodes.
 ///
 /// Three responsibilities only: describe yourself, hand out memory, compute
@@ -67,20 +79,35 @@ public:
     /// Copies device storage out to host bytes.
     virtual void copy_to_host(void* dst, const Storage& src, int64_t src_offset, size_t nbytes) = 0;
 
-    /// Copies bytes between two storages that both belong to THIS backend.
+    /// Copies several disjoint byte ranges between storages of THIS backend,
+    /// as ONE unit of work.
     ///
     /// The regions must not overlap. Callers that cannot rule that out route
     /// through the host instead, which is always correct; requiring it here
     /// keeps the implementations to one primitive each rather than making
     /// every backend reimplement an overlap policy.
     ///
+    /// **A span rather than a single copy, because a copy costs a submission.**
+    /// Eight independent parameter assignments were eight submissions at a
+    /// measured ~80 µs of host time each, against ~20 µs of GPU time for the
+    /// kernels around them. Batching is not expressible above this interface:
+    /// only the backend knows what a submission is. See
+    /// docs/adr/0006-lazy-assign-and-submission-batching.md.
+    ///
     /// Pure virtual on purpose. A default that staged through the host would
     /// be correct and quietly slow, and that is exactly the defect this method
     /// exists to remove -- vkML moved every assignment through host memory for
     /// months without anyone noticing. A new backend should have to answer
     /// this question rather than inherit a silent answer to it.
-    virtual void copy_device_to_device(Storage& dst, int64_t dst_offset, const Storage& src,
-                                       int64_t src_offset, size_t nbytes) = 0;
+    virtual void copy_device_to_device(std::span<const BufferCopy> copies) = 0;
+
+    /// One copy. Not virtual: a backend implements the span form and gets this
+    /// for free, so the two cannot disagree about what a copy means.
+    void copy_device_to_device(Storage& dst, int64_t dst_offset, const Storage& src,
+                               int64_t src_offset, size_t nbytes) {
+        const BufferCopy one{&dst, dst_offset, &src, src_offset, nbytes};
+        copy_device_to_device(std::span<const BufferCopy>{&one, 1});
+    }
 
     /// Blocks until all previously submitted work has completed. A no-op for
     /// synchronous backends.

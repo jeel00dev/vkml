@@ -110,27 +110,36 @@ void CpuBackend::copy_to_host(void* dst, const Storage& src, int64_t src_offset,
     std::memcpy(dst, static_cast<const std::byte*>(src.data()) + src_offset, nbytes);
 }
 
-void CpuBackend::copy_device_to_device(Storage& dst, int64_t dst_offset, const Storage& src,
-                                       int64_t src_offset, size_t nbytes) {
-    if (nbytes == 0) {
-        return;
+void CpuBackend::copy_device_to_device(std::span<const BufferCopy> copies) {
+    // A loop, and that is the honest implementation rather than a stub: on the
+    // CPU there is no submission to amortise, so batching buys nothing here.
+    // The interface takes a span because the VULKAN backend needs it, which is
+    // the shape of most of this project's backend methods.
+    for (const BufferCopy& c : copies) {
+        if (c.nbytes == 0) {
+            continue;
+        }
+        VKML_ASSERT(c.dst != nullptr && c.src != nullptr, "null storage in copy_device_to_device");
+        VKML_CHECK(c.dst_offset >= 0 &&
+                       static_cast<size_t>(c.dst_offset) + c.nbytes <= c.dst->nbytes(),
+                   IndexError,
+                   "copy_device_to_device writes {} bytes at offset {} into a {}-byte "
+                   "storage",
+                   c.nbytes, c.dst_offset, c.dst->nbytes());
+        VKML_CHECK(c.src_offset >= 0 &&
+                       static_cast<size_t>(c.src_offset) + c.nbytes <= c.src->nbytes(),
+                   IndexError,
+                   "copy_device_to_device reads {} bytes at offset {} from a {}-byte "
+                   "storage",
+                   c.nbytes, c.src_offset, c.src->nbytes());
+        // The interface forbids overlap, so memcpy would be legal. memmove is
+        // used anyway: it costs nothing measurable at these sizes, and it means
+        // a caller that gets the overlap check wrong reads stale bytes rather
+        // than entering undefined behaviour. "CPU backend" here means host
+        // memory on both sides.
+        std::memmove(static_cast<std::byte*>(c.dst->data()) + c.dst_offset,
+                     static_cast<const std::byte*>(c.src->data()) + c.src_offset, c.nbytes);
     }
-    VKML_CHECK(dst_offset >= 0 && static_cast<size_t>(dst_offset) + nbytes <= dst.nbytes(),
-               IndexError,
-               "copy_device_to_device writes {} bytes at offset {} into a {}-byte "
-               "storage",
-               nbytes, dst_offset, dst.nbytes());
-    VKML_CHECK(src_offset >= 0 && static_cast<size_t>(src_offset) + nbytes <= src.nbytes(),
-               IndexError,
-               "copy_device_to_device reads {} bytes at offset {} from a {}-byte "
-               "storage",
-               nbytes, src_offset, src.nbytes());
-    // The interface forbids overlap, so memcpy would be legal. memmove is used
-    // anyway: it costs nothing measurable at these sizes, and it means a caller
-    // that gets the overlap check wrong reads stale bytes rather than entering
-    // undefined behaviour. "CPU backend" here means host memory on both sides.
-    std::memmove(static_cast<std::byte*>(dst.data()) + dst_offset,
-                 static_cast<const std::byte*>(src.data()) + src_offset, nbytes);
 }
 
 Backend& cpu_backend() {

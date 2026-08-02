@@ -1116,19 +1116,26 @@ def test_multi_root_realize_uses_one_submission():
     )
 
 
-# The budget an optimiser step is held to, as a function of the parameter count.
+# The budget an optimiser step is held to, and it does NOT depend on the
+# parameter count:
 #
-# 1 for every parameter's state realized together, 1 for every parameter's new
-# value realized together, and 1 per parameter for `assign_`, which is still
-# eager (docs/adr/0006, stage B). So 2 + N, and the constant does not grow with
-# the optimiser: Adam has two moment tensors per parameter and RMSProp centered
-# with momentum has three, and both realize them in the same submission.
+#   1  every parameter's state update, realized together
+#   1  every parameter's new value, realized together
+#   1  every assignment, copied together
 #
-# A BOUND, not an equality. Splitting a large graph across submissions is
-# legitimate; what this forbids is going back to a per-parameter loop, which for
-# these seven configurations cost 16, 24, 24, 24, 40, 32 and 32 submissions
-# against a uniform 9 or 10 now.
-OPTIMIZER_SUBMISSION_BUDGET = "2 + one per parameter"
+# Three, and the constant does not grow with the optimiser either: Adam has two
+# moment tensors per parameter and RMSProp centered-with-momentum has three, and
+# both realize them in the same submission.
+#
+# A BOUND, not an equality -- plain SGD reaches 2 because it has no state to
+# realize, and splitting a large graph across submissions is legitimate. What
+# this forbids is going back to per-parameter work, which for these seven
+# configurations cost 16, 24, 24, 24, 40, 32 and 32 submissions.
+#
+# THE INDEPENDENCE FROM N IS THE POINT. A budget of "2 + one per parameter"
+# would have passed every intermediate version of this and still scaled with
+# the model, which is exactly what a real model cannot afford.
+OPTIMIZER_SUBMISSION_BUDGET = 3
 
 
 @requires_vulkan
@@ -1155,10 +1162,11 @@ def test_an_optimizer_step_stays_within_its_submission_budget(maker, name):
     operation as it is built, so the batching being measured cannot happen and
     the test would pass against an optimiser that batched nothing.
 
-    Four parameters, so the per-parameter term and the constant are separable:
-    a per-parameter loop would give 8 or more, and 2 + 4 = 6 is the budget.
+    EIGHT parameters against a budget of three, so a per-parameter term cannot
+    hide inside the constant: any implementation that does work per parameter
+    lands at 8 or more.
     """
-    parameters = 4
+    parameters = 8
     # The gradients are uploaded ONCE, outside the measured window. Creating
     # them per step costs one submission each and would have been counted as
     # the optimiser's -- which is what the first version of this did, reporting
@@ -1183,13 +1191,12 @@ def test_an_optimizer_step_stays_within_its_submission_budget(maker, name):
                          capture_output=True, text=True, timeout=600)
     assert out.returncode == 0, out.stderr[-2000:]
     used = int(out.stdout.strip().splitlines()[-1])
-    budget = 2 + parameters
-    assert used <= budget, (
-        f"{name}: {used} submissions for a {parameters}-parameter step, budget {budget} "
-        f"({OPTIMIZER_SUBMISSION_BUDGET}). A step that scales as a MULTIPLE of the "
-        f"parameter count means the per-parameter realize is back -- see "
-        f"python/vkml/optim.py's module docstring for why the three passes are ordered "
-        f"as they are")
+    assert used <= OPTIMIZER_SUBMISSION_BUDGET, (
+        f"{name}: {used} submissions for a {parameters}-parameter step, budget "
+        f"{OPTIMIZER_SUBMISSION_BUDGET}. A count that TRACKS the parameter count means "
+        f"per-parameter work is back -- see python/vkml/optim.py's module docstring for "
+        f"why the three passes are ordered as they are, and why the assignment is "
+        f"batched rather than looped")
 
 
 def test_gelu_keeps_relative_accuracy_in_its_negative_tail():
@@ -1484,3 +1491,113 @@ def test_lazy_execution_gives_the_same_gradients_as_eager(name, on_gpu):
         return loss, ([x, w] if name == "conv_chain" else [x])
 
     _compare_modes(build, name)
+
+
+# ---------------------------------------------------------------------------
+# The batched assign
+# ---------------------------------------------------------------------------
+#
+# `V.assign(dsts, srcs)` is the batched form of `dst.assign_(src)` and the two
+# share one implementation, so the tests below are about the BATCHING: that it
+# is one unit of work, that a batch is all-or-nothing, and that the awkward
+# cases the single form handles still work through it.
+
+
+def _assign_operands(device, n=4):
+    rng = np.random.default_rng(11)
+    dsts = [V.tensor(rng.standard_normal((8, 8), dtype=np.float32), device=device)
+            for _ in range(n)]
+    srcs = [V.tensor(rng.standard_normal((8, 8), dtype=np.float32), device=device)
+            for _ in range(n)]
+    return dsts, srcs
+
+
+@pytest.mark.parametrize("on_gpu", [False, pytest.param(True, marks=requires_vulkan)])
+def test_batched_assign_matches_assigning_one_at_a_time(on_gpu):
+    device = gpu_device() if on_gpu else V.cpu
+    dsts, srcs = _assign_operands(device)
+    want = [s.numpy().copy() for s in srcs]
+
+    V.assign(dsts, srcs)
+    for i, (d, w) in enumerate(zip(dsts, want)):
+        assert np.array_equal(d.numpy(), w), f"destination {i} did not receive its source"
+
+
+@requires_vulkan
+def test_batched_assign_is_one_submission():
+    """The whole reason it exists. In a subprocess, so eager mode cannot hide it."""
+    script = (
+        "import sys;sys.path.insert(0,'python');import numpy as np,vkml as V;"
+        "V.set_log_level(V.LogLevel.ERROR);V.init_vulkan(0);"
+        "d=V.device('vulkan:0');rng=np.random.default_rng(0);"
+        "mk=lambda: [V.tensor(rng.random((16,16),dtype=np.float32),device=d) for _ in range(6)];"
+        "a,b=mk(),mk();V.assign(a,b);"                    # warm
+        "c=V.vulkan_stats(0)['submissions'];"
+        "V.assign(a,b);"
+        "print(V.vulkan_stats(0)['submissions']-c)"
+    )
+    out = subprocess.run([sys.executable, "-c", script], cwd=REPO, env=_env({}),
+                         capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0, out.stderr[-2000:]
+    used = int(out.stdout.strip().splitlines()[-1])
+    assert used <= 1, (
+        f"{used} submissions for 6 assignments; the point of the batched form is that "
+        f"they share one")
+
+
+@pytest.mark.parametrize("on_gpu", [False, pytest.param(True, marks=requires_vulkan)])
+def test_a_batch_that_cannot_be_done_is_not_half_done(on_gpu):
+    """Validation runs over the whole batch before any bytes move.
+
+    A batch that throws halfway has overwritten some parameters and not others,
+    which is worse than either outcome — and the checks are pure, so there is
+    no reason to interleave them with the writes.
+    """
+    device = gpu_device() if on_gpu else V.cpu
+    dsts, srcs = _assign_operands(device, n=3)
+    before = [d.numpy().copy() for d in dsts]
+    srcs[2] = V.tensor(np.zeros((4, 4), dtype=np.float32), device=device)   # wrong shape
+
+    with pytest.raises(Exception):
+        V.assign(dsts, srcs)
+
+    for i, (d, b) in enumerate(zip(dsts, before)):
+        assert np.array_equal(d.numpy(), b), (
+            f"destination {i} was written before the batch was known to be valid")
+
+
+@pytest.mark.parametrize("on_gpu", [False, pytest.param(True, marks=requires_vulkan)])
+def test_mismatched_lengths_are_rejected(on_gpu):
+    device = gpu_device() if on_gpu else V.cpu
+    dsts, srcs = _assign_operands(device, n=3)
+    with pytest.raises(Exception):
+        V.assign(dsts, srcs[:2])
+
+
+@pytest.mark.parametrize("on_gpu", [False, pytest.param(True, marks=requires_vulkan)])
+def test_an_overlapping_assignment_inside_a_batch_still_works(on_gpu):
+    """The host-staged fallback must survive batching.
+
+    `t[0:5].assign_(t[2:7])` reads and writes one storage, which the device copy
+    forbids, so it stages through the host. Inside a batch it must take that
+    path for ITSELF while the others still share a submission — mixing them is
+    allowed and costs only what the awkward one costs.
+    """
+    device = gpu_device() if on_gpu else V.cpu
+    t = V.tensor(np.arange(16, dtype=np.float32), device=device)
+    want = t.numpy().copy()
+    want[0:5] = want[2:7]
+
+    other = V.tensor(np.zeros((4,), dtype=np.float32), device=device)
+    source = V.tensor(np.arange(4, dtype=np.float32) + 100.0, device=device)
+
+    V.assign([t[0:5], other], [t[2:7], source])
+
+    assert np.array_equal(t.numpy(), want), "the overlapping assignment gave the wrong bytes"
+    assert np.array_equal(other.numpy(), np.arange(4, dtype=np.float32) + 100.0), (
+        "the ordinary assignment beside it did not happen")
+
+
+@pytest.mark.parametrize("on_gpu", [False, pytest.param(True, marks=requires_vulkan)])
+def test_assigning_nothing_is_allowed(on_gpu):
+    V.assign([], [])

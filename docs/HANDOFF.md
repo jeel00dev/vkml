@@ -5,9 +5,9 @@ next session has absorbed it — it is a note, not a document.
 
 ## Exact state
 
-`main` ahead of `origin/main`. Working tree clean. ctest green, 1464 Python
+`main` ahead of `origin/main`. Working tree clean. ctest green, 1475 Python
 tests pass, the CPU-only suite passes, all doc gates and the 16
-verification-dashboard gates green, site rebuilds to 58 pages / 112 documented
+verification-dashboard gates green, site rebuilds to 58 pages / 113 documented
 members with every link resolving.
 
 ## Two latent CI failures found and fixed, both from `f595d73`
@@ -40,13 +40,13 @@ the question: `ProfileEntry` became an **interval** (`start_ms`), and the
 recorder can **retain** submissions rather than only the last.
 
 Measured, and it changes the roadmap: **host and driver was 44.8% of a CIFAR
-step, not the ~74% the batch-scaling inference implied** — and is 33.7% now that
-the two fixes below have been taken. Still the largest single item, larger than
-`matmul` at 20.7%, so P1's sequencing holds with a lower ceiling. Two things
-only direct attribution could say — 39 submissions per step of which 11 carried
-no compute, and GPU idle inside submissions is 0.2%.
+step, not the ~74% the batch-scaling inference implied** — and is 24.0% now that
+the three fixes below have been taken. `matmul` at 23.7% is now the largest
+line in the table, which it has never been before. Two things only direct
+attribution could say — 39 submissions per step of which 11 carried no compute,
+and GPU idle inside submissions is 0.2%.
 
-## Two slices of P1 are taken, and the second was found by re-measuring
+## Three slices of P1 are taken, each found by re-measuring the last
 
 **The optimiser** (`docs/adr/0006` §10). Attribution showed it spending 24 of a
 step's 39 submissions on eight parameters. `Optimizer.step()` is now three
@@ -62,14 +62,29 @@ time, and two backward rules — `MaxPool2d` and `Slice` — called `realize()`
 unconditionally where every other rule realises only in eager mode. **11 → 1
 submission per backward pass**, gradients bit-identical.
 
+**Then the per-parameter `assign_`, and NOT the way the roadmap predicted**
+(`docs/adr/0006` §12). It was written down as blocked on two ADR-sized changes.
+Re-checking both before starting: §10's ordering had already dissolved the
+first — every optimiser now detaches *after* the batched realise, so `detach()`
+forcing costs nothing — and the second was never on the path. `assign_` did not
+need to become part of the graph; it needed to stop being **one submission per
+call**, and only the backend knows what a submission is.
+`Backend::copy_device_to_device` takes a span, `vkml::assign(dst, src)` is its
+public form, and an optimiser step is now **a constant 3 submissions regardless
+of the parameter count**.
+
 ```
-                    at P0   after §10   after §11
-  submissions/step    39        25          15
-  step wall        13.57 ms  12.09 ms   11.71 ms
-  host and driver   42.0%     35.7%      33.7%
+                     at P0   optimiser   backward   batched assign
+  submissions/step     39        25          15            8
+  step wall        13.57 ms  12.09 ms   11.71 ms      10.07 ms
+  host and driver   42.0%     35.7%      33.7%         24.0%
+  GPU / wall         0.58      0.64       0.66          0.76
 ```
 
-Two findings worth keeping:
+**No kernel changed and every result is bit-identical.** A quarter of the step's
+wall time was scheduling.
+
+Three findings worth keeping:
 
 - An intermediate arm removed **seven** submissions and was **slower**.
   Submission count is a proxy, not the objective.
@@ -77,23 +92,28 @@ Two findings worth keeping:
   two versions of the backward rules apart. There is now
   `test_lazy_execution_gives_the_same_gradients_as_eager`, bit-for-bit, on both
   backends.
+- **Three of the four claims the roadmap's P1 list started with were wrong**,
+  and only re-measuring after each change could show it.
 
 ## Next concrete step
 
-**ADR 0006 stage B — the Assign node.** It is now nearly the whole of what
-remains: **4 of a step's 15 submissions carry compute** and the rest are copies,
-most of them `assign_`, still eager at one submission per parameter. It also
-fixes `nn.BatchNorm2d`'s forward path, which pays the same cost per layer.
+The optimiser is no longer the largest item and neither is backward. Eight
+submissions per step: 2 uploads, 1 backward, 3 optimiser, 2 for `.item()`.
+**`matmul` at 23.7% is now the largest line in the table.**
 
-Two ADR-sized changes sit in front of it, both recorded in `docs/adr/0006` §9
-and neither started:
+Two readings, and the choice between them is the next decision:
 
-1. `detach()` must stop forcing evaluation.
-2. An assigned tensor must not retain its history — otherwise each step's Assign
-   holds the previous step's graph alive, transitively, for the whole run.
+1. **Keep going on P1.** The remaining 4 non-compute submissions are uploads and
+   the `.item()` download. Then command-buffer reuse.
+2. **`M3_ROADMAP`'s GEMM work is no longer mis-sequenced.** The argument for
+   deferring it was that arithmetic was a quarter of the step; it is now
+   three quarters, and `matmul` alone is 23.7%.
 
-`docs/adr/0007` already separated "bound" from "computed", which was the third
-blocker and is done.
+`docs/adr/0006` stage B still has a purpose, but it is not the optimiser any
+more: it is `nn.BatchNorm2d`, which calls `assign_` on the FORWARD pass of every
+layer and cannot batch across layers, because each layer's assignment is
+separated by the next layer's arithmetic. That is the case only a graph node
+fixes, and it is what stage B's argument should be written around.
 
 Then #118 (8 unmet P1 modules), #119-123, #124.
 

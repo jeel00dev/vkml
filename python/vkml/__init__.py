@@ -134,6 +134,22 @@ def realize(*tensors) -> None:
     """
     _C.realize(list(tensors))
 
+
+def assign(destinations, sources) -> None:
+    """Assign ``sources[i]`` into ``destinations[i]``, as one unit of work.
+
+    The batched form of ``dst.assign_(src)``, and it exists for the same reason
+    :func:`realize` does: a copy costs a submission, and an optimiser step is
+    one assignment per parameter. Measured on eight parameters, the loop was
+    eight submissions at roughly 80 µs of host time each.
+
+    Two sequences rather than a list of pairs, because that is how every caller
+    already holds them -- the lengths are checked, so a misalignment is an
+    error rather than a silent half-assignment.
+    """
+    _C.assign(list(destinations), list(sources))
+
+
 set_eager = _C.set_eager
 is_eager = _C.is_eager
 set_log_level = _C.set_log_level

@@ -327,49 +327,102 @@ Tensor Tensor::to(DType dtype) const {
 }
 
 void Tensor::assign_(const Tensor& src) {
-    require_defined(*this, "assign_()");
-    VKML_CHECK(src.defined(), Error, "assign_() from an undefined tensor");
-    VKML_CHECK(node_->shape.same_dims(src.node()->shape), ShapeError,
-               "assign_() shape mismatch: {} vs {}", node_->shape.str(), src.node()->shape.str());
-    VKML_CHECK(node_->dtype == src.dtype(), DTypeError, "assign_() dtype mismatch: {} vs {}",
-               dtype_name(node_->dtype), dtype_name(src.dtype()));
-    VKML_CHECK(node_->device == src.device(), DeviceError, "assign_() device mismatch");
-    VKML_CHECK(node_->shape.is_contiguous(), ShapeError,
-               "assign_() destination must be contiguous");
+    // One implementation, reached with a span of one. The batched form is the
+    // primitive because only it can amortise a submission; making this the
+    // primitive and the batch a loop over it would be the arrangement that
+    // cost 8 submissions per optimiser step.
+    const Tensor self = *this;
+    assign(std::span<const Tensor>{&self, 1}, std::span<const Tensor>{&src, 1});
+}
 
-    realize();
-    const Tensor flat = src.contiguous();
-    flat.realize();
-
-    const size_t nbytes = node_->shape.nbytes();
-    if (nbytes == 0) {
+void assign(std::span<const Tensor> dst, std::span<const Tensor> src) {
+    VKML_CHECK(dst.size() == src.size(), Error,
+               "assign() needs one source per destination, got {} and {}", dst.size(), src.size());
+    if (dst.empty()) {
         return;
     }
 
-    Backend& backend = backend_for(node_->device);
-
-    // Source and destination are on the same device -- checked above -- so the
-    // bytes have no reason to visit the host. They used to: this was a full
-    // device -> host -> device round trip for every assignment, which cost
-    // three submissions against one for the same arithmetic and hit BatchNorm's
-    // forward pass as well as every optimiser. See
-    // docs/adr/0006-lazy-assign-and-submission-batching.md.
-    //
-    // The one case that still needs the host is an OVERLAPPING copy within a
-    // single storage, which `t[0:5].assign_(t[2:7])` reaches: vkCmdCopyBuffer
-    // requires disjoint regions when the source and destination buffers are the
-    // same. Staging through host memory is what made that safe before, so that
-    // is what it keeps doing.
-    if (!storages_overlap(*node_, *flat.node(), nbytes)) {
-        backend.copy_device_to_device(*node_->storage, node_->storage_offset, *flat.node()->storage,
-                                      flat.node()->storage_offset, nbytes);
-        return;
+    // VALIDATE EVERYTHING FIRST. A batch that throws halfway has already
+    // overwritten some parameters and not others, which is worse than either
+    // outcome -- and the checks are pure, so there is no reason to interleave
+    // them with the writes.
+    for (size_t i = 0; i < dst.size(); ++i) {
+        require_defined(dst[i], "assign_()");
+        VKML_CHECK(src[i].defined(), Error, "assign_() from an undefined tensor");
+        const Node& d = *dst[i].node();
+        VKML_CHECK(d.shape.same_dims(src[i].node()->shape), ShapeError,
+                   "assign_() shape mismatch: {} vs {}", d.shape.str(), src[i].node()->shape.str());
+        VKML_CHECK(d.dtype == src[i].dtype(), DTypeError, "assign_() dtype mismatch: {} vs {}",
+                   dtype_name(d.dtype), dtype_name(src[i].dtype()));
+        VKML_CHECK(d.device == src[i].device(), DeviceError, "assign_() device mismatch");
+        VKML_CHECK(d.shape.is_contiguous(), ShapeError, "assign_() destination must be contiguous");
     }
 
-    std::vector<std::byte> staging(nbytes);
-    backend.copy_to_host(staging.data(), *flat.node()->storage, flat.node()->storage_offset,
-                         nbytes);
-    backend.copy_from_host(*node_->storage, node_->storage_offset, staging.data(), nbytes);
+    // Realise every operand in ONE call. `contiguous()` may build a node, so
+    // the flattened sources are held for the rest of the function -- dropping
+    // one would free the storage the copy is about to read.
+    std::vector<Tensor> flat;
+    std::vector<NodePtr> roots;
+    flat.reserve(src.size());
+    roots.reserve(dst.size() + src.size());
+    for (size_t i = 0; i < dst.size(); ++i) {
+        flat.push_back(src[i].contiguous());
+        roots.push_back(dst[i].node());
+        roots.push_back(flat.back().node());
+    }
+    realize(roots);
+
+    // Group by backend, so a batch spanning two devices is still one unit of
+    // work per device rather than one per tensor. Linear search over a vector:
+    // there are one or two backends in a process, and a map here would cost
+    // more to read than it saves.
+    std::vector<std::pair<Backend*, std::vector<BufferCopy>>> batches;
+    const auto batch_for = [&batches](Backend& backend) -> std::vector<BufferCopy>& {
+        for (auto& [b, copies] : batches) {
+            if (b == &backend) {
+                return copies;
+            }
+        }
+        batches.emplace_back(&backend, std::vector<BufferCopy>{});
+        return batches.back().second;
+    };
+
+    for (size_t i = 0; i < dst.size(); ++i) {
+        const Node& d = *dst[i].node();
+        const Node& s = *flat[i].node();
+        const size_t nbytes = d.shape.nbytes();
+        if (nbytes == 0) {
+            continue;
+        }
+        Backend& backend = backend_for(d.device);
+
+        // Source and destination are on the same device -- checked above -- so
+        // the bytes have no reason to visit the host. They used to: this was a
+        // full device -> host -> device round trip for every assignment, which
+        // cost three submissions against one for the same arithmetic and hit
+        // BatchNorm's forward pass as well as every optimiser. See
+        // docs/adr/0006-lazy-assign-and-submission-batching.md.
+        //
+        // The one case that still needs the host is an OVERLAPPING copy within
+        // a single storage, which `t[0:5].assign_(t[2:7])` reaches:
+        // vkCmdCopyBuffer requires disjoint regions when the source and
+        // destination buffers are the same. Staging through host memory is what
+        // made that safe before, so that is what it keeps doing -- for that
+        // tensor alone, so one awkward assignment does not un-batch the rest.
+        if (!storages_overlap(d, s, nbytes)) {
+            batch_for(backend).push_back(BufferCopy{d.storage.get(), d.storage_offset,
+                                                    s.storage.get(), s.storage_offset, nbytes});
+            continue;
+        }
+
+        std::vector<std::byte> staging(nbytes);
+        backend.copy_to_host(staging.data(), *s.storage, s.storage_offset, nbytes);
+        backend.copy_from_host(*d.storage, d.storage_offset, staging.data(), nbytes);
+    }
+
+    for (auto& [backend, copies] : batches) {
+        backend->copy_device_to_device(copies);
+    }
 }
 
 // ---------------------------------------------------------------------------

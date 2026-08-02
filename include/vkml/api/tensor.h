@@ -190,4 +190,21 @@ private:
     std::shared_ptr<Node> node_;
 };
 
+/// Assigns `src[i]` into `dst[i]` for every i, as ONE unit of device work.
+///
+/// Identical in effect to calling `dst[i].assign_(src[i])` in a loop, and it is
+/// the same function underneath -- but a loop pays one submission per
+/// assignment, and an optimiser step is one assignment per parameter. Measured
+/// on the CIFAR-100 CNN's eight parameters, the loop was 8 submissions at
+/// ~80 µs of host time each.
+///
+/// This is the batched sibling of `realize(std::span<const NodePtr>)`, for the
+/// same reason and with the same shape: the work is independent, so the only
+/// thing forcing it apart was the API.
+///
+/// Sources needing an overlapping or host-staged copy fall back to the
+/// per-tensor path individually, so mixing them is allowed and costs only what
+/// those particular ones cost.
+void assign(std::span<const Tensor> dst, std::span<const Tensor> src);
+
 }  // namespace vkml

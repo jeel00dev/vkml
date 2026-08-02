@@ -187,7 +187,7 @@ arithmetic.
 > **Superseded by direct measurement, 2026-08-02.** This figure is an *inference* from batch
 > scaling and covers the whole step, data loading and transfer included. P0 now measures the
 > split directly: at P0 it was **44.8% host and driver, 54.8% GPU busy** for the compute
-> region, and after the two batching fixes P0 paid for it is **33.7% / 66.2%** — see
+> region, and after the three batching fixes P0 paid for it is **24.0% / 75.8%** — see
 > "P0 is met" below. The conclusion that overhead dominates arithmetic survives; the size
 > does not. Quote the measured number.
 
@@ -255,29 +255,29 @@ total). RX 5600M / RADV.
 
 ```
   kernel                count     gpu ms   % step
-  matmul                  540     48.514    20.7%
-  sum                     180     30.710    13.1%
-  im2col                   60     21.289     9.1%
-  max_pool2d_backward      60     15.079     6.4%
-  add                     240      9.721     4.2%
-  col2im                   40      9.617     4.1%
-  (16 more)              2020     19.930     8.5%
+  matmul                  540     47.728    23.7%
+  sum                     180     30.095    14.9%
+  im2col                   60     20.362    10.1%
+  max_pool2d_backward      60     15.155     7.5%
+  col2im                   40      9.574     4.8%
+  add                     240      9.334     4.6%
+  (16 more)              2020     20.354    10.1%
   ------------------------------------------------
-  GPU busy                       154.963    66.2%
-  GPU idle in submits              0.373     0.2%
-  host and driver *               78.843    33.7%
+  GPU busy                       152.602    75.8%
+  GPU idle in submits              0.377     0.2%
+  host and driver *               48.343    24.0%
   ================================================
-  step wall                      234.179   100.0%
+  step wall                      201.323   100.0%
 
-  300 submissions, 80 of them with work to time
+  160 submissions, 80 of them with work to time
   * upper bound: a profiled wall clock includes the profiler's own readback
-  GPU / wall = 0.66
+  GPU / wall = 0.76
 ```
 
 **The overhead is real and it is not three quarters.** This section's headline —
 *"roughly three quarters of a training step is overhead"* — came from batch scaling,
 which measures how per-sample cost falls and infers a fixed component. Direct
-attribution puts host and driver at **33.7%, and that is an upper bound** (rule 4:
+attribution puts host and driver at **24.0%, and that is an upper bound** (rule 4:
 the wall clock here is profiled, and the readback cannot be subtracted out by
 comparing against an unprofiled run).
 
@@ -287,37 +287,37 @@ which `train()` reports separately; this covers forward, backward, optimiser and
 realisation that waits for them. Anything quoting 74% should now quote this instead,
 because it is measured directly rather than inferred, and it names *which* bucket.
 
-**P1's premise survives; its size changes.** A third of a step outside every submission
-window is still the largest single item available, and larger than any kernel — `matmul`,
-the biggest, is 20.7%. The reordering argument that put P1 before `M3_ROADMAP`'s sixteen
-GEMM items holds. What changes is the expected ceiling.
+**P1's premise survives; its size changed twice.** A quarter of a step outside every
+submission window is still the largest single item available, though it is now second to
+`matmul` at 23.7% — the first time any kernel has been the largest line in this table.
+The reordering argument that put P1 before `M3_ROADMAP`'s sixteen GEMM items holds, and
+the point at which it stops holding is now in sight.
 
-**Two slices of P1 have already been taken, using this measurement.** The optimiser
-batched its per-parameter realises, and then `backward()` turned out to have the same
-defect one layer down — `docs/adr/0006` §10 and §11:
+**Three slices of P1 have been taken, each found by re-running this measurement rather
+than by predicting the next one** — `docs/adr/0006` §10, §11 and §12:
 
 ```
-                    at P0     after §10   after §11
-  submissions/step    39          25          25
-  ...of which backward 11           11           1
-  step wall        13.57 ms   12.09 ms    11.71 ms
-  host and driver   42.0%       35.7%       33.7%
-  GPU / wall         0.58        0.64        0.66
+                     at P0    optimiser   backward   batched assign
+  submissions/step     39         25          15            8
+  ...of which backward 11         11           1            1
+  ...of which optimiser 24        10          10            3
+  step wall         13.57 ms   12.09 ms   11.71 ms      10.07 ms
+  host and driver    42.0%      35.7%      33.7%         24.0%
+  GPU / wall          0.58       0.64       0.66          0.76
 ```
 
-The numbers in the table above are the state after both; the earlier states are in the
-ADR.
+The numbers in the table above are the state after all three; the earlier states are in
+the ADR. **Host and driver has gone from 42% to 24% of a step and the wall time from
+13.57 to 10.07 ms, entirely through scheduling — no kernel changed and every result is
+bit-identical.**
 
 **Two things the table says that batch scaling could not.**
 
-- **300 submissions for 20 steps — 15 per step — and only 4 of them have anything to
-  time.** The rest are copies: uploads, `assign_`, and the download behind `.item()`.
-  P1's first candidate said "one submission per step, not twelve"; the count was 39 at
-  P0 and is 15 now, and **almost all of what remains carries no compute at all**. That
-  is what the Assign node in `docs/adr/0006` stage B removes, and it is now nearly the
-  whole of the remaining item.
+- **160 submissions for 20 steps — 8 per step — and 4 of them carry compute.** The
+  others are 2 uploads and the 2 behind `.item()`. P1's first candidate said "one
+  submission per step, not twelve"; the count was 39 at P0.
 - **GPU idle inside submissions is 0.2%.** The barriers between dispatches are not the
-  cost, so P1's fourth candidate — *fewer dispatches per operation* — is aimed at
+  cost, so P1's last candidate — *fewer dispatches per operation* — is aimed at
   dispatch-side host cost, not at gaps on the device. It cannot be justified by GPU idle
   time, because there is almost none.
 
@@ -326,32 +326,36 @@ whole section.** An intermediate arm removed seven submissions from the optimise
 *slower* than doing nothing (`docs/adr/0006` §10). **Submission count is a proxy, not the
 objective.** Every candidate below has to be measured, not counted.
 
-### P1 — Dispatch and submission overhead *(measured at 33.7% of a CIFAR step)*
+### P1 — Dispatch and submission overhead *(measured at 24.0% of a CIFAR step)*
 
-The largest single item available, already partly diagnosed in #32 and #33, and larger
-than any individual kernel — `matmul`, the biggest, is 20.7%.
+Still the largest non-kernel item, already partly diagnosed in #32 and #33 — but for the
+first time it is no longer the largest line in the table. `matmul` is 23.7%.
 
 Candidates, reordered by what P0 measured rather than by what was expected:
 
 1. ~~**Batch the optimiser's per-parameter realises.**~~ **Done**, `docs/adr/0006` §10:
    1.5–1.9× on the optimiser phase across all seven optimiser configurations, parameters
-   bit-identical. What is left of the optimiser is `2 + N`, and the `N` is `assign_`.
+   bit-identical. 24 → 10 submissions per step.
 2. ~~**The same defect in `backward()`.**~~ **Done**, `docs/adr/0006` §11: the leaf-deposit
    loop realised one gradient at a time, and two backward rules — `MaxPool2d` and `Slice`
    — called `realize()` unconditionally where every other rule realises only in eager
    mode. **11 → 1 submission per backward pass.** Found by re-running P0 immediately after
    taking candidate 1, which is the argument for having built P0 first.
-3. **Make assign a graph node** — `docs/adr/0006` stage B. After 1 and 2 this is nearly
-   the whole of what remains: **4 of a step's 15 submissions carry compute** and the rest
-   are copies, most of them `assign_`. It also fixes `nn.BatchNorm2d`'s forward path,
-   which pays the same cost per layer. Two ADR-sized changes sit in front of it:
-   `detach()` must stop forcing evaluation, and an assigned tensor must not retain its
-   history.
-4. **Uploads and the `.item()` download.** The remaining non-compute submissions after 3.
-   Invisible before P0, because a submission with no dispatch produces no profile.
+3. ~~**The per-parameter `assign_`.**~~ **Done**, `docs/adr/0006` §12, and *not* by the
+   Assign node this list previously named. `assign_` did not need to become lazy; it
+   needed to stop being one submission per call, and only the backend knows what a
+   submission is. `Backend::copy_device_to_device` takes a span, `vkml::assign(dst, src)`
+   is its public form, and the optimiser's budget became a **constant 3, independent of
+   the parameter count**. 15 → 8 submissions per step.
+4. **Uploads and the `.item()` download** — 4 of the 8 that remain. Invisible before P0,
+   because a submission with no dispatch produces no profile.
 5. **Command buffer reuse.** A training step re-records an identical sequence every
    iteration; the shapes do not change between steps.
-6. **Fewer dispatches per operation** — the elementwise chain in an optimiser step is a
+6. **`nn.BatchNorm2d`'s forward path**, which is what `docs/adr/0006` stage B is now
+   *for*. It calls `assign_` per layer on the forward pass and cannot batch across
+   layers the way an optimiser batches across parameters, because each layer's assignment
+   is separated by the next layer's arithmetic. That is the case only a graph node fixes.
+7. **Fewer dispatches per operation** — the elementwise chain in an optimiser step is a
    sequence of tiny kernels, each paying full dispatch cost. **Note what this is not
    justified by:** GPU idle time inside submissions is 0.2%, so the barriers between
    dispatches are not the cost. The case for this is host-side dispatch overhead, and it
@@ -362,9 +366,12 @@ intermediate arm with seven *fewer* submissions that was *slower* — the saving
 appeared once both of the optimiser's passes batched. A submission is a proxy for host
 cost and the relationship is not monotonic.
 
-**And re-attribute after each one.** Candidate 2 exists because candidate 1's measurement
-was re-run rather than assumed to have finished the job; it was the larger of the two and
-was not on this list before P0.
+**And re-attribute after each one, including the blockers.** Candidate 2 exists because
+candidate 1's measurement was re-run rather than assumed to have finished the job.
+Candidate 3 was believed to be blocked on two ADR-sized changes; re-checking found that
+§10's ordering had already dissolved one of them, and that the other was never on the
+path. Three of the four claims this list started with were wrong in a way only
+re-measuring could show.
 
 **Reference.** vkML's own `BACKWARD-PERF-INVESTIGATION.md` and `PERFORMANCE-MODEL.md`; and for
 the pattern, llama.cpp's `ggml-vulkan` builds one command buffer per graph rather than per
@@ -463,7 +470,7 @@ produced no difference in wall time — the workload is bound by submissions, no
 `compute` bucket as GPU time, and it is not: the bucket is the host wall time of the
 forward/backward/optimiser region, so 96.3% says only that batch loading and transfer are
 3.7%. Attributing *inside* that region (§4a, "P0 is met") put **44.8% of the CNN's step
-outside every submission window** when it was first measured, and 33.7% after the two
+outside every submission window** when it was first measured, and 24.0% after the three
 batching fixes. The CNN does not behave differently in the way that sentence claimed, and
 the ceiling is not specific to small models.
 

@@ -133,7 +133,7 @@ GROUPS: list[tuple[str, list[str]]] = [
             "binary_cross_entropy_with_logits",
         ],
     ),
-    ("Autograd & execution", ["backward", "realize", "set_eager", "is_eager"]),
+    ("Autograd & execution", ["backward", "realize", "assign", "set_eager", "is_eager"]),
     ("Serialization", ["save", "load", "save_module", "load_module"]),
     (
         "Devices & introspection",

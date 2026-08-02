@@ -612,6 +612,19 @@ NB_MODULE(_vkml_core, m) {
         "Equivalent in result to realizing each in turn, and cheaper: the whole\n"
         "set is scheduled once and reaches the backend as a single submission,\n"
         "rather than one submission per tensor. All must be on the same device.");
+    m.def(
+        "assign",
+        // A lambda taking vectors, not `&vkml::assign` directly: nanobind has
+        // no caster for std::span, and binding the span form gives a signature
+        // Python can never satisfy -- which type-checks and fails at every call.
+        [](const std::vector<vkml::Tensor>& dst, const std::vector<vkml::Tensor>& src) {
+            vkml::assign(dst, src);
+        },
+        "destinations"_a, "sources"_a,
+        "Assign sources[i] into destinations[i], as ONE unit of work.\n\n"
+        "Equivalent in result to calling `dst.assign_(src)` for each pair, and\n"
+        "cheaper for the same reason realize() above is: a copy costs a\n"
+        "submission, and an optimiser step is one assignment per parameter.");
     nb::enum_<vkml::Reduction>(m, "Reduction")
         .value("mean", vkml::Reduction::Mean)
         .value("sum", vkml::Reduction::Sum)

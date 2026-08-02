@@ -98,8 +98,11 @@ T: dict[int, tuple] = {
     36: ("done", PLANNED,  PRODUCT, "", None),
     37: ("done", PLANNED,  PRODUCT, "", None),
     38: ("open", DEFERRED, PRODUCT, "measurement showing per-parameter dispatch is not the cost", LOCAL),
-    39: ("open", DEFERRED, PRODUCT, "measurement showing detach's realization is not hot", SHARED),
-    40: ("open", DEFERRED, PRODUCT, "blocked by #39; same evidence closes both", LOCAL),
+    39: ("done", DEFERRED, PRODUCT, "CLOSED WITHOUT IMPLEMENTING: measured. detach still forces on "
+                                    "an unrealised node, but every optimiser now detaches AFTER the "
+                                    "batched realise, so it costs nothing (ADR 0006 section 12)", None),
+    40: ("done", DEFERRED, PRODUCT, "CLOSED by #129, not by the Assign node it named: the "
+                                    "per-parameter cost was the submission, not the scheduling", None),
     41: ("done", DEFECT,   CORRECT, "", None),
     42: ("done", PLANNED,  VERIFY,  "", None),
     43: ("done", PLANNED,  KNOW,    "", None),
@@ -163,9 +166,9 @@ T: dict[int, tuple] = {
     99:  ("done", DEFECT,   OBSERVE, "CLOSED: DispatchId joined cost to choice, then intervals and "
                                      "submission retention made the join ADD UP; a CIFAR step now "
                                      "prints a per-kernel table with the remainder shown", None),
-    100: ("open", DEFECT,   PRODUCT, "PREMISE CORRECTED by #99: submission cost was 44.8%, not 74%, "
-                                     "and is 33.7% since the optimiser (#127) and backward (#128) "
-                                     "batched. Most of the rest needs ADR 0006 stage B", FOUND),
+    100: ("open", DEFECT,   PRODUCT, "PREMISE CORRECTED TWICE by #99: submission cost was 44.8%, "
+                                     "not 74%, and is 24.0% after #127/#128/#129. What remains is "
+                                     "uploads and .item(); matmul is now the larger line", FOUND),
     101: ("open", DESIGN,   PRODUCT, "verifying convolution is NOT materialised im2col+GEMM; the "
                                      "roadmap says verify before designing", SHARED),
     102: ("open", DEFERRED, PRODUCT, "M3.2: P0+P1 showing arithmetic is not the remaining cost", SHARED),
@@ -215,6 +218,9 @@ T: dict[int, tuple] = {
     128: ("done", DEFECT,   PRODUCT, "CLOSED: backward had the same defect -- leaf deposit realised "
                                      "per parameter, and 2 rules realised outside eager mode. "
                                      "11 -> 1 submission/pass; ADR 0006 section 11", None),
+    129: ("done", PLANNED,  PRODUCT, "CLOSED, and NOT the way #40 predicted: copy_device_to_device "
+                                     "takes a span, so an optimiser step is a CONSTANT 3 "
+                                     "submissions. No Assign node needed; ADR 0006 section 12", None),
     117: ("open", PLANNED,  OBSERVE, "MEASURED 58.8ns / 131.7ns per publish; end-to-end could not "
                                      "resolve it (4 orders under noise). Regression gate remains", SHARED),
 }

@@ -121,11 +121,11 @@ class Optimizer:
             if values:
                 V.realize(*values)
 
-            for (param, _), value in zip(plans, values):
-                # In place: the Module still holds this exact Tensor, so
-                # rebinding self.params[i] would update the optimizer's view and
-                # leave the model untouched.
-                param.assign_(value)
+            # In place: the Module still holds these exact Tensors, so rebinding
+            # self.params[i] would update the optimizer's view and leave the
+            # model untouched. Batched for the same reason the two passes above
+            # are -- a copy costs a submission, and this is one per parameter.
+            V.assign([param for param, _ in plans], values)
 
     def _begin_step(self) -> None:
         """Per-step bookkeeping that is not per-parameter. Adam's `t` lives here."""
