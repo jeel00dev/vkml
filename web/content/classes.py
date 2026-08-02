@@ -244,6 +244,36 @@ CLASSES["MultiheadAttention"] = {
     "see": ["softmax", "matmul", "triu", "TransformerEncoderLayer"],
 }
 
+CLASSES["PositionalEncoding"] = {
+    "lang": "python",
+    "summary": "Fixed sinusoidal position signal, added to an embedded sequence.",
+    "detail": "Attention is **permutation equivariant**: without a position signal a "
+              "sequence model cannot tell *\"dog bites man\"* from *\"man bites dog\"*. "
+              "This is the last piece that made a transformer assemblable end to end from "
+              "the modules here.\n\n"
+              "The formulation is Vaswani et al. 2017 §3.5 unchanged — "
+              "`PE[pos, 2i] = sin(pos / 10000**(2i/d))` and `PE[pos, 2i+1] = cos(...)`.\n\n"
+              "**Sinusoidal and not learned, deliberately.** Learned positions already "
+              "compose: they are `Embedding(max_len, d_model)` indexed by position, which is "
+              "what GPT does and which needs nothing new. Sinusoidal does not compose from "
+              "anything — it is a closed-form table. Adding the one that cannot be built "
+              "from the parts, and leaving the one that can, is the rule the backward rules "
+              "follow too.",
+    "note": "The table is a **buffer**, not a parameter: it never changes, carries no "
+            "gradient, appears in `state_dict()` and moves with `.to()`. It is computed once "
+            "at construction.",
+    "warning": "**The trigonometry runs in float64 and is narrowed once.** `pos` reaches "
+               "5000 while the smallest frequency divisor is 1, so the argument spans ten "
+               "orders of magnitude and float32 loses low-order bits of it before the sine "
+               "runs. Doing it in double costs nothing — it happens once — and makes the "
+               "table correct to float32's last bit rather than approximately correct.\n\n"
+               "`d_model` must be **even**, so every frequency has both a sine and a cosine; "
+               "an odd width raises rather than silently truncating.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Internals", ["__repr__"])],
+    "see": ["Embedding", "MultiheadAttention", "TransformerEncoderLayer"],
+}
+
 CLASSES["TransformerEncoderLayer"] = {
     "lang": "python",
     "summary": "Self-attention followed by a feed-forward block, each residual.",

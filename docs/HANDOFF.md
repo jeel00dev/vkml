@@ -140,9 +140,22 @@ declared target stops resolving. **28 of 34 present, 6 real gaps:** Conv1d,
 Conv3d, PositionalEncoding, DataLoader prefetch (#22), DataLoader transforms
 (#23), autograd checkpointing.
 
-`PositionalEncoding` is the interesting one — it is what stands between the
-existing attention/encoder modules and a GPT-shaped model, which is
-PHASE2-MANIFESTO P3.
+`PositionalEncoding` was the interesting one — it stood between the existing
+attention/encoder modules and a transformer that assembles end to end — and it
+is **now built**: `nn.PositionalEncoding`, sinusoidal, Vaswani §3.5.
+
+Sinusoidal and not learned, deliberately: learned positions are
+`Embedding(max_len, d_model)` indexed by position, which already composes.
+Adding the one that cannot be built from the parts and leaving the one that can
+is the rule the backward rules follow.
+
+No torch class to compare against — `torch.nn` has no `PositionalEncoding` — so
+the oracle is the **closed form in float64**, which is stronger than a torch
+class rather than weaker: the table has an exact definition and no
+implementation freedom. Eleven tests, five verified by breaking the thing they
+guard. **29 of 34 P1 modules present**; the five left are Conv1d, Conv3d,
+DataLoader prefetch (#22), DataLoader transforms (#23), autograd
+checkpointing.
 
 ## Next concrete step — a decision, not an implementation
 

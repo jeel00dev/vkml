@@ -86,9 +86,9 @@ P6 optimisation · P7 engineering excellence · P8 community readiness · P9 cro
 API symbol that satisfies it and fails if a declared target stops resolving. Run it:
 
 ```
-28 of 34 P1 modules present, 6 not implemented
-not implemented: Conv1d, Conv3d, PositionalEncoding, DataLoader prefetch,
-                 DataLoader transforms, autograd checkpointing
+29 of 34 P1 modules present, 5 not implemented
+not implemented: Conv1d, Conv3d, DataLoader prefetch, DataLoader transforms,
+                 autograd checkpointing
 ```
 
 | P1 item | State |
@@ -98,7 +98,7 @@ not implemented: Conv1d, Conv3d, PositionalEncoding, DataLoader prefetch,
 | Attention / MultiHeadAttention | present as **`nn.MultiheadAttention`** |
 | TransformerBlock | present as **`nn.TransformerEncoderLayer`** |
 | FeedForward | present, **inside the encoder layer** as `linear1`/activation/`linear2` — where torch keeps it too |
-| **PositionalEncoding** | **absent** |
+| PositionalEncoding | present as **`nn.PositionalEncoding`** — sinusoidal; learned positions are `Embedding(max_len, d_model)` and need no module |
 | SGD, Momentum, Adam, AdamW, RMSProp | present |
 | MSE, CrossEntropy, BCE, KL, Huber | present — as functions (`mse_loss`, `cross_entropy`, `binary_cross_entropy_with_logits`, `kl_div`, `huber_loss`), not classes |
 | Dataset, DataLoader, batching, shuffling | present |
@@ -131,8 +131,8 @@ the map — which is a one-line edit rather than a re-derivation, and which show
 count that has not moved.
 
 **Cross-checked against `README.md`**, which independently lists *"Missing layers: Conv1d,
-Conv3d, gradient checkpointing"* — agreeing on three of the six real gaps, and silent on
-the rest.
+Conv3d, gradient checkpointing"* — agreeing on three of the five real gaps, and silent on
+the two DataLoader ones. It now points at the generator rather than restating the list.
 
 ---
 

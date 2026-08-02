@@ -8,6 +8,8 @@ identical data produce identical trajectories.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 import torch
@@ -978,3 +980,170 @@ def test_sgd_nesterov_requires_momentum():
     model = V.nn.Linear(3, 3)
     with pytest.raises(ValueError):
         V.optim.SGD(model.parameters(), lr=0.01, momentum=0.0, nesterov=True)
+
+
+# ---------------------------------------------------------------------------
+# Positional encoding
+# ---------------------------------------------------------------------------
+#
+# THE ORACLE IS DIFFERENT IN KIND HERE, and the reason is worth stating.
+# `torch.nn` has no PositionalEncoding — the reference implementation lives in a
+# tutorial — so there is no torch class to compare against. Every other module
+# in this file is validated against torch's own, which is stronger than a
+# reference written twice.
+#
+# What replaces it is stronger still: the table has a CLOSED FORM (Vaswani et
+# al. 2017 §3.5) with no implementation freedom, so the oracle is that formula
+# evaluated in float64. A test that agreed with a second copy of the same code
+# would prove only that both were written by the same person.
+
+
+def _positional_reference(max_len, d_model, base=10000.0):
+    """PE[pos, 2i] = sin(pos / base**(2i/d)), PE[pos, 2i+1] = cos(...), in float64.
+
+    Written from the paper rather than from vkml/nn.py, deliberately: an oracle
+    transcribed from the implementation checks transcription, not correctness.
+    """
+    table = np.empty((max_len, d_model), dtype=np.float64)
+    for pos in range(max_len):
+        for i in range(d_model // 2):
+            angle = pos / (base ** (2.0 * i / d_model))
+            table[pos, 2 * i] = math.sin(angle)
+            table[pos, 2 * i + 1] = math.cos(angle)
+    return table
+
+
+@pytest.mark.parametrize("d_model,max_len", [(8, 16), (64, 200), (128, 512)])
+def test_positional_encoding_matches_the_closed_form(d_model, max_len):
+    pe = V.nn.PositionalEncoding(d_model=d_model, max_len=max_len)
+    got = pe.pe.numpy().astype(np.float64)
+    want = _positional_reference(max_len, d_model)
+
+    # float32 round-off on a value in [-1, 1] and nothing else: the trig runs in
+    # double and is narrowed once, so the only error admitted is the narrowing.
+    assert got.shape == want.shape
+    assert np.abs(got - want).max() <= np.finfo(np.float32).eps, (
+        f"max |diff| {np.abs(got - want).max():.3e} exceeds one float32 eps; the table is "
+        f"not the closed form to the last bit"
+    )
+
+
+def test_positional_encoding_first_rows_are_the_known_values():
+    """Anchored on values anyone can check by hand, not on the generator."""
+    pe = V.nn.PositionalEncoding(d_model=4, max_len=3)
+    table = pe.pe.numpy()
+    # pos=0: every angle is 0, so sin=0 and cos=1 all the way across.
+    assert np.allclose(table[0], [0.0, 1.0, 0.0, 1.0], atol=1e-7)
+    # pos=1, i=0: angle 1 exactly.
+    assert table[1][0] == pytest.approx(math.sin(1.0), abs=1e-7)
+    assert table[1][1] == pytest.approx(math.cos(1.0), abs=1e-7)
+    # pos=1, i=1: angle 1 / 10000**(2/4) = 1/100.
+    assert table[1][2] == pytest.approx(math.sin(0.01), abs=1e-7)
+    assert table[1][3] == pytest.approx(math.cos(0.01), abs=1e-7)
+
+
+@pytest.mark.parametrize("shape", [(10, 8), (3, 10, 8)])
+def test_positional_encoding_adds_the_table_and_keeps_the_shape(shape):
+    pe = V.nn.PositionalEncoding(d_model=8, max_len=32)
+    x = np.random.default_rng(3).standard_normal(shape).astype(np.float32)
+    got = pe(V.tensor(x)).numpy()
+
+    seq = shape[0] if len(shape) == 2 else shape[1]
+    want = x + pe.pe.numpy()[:seq]
+    assert got.shape == x.shape
+    assert np.allclose(got, want, atol=1e-6)
+
+
+def test_positional_encoding_batch_first_false_uses_the_other_layout():
+    """(S, B, E) must add along S, not along B. Getting this wrong still
+    broadcasts and still produces a plausible tensor, so it is worth pinning."""
+    pe = V.nn.PositionalEncoding(d_model=8, max_len=32, batch_first=False)
+    x = np.random.default_rng(4).standard_normal((10, 3, 8)).astype(np.float32)
+    got = pe(V.tensor(x)).numpy()
+    want = x + pe.pe.numpy()[:10][:, None, :]
+    assert np.allclose(got, want, atol=1e-6)
+
+
+def test_positional_encoding_distinguishes_a_reordered_sequence():
+    """The property the module exists for.
+
+    Attention is permutation equivariant, so a sequence model without positions
+    cannot tell "dog bites man" from "man bites dog". A test that only checked
+    the table's values would pass on an encoding that added the same row
+    everywhere.
+    """
+    pe = V.nn.PositionalEncoding(d_model=16, max_len=32)
+    x = np.random.default_rng(5).standard_normal((1, 6, 16)).astype(np.float32)
+    forward = pe(V.tensor(x)).numpy()
+    reversed_ = pe(V.tensor(x[:, ::-1].copy())).numpy()
+    assert not np.allclose(forward, reversed_[:, ::-1]), (
+        "reversing the sequence produced the same encoded values in reverse; the "
+        "encoding is not position-dependent"
+    )
+
+
+def test_positional_encoding_is_a_buffer_not_a_parameter():
+    """It must not be trained, and it must move with `.to()`."""
+    pe = V.nn.PositionalEncoding(d_model=8, max_len=16)
+    assert list(pe.parameters()) == [], "the table must not be a trainable parameter"
+    assert "pe" in dict(pe.named_buffers())
+    assert "pe" in pe.state_dict()
+
+
+def test_positional_encoding_rejects_what_it_cannot_represent():
+    with pytest.raises(ValueError):
+        V.nn.PositionalEncoding(d_model=7)          # odd: a sine with no cosine
+    with pytest.raises(ValueError):
+        V.nn.PositionalEncoding(d_model=0)
+    with pytest.raises(ValueError):
+        V.nn.PositionalEncoding(d_model=8, max_len=0)
+
+    pe = V.nn.PositionalEncoding(d_model=8, max_len=4)
+    with pytest.raises(ValueError):
+        pe(V.tensor(np.zeros((1, 5, 8), dtype=np.float32)))    # longer than the table
+    with pytest.raises(ValueError):
+        pe(V.tensor(np.zeros((1, 4, 16), dtype=np.float32)))   # wrong d_model
+    with pytest.raises(ValueError):
+        pe(V.tensor(np.zeros((2, 2, 4, 8), dtype=np.float32)))  # rank the layout cannot mean
+
+
+def test_a_transformer_with_positions_trains():
+    """The point of adding this module: the parts now compose end to end.
+
+    Embedding -> positions -> encoder layer -> pooled linear head, trained on a
+    task that is UNLEARNABLE without positions -- the label is whether the first
+    token is greater than the last, and a permutation-equivariant model cannot
+    represent it.
+    """
+    V.nn.manual_seed(9)
+    rng = np.random.default_rng(9)
+    vocab, seq, d_model = 12, 6, 16
+
+    tokens = rng.integers(0, vocab, size=(64, seq)).astype(np.int64)
+    labels = (tokens[:, 0] > tokens[:, -1]).astype(np.int64)
+
+    embed = V.nn.Embedding(vocab, d_model)
+    pos = V.nn.PositionalEncoding(d_model=d_model, max_len=seq)
+    block = V.nn.TransformerEncoderLayer(d_model, nhead=4, dim_feedforward=32, dropout=0.0)
+    head = V.nn.Linear(d_model, 2)
+    params = [*embed.parameters(), *block.parameters(), *head.parameters()]
+    opt = V.optim.Adam(params, lr=3e-3)
+
+    x = V.tensor(tokens)
+    y = V.tensor(labels)
+
+    def loss_now():
+        h = block(pos(embed(x)))
+        return V.nn.cross_entropy(head(V.mean(h, [1])), y)
+
+    first = float(loss_now().item())
+    for _ in range(60):
+        opt.zero_grad()
+        loss_now().backward()
+        opt.step()
+    last = float(loss_now().item())
+
+    assert last < first * 0.6, (
+        f"loss went {first:.4f} -> {last:.4f}; a transformer with positions should learn "
+        f"an order-dependent label, and this one did not"
+    )

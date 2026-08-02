@@ -854,7 +854,7 @@ CLASS_SECTIONS: list[tuple[str, list[str]]] = [
     ("Core", ["vkml.Tensor", "Tensor", "Module"]),
     ("Layers", ["Linear", "Conv2d", "Embedding", "Sequential", "Flatten",
                 "BatchNorm2d", "LayerNorm", "Dropout",
-                "MultiheadAttention", "TransformerEncoderLayer",
+                "MultiheadAttention", "PositionalEncoding", "TransformerEncoderLayer",
                 "ReLU", "GELU", "Sigmoid", "Tanh", "MaxPool2d", "AvgPool2d"]),
     ("Optimisers", ["Optimizer", "SGD", "Adam", "AdamW", "RMSProp"]),
     ("Data and checkpoints", ["DataLoader", "ArrayDataset", "Checkpoint"]),

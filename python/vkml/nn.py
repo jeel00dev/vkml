@@ -881,6 +881,125 @@ class MultiheadAttention(Module):
         return f"MultiheadAttention(embed_dim={self.embed_dim}, num_heads={self.num_heads})"
 
 
+class PositionalEncoding(Module):
+    """Fixed sinusoidal position signal, added to an embedded sequence.
+
+    The last thing standing between this module set and a transformer that can
+    be assembled end to end: attention and the encoder layer are permutation
+    equivariant, so without a position signal a sequence model cannot tell
+    ``"dog bites man"`` from ``"man bites dog"``.
+
+    The formulation is Vaswani et al. 2017 section 3.5, unchanged::
+
+        PE[pos, 2i]   = sin(pos / 10000 ** (2i / d_model))
+        PE[pos, 2i+1] = cos(pos / 10000 ** (2i / d_model))
+
+    WHY SINUSOIDAL AND NOT LEARNED. **Learned positions already compose** —
+    they are `Embedding(max_len, d_model)` indexed by position, which is
+    exactly what GPT does and needs nothing new here. Sinusoidal does not
+    compose from anything: it is a closed-form table. Adding the one that
+    cannot be built from the parts, and leaving the one that can, is the same
+    rule the backward rules follow (`docs/ARCHITECTURE.md`).
+
+    NO TORCH CLASS TO COMPARE AGAINST, so the oracle is different in kind.
+    `torch.nn` has no `PositionalEncoding`; the reference implementation lives
+    in a tutorial. Every other module here is validated against torch's own,
+    which is stronger than a reference written twice — so this one is validated
+    against the **closed form evaluated in float64**, which is stronger still:
+    the table has an exact definition and no implementation freedom.
+
+    A BUFFER, NOT A PARAMETER. The table never changes, so it carries no
+    gradient and `Module.to()` moves it with the rest of the module's state.
+    Computed once at construction rather than per call: it is
+    `max_len x d_model` floats and identical every step.
+
+    THE TRIG IS DONE IN FLOAT64 ON THE HOST, then narrowed once. ``pos`` reaches
+    5000 and the smallest frequency divisor is 1, so ``pos / 10000**(2i/d)``
+    spans ten orders of magnitude; evaluating that in float32 loses low-order
+    bits of the argument before the sine ever runs. Doing it in double and
+    rounding the result costs nothing — this happens once — and makes the table
+    correct to float32's last bit rather than approximately correct.
+
+        >>> pe = PositionalEncoding(d_model=64)
+        >>> x = vkml.tensor(np.zeros((2, 10, 64), dtype=np.float32))
+        >>> pe(x).shape
+        (2, 10, 64)
+    """
+
+    def __init__(self, d_model: int, max_len: int = 5000, base: float = 10000.0,
+                 batch_first: bool = True):
+        super().__init__()
+        if d_model <= 0:
+            raise ValueError(f"d_model must be positive, got {d_model}")
+        if d_model % 2 != 0:
+            # An odd width would leave the final column with a sine and no
+            # cosine to pair it with. Torch's tutorial silently truncates;
+            # refusing is better than a table whose last column means something
+            # different from every other.
+            raise ValueError(
+                f"d_model must be even so every frequency has both a sine and a cosine, "
+                f"got {d_model}"
+            )
+        if max_len <= 0:
+            raise ValueError(f"max_len must be positive, got {max_len}")
+
+        self.d_model = d_model
+        self.max_len = max_len
+        self.base = base
+        self.batch_first = batch_first
+
+        position = _np.arange(max_len, dtype=_np.float64)[:, None]
+        # 2i/d_model for i in [0, d_model/2), as the paper writes it.
+        exponent = _np.arange(0, d_model, 2, dtype=_np.float64) / d_model
+        angle = position / (base ** exponent)[None, :]
+
+        table = _np.empty((max_len, d_model), dtype=_np.float64)
+        table[:, 0::2] = _np.sin(angle)
+        table[:, 1::2] = _np.cos(angle)
+        self.register_buffer("pe", V.tensor(table.astype(_np.float32)))
+
+    def forward(self, x: V.Tensor) -> V.Tensor:
+        """Adds the first ``seq_len`` rows of the table to ``x``.
+
+        Broadcasting does the rest: the table is (S, E) and the input is
+        (B, S, E) or (S, B, E), and in both layouts the trailing two axes line
+        up with a leading axis of extent 1.
+        """
+        shape = list(x.shape)
+        if len(shape) not in (2, 3):
+            raise ValueError(
+                f"PositionalEncoding expects (S, E), (B, S, E) or (S, B, E), got {shape}"
+            )
+        if shape[-1] != self.d_model:
+            raise ValueError(
+                f"last axis is {shape[-1]}, but this encoding was built for d_model="
+                f"{self.d_model}"
+            )
+
+        if len(shape) == 2:
+            seq_len = shape[0]
+        else:
+            seq_len = shape[1] if self.batch_first else shape[0]
+
+        if seq_len > self.max_len:
+            raise ValueError(
+                f"sequence length {seq_len} exceeds max_len {self.max_len}; build the "
+                f"encoding with a larger max_len"
+            )
+
+        rows = self.pe[0:seq_len]
+        if len(shape) == 3 and not self.batch_first:
+            # (S, E) -> (S, 1, E) so it broadcasts against (S, B, E). The
+            # batch_first case needs no reshape: (S, E) already aligns with the
+            # trailing axes of (B, S, E).
+            rows = rows.reshape([seq_len, 1, self.d_model])
+        return x + rows
+
+    def __repr__(self) -> str:
+        return (f"PositionalEncoding(d_model={self.d_model}, max_len={self.max_len}, "
+                f"base={self.base})")
+
+
 class TransformerEncoderLayer(Module):
     """Self-attention followed by a feed-forward block, each residual.
 

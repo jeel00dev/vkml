@@ -587,7 +587,7 @@ comparison is what checks the numbers agree, and it does — see
 | Module | What it provides |
 |---|---|
 | `vkml` | Tensors, 66 operators, dtypes, devices, lazy evaluation |
-| `vkml.nn` | `Module`, Linear, Conv2d, MaxPool2d, AvgPool2d, BatchNorm2d, LayerNorm, Dropout, Embedding, MultiheadAttention, TransformerEncoderLayer, activations, and the MSE, cross-entropy, BCE-with-logits, KL-divergence and Huber losses |
+| `vkml.nn` | `Module`, Linear, Conv2d, MaxPool2d, AvgPool2d, BatchNorm2d, LayerNorm, Dropout, Embedding, MultiheadAttention, PositionalEncoding, TransformerEncoderLayer, activations, and the MSE, cross-entropy, BCE-with-logits, KL-divergence and Huber losses |
 | `vkml.optim` | SGD (with momentum), Adam, AdamW, RMSProp |
 | `vkml.data` | `Dataset`, `ArrayDataset`, `DataLoader`, reproducible shuffling, `split` |
 | `vkml.serialize` | Checkpoints stored as a zip of `.npy` arrays plus JSON metadata |
@@ -715,8 +715,8 @@ half an hour in:
   today: `prod`. It is listed here
   as well as there because it is a real limit on what vkML can run, whatever the
   reasoning behind it.
-- **Missing layers:** Conv1d, Conv3d, positional encoding, gradient checkpointing.
-  `python scripts/check_module_coverage.py` generates this list from the API rather than restating it — 28 of the manifesto's 34 P1 modules are present.
+- **Missing layers:** Conv1d, Conv3d, gradient checkpointing.
+  `python scripts/check_module_coverage.py` generates this list from the API rather than restating it — 29 of the manifesto's 34 P1 modules are present.
 - **Tensors are limited to rank 4.** This is a deliberate push-constant budget
   decision, not an oversight.
 - **f16 matmul is correct but slower than f32**, because the vectorised tile load

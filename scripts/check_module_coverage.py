@@ -68,9 +68,10 @@ P1_MODULES: list[tuple[str, str | None, str]] = [
     ("FeedForward", "nn.TransformerEncoderLayer",
      "not a standalone module: it is the encoder layer's linear1/activation/linear2 "
      "branch, which is where torch keeps it too"),
-    ("PositionalEncoding", None,
-     "absent, and genuinely: no sinusoidal or learned position module exists. "
-     "Needed before a GPT-shaped model can be assembled from these parts"),
+    ("PositionalEncoding", "nn.PositionalEncoding",
+     "sinusoidal, Vaswani et al. 3.5. LEARNED positions are not a separate module "
+     "and do not need one: they are Embedding(max_len, d_model) indexed by "
+     "position, which is what GPT does"),
     # Optimisers and losses.
     ("SGD", "optim.SGD", ""),
     ("Momentum", "optim.SGD", "a parameter of SGD, as in torch"),
