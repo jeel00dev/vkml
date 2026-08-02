@@ -50,7 +50,9 @@ sys.path.insert(0, str(ROOT / "python"))
 # one it is what a reader needs in order to decide whether to build it.
 P1_MODULES: list[tuple[str, str | None, str]] = [
     ("Linear", "nn.Linear", ""),
-    ("Conv1d", None, "absent; README lists it as a known gap"),
+    ("Conv1d", "nn.Conv1d",
+     "composed from Conv2d with a height of 1 -- identical arithmetic, so a second "
+     "kernel would be a second implementation of one algorithm"),
     ("Conv2d", "nn.Conv2d", ""),
     ("Conv3d", None, "absent; README lists it as a known gap"),
     ("Embedding", "nn.Embedding", ""),

@@ -153,9 +153,24 @@ No torch class to compare against — `torch.nn` has no `PositionalEncoding` —
 the oracle is the **closed form in float64**, which is stronger than a torch
 class rather than weaker: the table has an exact definition and no
 implementation freedom. Eleven tests, five verified by breaking the thing they
-guard. **29 of 34 P1 modules present**; the five left are Conv1d, Conv3d,
-DataLoader prefetch (#22), DataLoader transforms (#23), autograd
-checkpointing.
+guard.
+
+**`nn.Conv1d` too**, composed from `Conv2d` with a height of 1 — identical
+arithmetic, so a second GLSL kernel would be a second implementation of one
+algorithm. Validated against *torch's* Conv1d, not against vkML's Conv2d:
+comparing a composition to the thing it composes from proves the reshapes are
+consistent and nothing about whether the result is a 1-D convolution.
+
+**30 of 34 P1 modules present.** The four left are Conv3d (needs a genuinely
+3-D `im2col`; does not compose), DataLoader prefetch (#22), DataLoader
+transforms (#23) and autograd checkpointing.
+
+Found while documenting these: **a class naming another class in its `see` list
+rendered nothing** — the filter held operators only, so `MultiheadAttention`
+pointed at `TransformerEncoderLayer` for its whole life and the link was
+dropped on the way out. Fixing it took the site from 101 prose links to 142 and
+un-orphaned fourteen class pages. `docs_graph.py --check` is what surfaced it,
+by reporting the two new pages as orphans.
 
 ## Next concrete step — a decision, not an implementation
 

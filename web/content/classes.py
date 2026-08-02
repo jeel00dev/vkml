@@ -222,6 +222,29 @@ CLASSES["Dropout"] = {
     "see": ["dropout", "rand", "Module"],
 }
 
+CLASSES["Conv1d"] = {
+    "lang": "python",
+    "summary": "1D convolution over (N, C, L), matching torch.nn.Conv1d.",
+    "detail": "**Composed from `Conv2d`, not a new kernel.** A 1-D convolution is the 2-D "
+              "one with a height of 1: the input becomes `(N, C, 1, L)`, the weight gets a "
+              "kernel height of 1, and the axis is squeezed back out afterwards. The "
+              "arithmetic is identical, so a separate GLSL kernel would be a second "
+              "implementation of one algorithm — which this project has already learned "
+              "costs a byte-level comparison to keep honest.\n\n"
+              "Weight layout is torch's, `(out_channels, in_channels, kernel_size)`, so a "
+              "`state_dict` loads without rearrangement.",
+    "note": "Both reshapes are **view operations**: zero-copy, no allocation, no dispatch. "
+            "The `im2col` underneath sees a height of 1 with no padding in that axis, so it "
+            "does no work for it either.",
+    "warning": "If a profile ever shows the 1-D path dominated by the degenerate height "
+               "axis — a very long sequence with a tiny channel count — a dedicated kernel "
+               "becomes arguable. **Nothing measures that today**, and reserving a kernel "
+               "for a speculative case is what ADR 0004 exists to refuse.",
+    "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
+               ("Internals", ["__repr__"])],
+    "see": ["Conv2d", "conv2d", "im2col"],
+}
+
 CLASSES["MultiheadAttention"] = {
     "lang": "python",
     "summary": "Scaled dot-product attention over several heads.",
@@ -241,7 +264,7 @@ CLASSES["MultiheadAttention"] = {
             "masking is built from `triu` plus a comparison, not a dedicated kernel.",
     "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
                ("Internals", ["__repr__"])],
-    "see": ["softmax", "matmul", "triu", "TransformerEncoderLayer"],
+    "see": ["softmax", "matmul", "triu", "PositionalEncoding", "TransformerEncoderLayer"],
 }
 
 CLASSES["PositionalEncoding"] = {
@@ -287,7 +310,7 @@ CLASSES["TransformerEncoderLayer"] = {
             "construction rather than at the first forward pass.",
     "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
                ("Internals", ["__repr__"])],
-    "see": ["MultiheadAttention", "LayerNorm", "Linear", "gelu"],
+    "see": ["MultiheadAttention", "PositionalEncoding", "LayerNorm", "Linear", "gelu"],
 }
 
 CLASSES["Sequential"] = {
@@ -310,7 +333,7 @@ CLASSES["Embedding"] = {
               "inference.",
     "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
                ("Internals", ["__repr__"])],
-    "see": ["index_select", "scatter_add", "Module"],
+    "see": ["index_select", "scatter_add", "PositionalEncoding", "Module"],
 }
 
 CLASSES["Conv2d"] = {
@@ -323,7 +346,7 @@ CLASSES["Conv2d"] = {
                "channels must equal the input's.",
     "groups": [("Construction", ["__init__"]), ("Forward", ["forward"]),
                ("Internals", ["__repr__"])],
-    "see": ["conv2d", "im2col", "matmul", "Module"],
+    "see": ["conv2d", "im2col", "matmul", "Conv1d", "Module"],
 }
 
 CLASSES["LayerNorm"] = {

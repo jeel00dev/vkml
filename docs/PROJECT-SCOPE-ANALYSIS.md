@@ -86,15 +86,16 @@ P6 optimisation · P7 engineering excellence · P8 community readiness · P9 cro
 API symbol that satisfies it and fails if a declared target stops resolving. Run it:
 
 ```
-29 of 34 P1 modules present, 5 not implemented
-not implemented: Conv1d, Conv3d, DataLoader prefetch, DataLoader transforms,
+30 of 34 P1 modules present, 4 not implemented
+not implemented: Conv3d, DataLoader prefetch, DataLoader transforms,
                  autograd checkpointing
 ```
 
 | P1 item | State |
 |---|---|
 | Linear, Conv2d, Embedding, BatchNorm2d, LayerNorm, Dropout, pooling, Flatten, Sequential | present |
-| **Conv1d, Conv3d** | **absent** |
+| Conv1d | present as **`nn.Conv1d`** — composed from Conv2d with a height of 1, identical arithmetic |
+| **Conv3d** | **absent** — needs a genuinely 3-D `im2col`, which does not compose |
 | Attention / MultiHeadAttention | present as **`nn.MultiheadAttention`** |
 | TransformerBlock | present as **`nn.TransformerEncoderLayer`** |
 | FeedForward | present, **inside the encoder layer** as `linear1`/activation/`linear2` — where torch keeps it too |
@@ -130,9 +131,9 @@ resolving. The remaining risk is the opposite one — an item built and nobody a
 the map — which is a one-line edit rather than a re-derivation, and which shows up as a
 count that has not moved.
 
-**Cross-checked against `README.md`**, which independently lists *"Missing layers: Conv1d,
-Conv3d, gradient checkpointing"* — agreeing on three of the five real gaps, and silent on
-the two DataLoader ones. It now points at the generator rather than restating the list.
+**Cross-checked against `README.md`**, which independently listed *"Missing layers: Conv1d,
+Conv3d, gradient checkpointing"* — agreeing on three of the gaps and silent on the two
+DataLoader ones. It now points at the generator rather than restating the list.
 
 ---
 

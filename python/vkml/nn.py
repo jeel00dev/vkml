@@ -634,6 +634,20 @@ class Embedding(Module):
 # ---------------------------------------------------------------------------
 
 
+def _single(value, name: str) -> int:
+    """Accept an int or a length-1 sequence, as torch's 1-D layers do.
+
+    torch takes `kernel_size=(3,)` as well as `kernel_size=3`, and code ported
+    from a 2-D model often carries the tuple form across.
+    """
+    if isinstance(value, int):
+        return value
+    seq = tuple(value)
+    if len(seq) != 1:
+        raise ValueError(f"{name} must be an int or a length-1 sequence, got {value!r}")
+    return int(seq[0])
+
+
 def _pair(value) -> tuple[int, int]:
     """Accept an int or a pair, as torch's conv and pooling layers do."""
     if isinstance(value, int):
@@ -682,6 +696,82 @@ class Conv2d(Module):
 
     def __repr__(self) -> str:
         return (f"Conv2d({self.in_channels}, {self.out_channels}, "
+                f"kernel_size={self.kernel_size}, stride={self.stride}, "
+                f"padding={self.padding})")
+
+
+class Conv1d(Module):
+    """1D convolution over (N, C, L), matching torch.nn.Conv1d.
+
+    COMPOSED FROM Conv2d, NOT A NEW KERNEL. A 1-D convolution is the 2-D one
+    with a height of 1: unsqueeze the input to (N, C, 1, L), give the weight a
+    kernel height of 1, convolve, and squeeze the axis back out. The arithmetic
+    is identical and so is the result, so a separate GLSL kernel would be a
+    second implementation of one algorithm — which this project has already
+    learned costs a byte-level comparison to keep honest
+    (`docs/MILESTONE-B-REVIEW.md`).
+
+    WHAT THAT COSTS, stated because composition is not free. Two view
+    operations per call, both `Reshape`, both zero-copy — `is_view_op` puts them
+    on the aliasing path rather than the compute one, so they allocate nothing
+    and dispatch nothing. The `im2col` underneath sees a height of 1 and a
+    padding of 0 in that axis, so it does no work for it either.
+
+    WHEN THAT WOULD STOP BEING RIGHT. If a profile ever shows the 1-D path
+    dominated by the degenerate height axis — a very long sequence with a tiny
+    channel count, where im2col's row addressing costs more than the arithmetic
+    — a dedicated kernel becomes arguable. Nothing measures that today, and
+    `docs/adr/0004` is the project's standing position on reserving kernels for
+    speculative cases.
+
+    Weight layout is torch's, `(out_channels, in_channels, kernel_size)`, so a
+    state_dict loads without rearrangement.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int,
+                 stride: int = 1, padding: int = 0, dilation: int = 1, bias: bool = True):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = _single(kernel_size, "kernel_size")
+        self.stride = _single(stride, "stride")
+        self.padding = _single(padding, "padding")
+        self.dilation = _single(dilation, "dilation")
+
+        # torch's default: uniform over +-1/sqrt(fan_in), fan_in counting the
+        # whole receptive field. Same rule as Conv2d, one axis shorter.
+        fan_in = in_channels * self.kernel_size
+        bound = 1.0 / math.sqrt(fan_in)
+        rng = _INIT_RNG
+        w = rng.uniform(-bound, bound,
+                        size=(out_channels, in_channels, self.kernel_size)).astype(_np.float32)
+        self.weight = V.tensor(w, requires_grad=True)
+
+        if bias:
+            b = rng.uniform(-bound, bound, size=(out_channels,)).astype(_np.float32)
+            self.bias = V.tensor(b, requires_grad=True)
+
+    def forward(self, x: V.Tensor) -> V.Tensor:
+        shape = list(x.shape)
+        if len(shape) != 3:
+            raise ValueError(f"Conv1d expects (N, C, L), got {shape}")
+        n, c, length = shape
+        if c != self.in_channels:
+            raise ValueError(
+                f"input has {c} channels but this Conv1d was built for {self.in_channels}"
+            )
+
+        # (N, C, L) -> (N, C, 1, L) and (O, I, K) -> (O, I, 1, K). The height
+        # axis is 1 everywhere, so every 2-D parameter is (1, x).
+        x4 = x.reshape([n, c, 1, length])
+        w4 = self.weight.reshape([self.out_channels, self.in_channels, 1, self.kernel_size])
+        y4 = V.conv2d(x4, w4, self._parameters.get("bias", V.Tensor()),
+                      (1, self.stride), (0, self.padding), (1, self.dilation))
+        out_len = y4.shape[3]
+        return y4.reshape([n, self.out_channels, out_len])
+
+    def __repr__(self) -> str:
+        return (f"Conv1d({self.in_channels}, {self.out_channels}, "
                 f"kernel_size={self.kernel_size}, stride={self.stride}, "
                 f"padding={self.padding})")
 

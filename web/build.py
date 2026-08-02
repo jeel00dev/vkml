@@ -812,10 +812,22 @@ def class_page(name: str, spec: dict) -> tuple[str, list[tuple[str, str, int]]]:
                 if own:
                     body.append(paragraphs(own))
     if spec.get("see"):
-        links = ", ".join(f'<a href="{PAGE_OF[t]}.html#{t}"><code>{t}</code></a>'
-                          for t in spec["see"] if t in PAGE_OF)
+        # CLASSES RESOLVE TOO. This filtered on PAGE_OF alone, which holds
+        # operators only -- so a class naming another class in its `see` list
+        # rendered nothing at all, silently. MultiheadAttention pointed at
+        # TransformerEncoderLayer for its whole life and the link was dropped
+        # on the way out, which is how two class pages ended up reachable only
+        # from the sidebar.
+        links = []
+        for target in spec["see"]:
+            if target in PAGE_OF:
+                links.append(f'<a href="{PAGE_OF[target]}.html#{target}">'
+                             f'<code>{target}</code></a>')
+            elif target in CLASSES:
+                links.append(f'<a href="{class_slug(target)}.html">'
+                             f'<code>{target}</code></a>')
         if links:
-            body.append(f"<p><strong>See also</strong> {links}</p>")
+            body.append(f"<p><strong>See also</strong> {', '.join(links)}</p>")
     return "\n".join(body), toc
 
 
@@ -852,7 +864,7 @@ NAV_SECTIONS: list[tuple[str, list[str]]] = [
 # `size(axis)` is one extent -- and the navigation is where that choice is made.
 CLASS_SECTIONS: list[tuple[str, list[str]]] = [
     ("Core", ["vkml.Tensor", "Tensor", "Module"]),
-    ("Layers", ["Linear", "Conv2d", "Embedding", "Sequential", "Flatten",
+    ("Layers", ["Linear", "Conv1d", "Conv2d", "Embedding", "Sequential", "Flatten",
                 "BatchNorm2d", "LayerNorm", "Dropout",
                 "MultiheadAttention", "PositionalEncoding", "TransformerEncoderLayer",
                 "ReLU", "GELU", "Sigmoid", "Tanh", "MaxPool2d", "AvgPool2d"]),

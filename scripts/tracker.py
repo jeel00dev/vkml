@@ -191,9 +191,9 @@ T: dict[int, tuple] = {
     113: ("open", DEBT,     VERIFY,  "a build change making the two extension paths one binary", SHARED),
     114: ("open", DESIGN,   KNOW,    "PREMISE DISPROVEN: the manifesto defines scope. Residual is "
                                      "O-A..O-F in PROJECT-SCOPE-ANALYSIS.md", SHARED),
-    118: ("open", DEFECT,   PRODUCT, "PARTLY DISPROVEN then partly closed: 3 of the 8 existed "
-                                     "under torch's names; PositionalEncoding built (#131). "
-                                     "29 of 34, 5 gaps, generated not asserted", FOUND),
+    118: ("open", DEFECT,   PRODUCT, "PARTLY DISPROVEN then mostly closed: 3 of the 8 existed "
+                                     "under torch's names; PositionalEncoding (#131) and Conv1d "
+                                     "(#132) built. 30 of 34, 4 gaps, generated not asserted", FOUND),
     # ---- First release (R-series) ----
     119: ("open", PLANNED,  VERIFY,  "none -- this is the release's definition of tested", SHARED),
     120: ("open", PLANNED,  VERIFY,  "none -- PyTorch is the stated oracle", SHARED),
@@ -228,6 +228,12 @@ T: dict[int, tuple] = {
     131: ("done", PLANNED,  PRODUCT, "CLOSED: nn.PositionalEncoding -- the last P1 module standing "
                                      "between the existing attention parts and a transformer that "
                                      "assembles end to end", None),
+    132: ("done", PLANNED,  PRODUCT, "CLOSED: nn.Conv1d, composed from Conv2d with a height of 1. "
+                                     "No new kernel: identical arithmetic, so a second one would "
+                                     "need a byte comparison to stay honest", None),
+    133: ("done", DEFECT,   KNOW,    "CLOSED: a class naming another class in its `see` list "
+                                     "rendered NOTHING -- the filter held operators only. 14 class "
+                                     "pages were orphaned by it; prose links 101 -> 142", None),
     117: ("open", PLANNED,  OBSERVE, "MEASURED 58.8ns / 131.7ns per publish; end-to-end could not "
                                      "resolve it (4 orders under noise). Regression gate remains", SHARED),
 }

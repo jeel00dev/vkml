@@ -1147,3 +1147,103 @@ def test_a_transformer_with_positions_trains():
         f"loss went {first:.4f} -> {last:.4f}; a transformer with positions should learn "
         f"an order-dependent label, and this one did not"
     )
+
+
+# ---------------------------------------------------------------------------
+# Conv1d
+# ---------------------------------------------------------------------------
+#
+# Composed from Conv2d with a height of 1, so the tests are against TORCH's own
+# Conv1d rather than against vkML's Conv2d. Comparing the composition to the
+# thing it is composed from would prove the reshapes are consistent and nothing
+# about whether the result is a 1-D convolution.
+
+
+@pytest.mark.parametrize("kernel,stride,padding,dilation", [
+    (3, 1, 0, 1),
+    (3, 1, 1, 1),
+    (5, 2, 2, 1),
+    (3, 1, 2, 2),      # dilation, which changes the receptive field not the count
+    (1, 1, 0, 1),      # a 1x1: the degenerate case both axes reduce to
+])
+@pytest.mark.parametrize("bias", [True, False])
+def test_conv1d_matches_torch(kernel, stride, padding, dilation, bias):
+    v = V.nn.Conv1d(3, 4, kernel, stride=stride, padding=padding,
+                    dilation=dilation, bias=bias)
+    t = torch.nn.Conv1d(3, 4, kernel, stride=stride, padding=padding,
+                        dilation=dilation, bias=bias)
+    t.weight.data = torch.from_numpy(v.weight.numpy().copy())
+    if bias:
+        t.bias.data = torch.from_numpy(v.bias.numpy().copy())
+
+    x = make_input((2, 3, 17), seed=kernel * 31 + stride)
+    got = v(V.tensor(x)).numpy()
+    want = t(torch.from_numpy(x)).detach().numpy()
+    assert got.shape == want.shape
+    assert_close("conv1d", got, want, TOLERANCES["matmul"], inputs=[x])
+
+
+def test_conv1d_gradients_match_torch():
+    """The composition has to differentiate too, and the reshapes are on the path."""
+    v = V.nn.Conv1d(2, 3, 3, padding=1)
+    t = torch.nn.Conv1d(2, 3, 3, padding=1)
+    t.weight.data = torch.from_numpy(v.weight.numpy().copy())
+    t.bias.data = torch.from_numpy(v.bias.numpy().copy())
+
+    x = make_input((2, 2, 9), seed=17)
+    vx = V.tensor(x, requires_grad=True)
+    tx = torch.from_numpy(x.copy()).requires_grad_(True)
+
+    V.sum(v(vx)).backward()
+    t(tx).sum().backward()
+
+    assert_close("conv1d dx", vx.grad, tx.grad, TOLERANCES["matmul"], inputs=[x])
+    assert_close("conv1d dw", v.weight.grad, t.weight.grad, TOLERANCES["matmul"], inputs=[x])
+    assert_close("conv1d db", v.bias.grad, t.bias.grad, TOLERANCES["matmul"], inputs=[x])
+
+
+def test_conv1d_accepts_torchs_tuple_spelling():
+    """torch takes kernel_size=(3,) as well as 3, and ported code carries it across."""
+    a = V.nn.Conv1d(2, 2, (3,), stride=(1,), padding=(1,), dilation=(1,))
+    assert (a.kernel_size, a.stride, a.padding, a.dilation) == (3, 1, 1, 1)
+    with pytest.raises(ValueError):
+        V.nn.Conv1d(2, 2, (3, 3))
+
+
+def test_conv1d_rejects_the_wrong_rank_and_channel_count():
+    """Matched on the MESSAGE, not just the type.
+
+    Both of these raise ValueError even with the checks deleted -- `n, c, length
+    = shape` fails to unpack a 4-element list, and the operator underneath
+    rejects the channel count with its own error. A bare `pytest.raises(ValueError)`
+    therefore passes against an implementation that checks nothing, which is
+    what a first version of this test did.
+    """
+    m = V.nn.Conv1d(3, 4, 3)
+    with pytest.raises(ValueError, match=r"Conv1d expects \(N, C, L\)"):
+        m(V.tensor(np.zeros((2, 3, 4, 5), dtype=np.float32)))
+    with pytest.raises(ValueError, match=r"built for 3"):
+        m(V.tensor(np.zeros((2, 5, 9), dtype=np.float32)))
+
+
+def test_conv1d_trains():
+    """End to end, on a task that needs the kernel to see more than one step."""
+    V.nn.manual_seed(4)
+    rng = np.random.default_rng(4)
+    x = rng.standard_normal((48, 1, 16)).astype(np.float32)
+    # The label is whether the signal rises across its middle, which a width-1
+    # kernel cannot see and a width-3 one can.
+    y = (x[:, 0, 8] > x[:, 0, 7]).astype(np.int64)
+
+    model = V.nn.Sequential(V.nn.Conv1d(1, 8, 3, padding=1), V.nn.ReLU(),
+                            V.nn.Flatten(), V.nn.Linear(8 * 16, 2))
+    opt = V.optim.Adam(model.parameters(), lr=5e-3)
+    vx, vy = V.tensor(x), V.tensor(y)
+
+    first = float(V.nn.cross_entropy(model(vx), vy).item())
+    for _ in range(60):
+        opt.zero_grad()
+        V.nn.cross_entropy(model(vx), vy).backward()
+        opt.step()
+    last = float(V.nn.cross_entropy(model(vx), vy).item())
+    assert last < first * 0.6, f"loss went {first:.4f} -> {last:.4f}; Conv1d did not learn"
