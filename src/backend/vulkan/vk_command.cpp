@@ -21,12 +21,19 @@ Recorder::Recorder(Context& ctx, Allocator& allocator) : ctx_(ctx), allocator_(a
     pci.queueFamilyIndex = ctx.queue_family();
     check(vkCreateCommandPool(ctx_.device(), &pci, nullptr, &pool_), "vkCreateCommandPool");
 
+    std::vector<VkCommandBuffer> buffers(kRingSize);
     VkCommandBufferAllocateInfo cbai{};
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cbai.commandPool = pool_;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = 1;
-    check(vkAllocateCommandBuffers(ctx_.device(), &cbai, &cmd_), "vkAllocateCommandBuffers");
+    cbai.commandBufferCount = kRingSize;
+    check(vkAllocateCommandBuffers(ctx_.device(), &cbai, buffers.data()),
+          "vkAllocateCommandBuffers");
+
+    ring_.resize(kRingSize);
+    for (uint32_t i = 0; i < kRingSize; ++i) {
+        ring_[i].cmd = buffers[i];
+    }
 
     VkSemaphoreTypeCreateInfo tci{};
     tci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
@@ -54,9 +61,15 @@ Recorder::~Recorder() {
 }
 
 namespace {
-/// Query slots. Two per dispatch (start, end); 512 dispatches per submission is
-/// far beyond anything the current executor produces.
-constexpr uint32_t kMaxQueries = 1024;
+/// Query slots across the whole ring. Two per dispatch (start, end), so 511
+/// dispatches per submission plus the whole-submit pair -- far beyond anything
+/// the current executor produces, and the same figure as before the ring.
+///
+/// Partitioned per ring slot rather than shared, because several submissions
+/// are in flight at once now: a shared cursor lets one submission reset query
+/// slots another is still writing, which is not a wrong number but a
+/// VK_ERROR_DEVICE_LOST. That is the negative control on the ring test.
+constexpr uint32_t kMaxQueries = Recorder::kRingSize * Recorder::kQueriesPerSlot;
 }  // namespace
 
 void Recorder::set_profiling(bool enabled) {
@@ -100,41 +113,52 @@ void Recorder::retain(const std::vector<ProfileEntry>& entries) {
 }
 
 void Recorder::begin_timestamp(const char* label, uint64_t dispatch_id) {
-    if (!profiling_ || query_index_ + 2 > kMaxQueries) {
+    if (!profiling_ || query_index_ + 2 > query_base(current_) + kQueriesPerSlot) {
         return;
     }
-    pending_.push_back(Pending{label_.empty() ? label : label_, query_index_, dispatch_id});
+    ring_[current_].pending.push_back(
+        Pending{label_.empty() ? label : label_, query_index_, dispatch_id});
     // TOP_OF_PIPE for the start: the earliest point the dispatch can be said to
     // have begun.
-    vkCmdWriteTimestamp2(cmd_, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool_, query_index_);
+    vkCmdWriteTimestamp2(cmd(), VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool_, query_index_);
     query_index_ += 2;
 }
 
 void Recorder::end_timestamp() {
-    if (!profiling_ || pending_.empty()) {
+    if (!profiling_ || ring_[current_].pending.empty()) {
         return;
     }
     // ALL_COMMANDS for the end: the dispatch is only finished once its writes
     // have drained, and BOTTOM_OF_PIPE would report early on some drivers.
-    vkCmdWriteTimestamp2(cmd_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, query_pool_,
-                         pending_.back().slot + 1);
+    vkCmdWriteTimestamp2(cmd(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, query_pool_,
+                         ring_[current_].pending.back().slot + 1);
 }
 
-void Recorder::resolve_timestamps() {
+void Recorder::resolve_slot(Slot& slot) {
+    slot.resolved = true;
+
     // Deliberately does NOT clear profile_ when there is nothing pending. A
     // download submits a copy with no dispatches and then waits, and that wait
     // would otherwise wipe the profile of the compute submission that produced
     // the data being downloaded -- which is exactly what happened, reporting
     // 0.000 ms for every kernel.
-    if (!profiling_ || pending_.empty()) {
-        pending_.clear();
+    if (!profiling_ || slot.pending.empty()) {
+        slot.pending.clear();
         return;
     }
     profile_.clear();
 
-    std::vector<uint64_t> raw(query_index_, 0);
+    // Only this slot's range is read back. Reading the whole pool would return
+    // other slots' timestamps, which belong to submissions that may still be
+    // running -- and WAIT_BIT would then block on them.
+    //
+    // The range is contiguous: `submit` occupies the slot's first pair and each
+    // dispatch takes the next, so the queries run from `first` in steps of two.
+    const auto count = static_cast<uint32_t>(slot.pending.size() * 2);
+    const uint32_t first = slot.pending.front().slot;
+    std::vector<uint64_t> raw(count, 0);
     const VkResult r = vkGetQueryPoolResults(
-        ctx_.device(), query_pool_, 0, query_index_, raw.size() * sizeof(uint64_t), raw.data(),
+        ctx_.device(), query_pool_, first, count, raw.size() * sizeof(uint64_t), raw.data(),
         sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
 
     if (r == VK_SUCCESS) {
@@ -147,17 +171,17 @@ void Recorder::resolve_timestamps() {
         // written before any other command, but taken as a minimum rather than
         // assumed so that a profile without a submit entry is still coherent.
         uint64_t origin = std::numeric_limits<uint64_t>::max();
-        for (const auto& p : pending_) {
-            origin = std::min(origin, raw[p.slot]);
+        for (const auto& p : slot.pending) {
+            origin = std::min(origin, raw[p.slot - first]);
         }
 
-        for (const auto& [label, slot, dispatch_id] : pending_) {
-            const uint64_t start = raw[slot];
-            const uint64_t end = raw[slot + 1];
+        for (const auto& [label, query, dispatch_id] : slot.pending) {
+            const uint64_t start = raw[query - first];
+            const uint64_t end = raw[query - first + 1];
             const double ms =
                 end > start ? static_cast<double>(end - start) * ns_per_tick / 1e6 : 0.0;
             const double start_ms = static_cast<double>(start - origin) * ns_per_tick / 1e6;
-            profile_.push_back(ProfileEntry{label, ms, start_ms, timeline_value_, dispatch_id});
+            profile_.push_back(ProfileEntry{label, ms, start_ms, slot.value, dispatch_id});
             // Only the whole-submit window accumulates; see total_gpu_ms().
             if (label == "submit") {
                 total_gpu_ms_ += ms;
@@ -165,29 +189,69 @@ void Recorder::resolve_timestamps() {
         }
         retain(profile_);
     }
-    pending_.clear();
+    slot.pending.clear();
+}
+
+void Recorder::resolve_completed() {
+    if (!profiling_) {
+        // Nothing to read back, but the flags must still be cleared or a slot
+        // profiled earlier would be resolved again after profiling was turned
+        // off, against queries that had since been reset.
+        for (Slot& slot : ring_) {
+            slot.resolved = true;
+            slot.pending.clear();
+        }
+        return;
+    }
+
+    // Oldest first, so `profile()` ends up holding the most recently COMPLETED
+    // submission rather than an arbitrary one. Retention receives them in
+    // execution order for the same reason.
+    const uint64_t completed = completed_value();
+    std::vector<Slot*> ready;
+    for (Slot& slot : ring_) {
+        if (!slot.resolved && slot.value <= completed) {
+            ready.push_back(&slot);
+        }
+    }
+    std::sort(ready.begin(), ready.end(),
+              [](const Slot* a, const Slot* b) { return a->value < b->value; });
+    for (Slot* slot : ready) {
+        resolve_slot(*slot);
+    }
 }
 
 void Recorder::begin() {
     VKML_ASSERT(!recording_, "Recorder::begin() called while already recording");
 
-    // The previous submission must have completed before its command buffer is
-    // reset. Waiting here rather than in submit() means the host can do useful
-    // work between submitting and recording the next batch.
-    wait(timeline_value_);
-    check(vkResetCommandBuffer(cmd_, 0), "vkResetCommandBuffer");
+    // Take the next slot in the ring and wait only for ITS OWN previous
+    // submission -- not for the most recent one, which is the whole point. With
+    // a single buffer this was `wait(timeline_value_)` and serialised the host
+    // against the GPU on every realise (docs/adr/0012 sec1).
+    current_ = (current_ + 1) % kRingSize;
+    Slot& slot = ring_[current_];
+
+    const bool anything_outstanding = work_outstanding();
+
+    if (slot.value != 0) {
+        // Blocks only when the GPU is kRingSize submissions behind.
+        wait(slot.value);
+    }
+    resolve_completed();
+
+    check(vkResetCommandBuffer(slot.cmd, 0), "vkResetCommandBuffer");
 
     VkCommandBufferBeginInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    check(vkBeginCommandBuffer(cmd_, &bi), "vkBeginCommandBuffer");
+    check(vkBeginCommandBuffer(slot.cmd, &bi), "vkBeginCommandBuffer");
     recording_ = true;
     label_.clear();  // a label must not leak from the previous submission
 
     if (profiling_) {
-        query_index_ = 0;
-        pending_.clear();
-        vkCmdResetQueryPool(cmd_, query_pool_, 0, kMaxQueries);
+        query_index_ = query_base(current_);
+        slot.pending.clear();
+        vkCmdResetQueryPool(cmd(), query_pool_, query_base(current_), kQueriesPerSlot);
 
         // Slots 0 and 1 are reserved for the WHOLE-SUBMIT window.
         //
@@ -206,8 +270,29 @@ void Recorder::begin() {
         // timing that stays valid when dispatches overlap. It is written here
         // but only REPORTED if the submit contained at least one dispatch --
         // see submit(), which preserves the download-profile guard below.
-        vkCmdWriteTimestamp2(cmd_, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool_, 0);
-        query_index_ = 2;
+        vkCmdWriteTimestamp2(cmd(), VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool_,
+                             query_base(current_));
+        query_index_ = query_base(current_) + 2;
+    }
+
+    // ORDERING AGAINST EARLIER SUBMISSIONS.
+    //
+    // Submissions to one queue are ordered, and a barrier's first scope covers
+    // every command submitted earlier in submission order -- including commands
+    // in earlier BATCHES. One barrier here therefore makes every prior write on
+    // this queue visible to everything recorded below.
+    //
+    // Needed because the host no longer waits between submissions. It is not
+    // enough that the compute path happens to end each submission with a
+    // barrier: copy_device_to_device ends with copies and none, so the property
+    // would hold by accident of one caller rather than by construction
+    // (docs/adr/0012 sec4b).
+    //
+    // Emitted only when something is actually in flight, so the common
+    // quiescent case -- the first submission after a wait -- pays nothing. The
+    // cost when it does fire is ~2.4 us against the ~42 us not blocking saves.
+    if (anything_outstanding) {
+        barrier();
     }
 }
 
@@ -218,9 +303,9 @@ void Recorder::dispatch(const PipelineCache::Pipeline& pipeline, const void* pus
         return;
     }
 
-    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+    vkCmdBindPipeline(cmd(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
     if (push_constant_bytes > 0) {
-        vkCmdPushConstants(cmd_, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+        vkCmdPushConstants(cmd(), pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            push_constant_bytes, push_constants);
     }
 
@@ -235,7 +320,7 @@ void Recorder::dispatch(const PipelineCache::Pipeline& pipeline, const void* pus
                                                    ctx_.info().max_workgroup_count[1]);
 
     begin_timestamp("dispatch", dispatch_count_ + 1);
-    vkCmdDispatch(cmd_, grid.groups_x, grid.groups_y, 1);
+    vkCmdDispatch(cmd(), grid.groups_x, grid.groups_y, 1);
     end_timestamp();
     ++dispatch_count_;
 }
@@ -246,9 +331,9 @@ void Recorder::dispatch_groups(const PipelineCache::Pipeline& pipeline, const vo
     if (group_count == 0) {
         return;
     }
-    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+    vkCmdBindPipeline(cmd(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
     if (push_constant_bytes > 0) {
-        vkCmdPushConstants(cmd_, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+        vkCmdPushConstants(cmd(), pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            push_constant_bytes, push_constants);
     }
     // Same ceiling as dispatch(), reached sooner: this path dispatches one group
@@ -267,7 +352,7 @@ void Recorder::dispatch_groups(const PipelineCache::Pipeline& pipeline, const vo
                "reduction needs {} workgroups ({} x {}) but the device allows {} x {}", group_count,
                groups_x, groups_y, max_x, ctx_.info().max_workgroup_count[1]);
     begin_timestamp("dispatch", dispatch_count_ + 1);
-    vkCmdDispatch(cmd_, static_cast<uint32_t>(groups_x), static_cast<uint32_t>(groups_y), 1);
+    vkCmdDispatch(cmd(), static_cast<uint32_t>(groups_x), static_cast<uint32_t>(groups_y), 1);
     end_timestamp();
     ++dispatch_count_;
 }
@@ -291,7 +376,7 @@ void Recorder::barrier() {
     dep.memoryBarrierCount = 1;
     dep.pMemoryBarriers = &mb;
 
-    vkCmdPipelineBarrier2(cmd_, &dep);
+    vkCmdPipelineBarrier2(cmd(), &dep);
 }
 
 void Recorder::copy(VkBuffer src, uint64_t src_offset, VkBuffer dst, uint64_t dst_offset,
@@ -304,7 +389,7 @@ void Recorder::copy(VkBuffer src, uint64_t src_offset, VkBuffer dst, uint64_t ds
     region.srcOffset = src_offset;
     region.dstOffset = dst_offset;
     region.size = bytes;
-    vkCmdCopyBuffer(cmd_, src, dst, 1, &region);
+    vkCmdCopyBuffer(cmd(), src, dst, 1, &region);
 }
 
 void Recorder::abort_recording() noexcept {
@@ -313,34 +398,37 @@ void Recorder::abort_recording() noexcept {
     }
     // End the buffer so it is in a legal state, then drop it. Nothing is
     // submitted, so no GPU work results.
-    vkEndCommandBuffer(cmd_);
+    vkEndCommandBuffer(cmd());
     recording_ = false;
 }
 
 uint64_t Recorder::submit() {
     VKML_ASSERT(recording_, "submit() without begin()");
 
+    Slot& slot = ring_[current_];
+
     // Close the whole-submit window, but ONLY when this submit actually
     // dispatched something. A download is a copy with no dispatches, and
-    // reporting a profile entry for it would make resolve_timestamps() clear
-    // the compute profile it is meant to preserve -- the 0.000 ms bug. Keying
-    // on pending_ being non-empty reuses that exact guard rather than inventing
-    // a second one that could drift from it.
-    if (profiling_ && !pending_.empty()) {
-        vkCmdWriteTimestamp2(cmd_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, query_pool_, 1);
+    // reporting a profile entry for it would make the resolve clear the compute
+    // profile it is meant to preserve -- the 0.000 ms bug. Keying on the
+    // pending list being non-empty reuses that exact guard rather than
+    // inventing a second one that could drift from it.
+    if (profiling_ && !slot.pending.empty()) {
+        vkCmdWriteTimestamp2(cmd(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, query_pool_,
+                             query_base(current_) + 1);
         // dispatch id 0: the whole-submit window is not a dispatch, and a
         // consumer joining on identity must not match it to one.
-        pending_.insert(pending_.begin(), Pending{"submit", 0, 0});
+        slot.pending.insert(slot.pending.begin(), Pending{"submit", query_base(current_), 0});
     }
 
-    check(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer");
+    check(vkEndCommandBuffer(cmd()), "vkEndCommandBuffer");
     recording_ = false;
 
     const uint64_t signal_value = timeline_value_ + 1;
 
     VkCommandBufferSubmitInfo cbsi{};
     cbsi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-    cbsi.commandBuffer = cmd_;
+    cbsi.commandBuffer = cmd();
 
     VkSemaphoreSubmitInfo ssi{};
     ssi.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -358,7 +446,23 @@ uint64_t Recorder::submit() {
     check(vkQueueSubmit2(ctx_.queue(), 1, &si, VK_NULL_HANDLE), "vkQueueSubmit2");
 
     timeline_value_ = signal_value;
+    slot.value = signal_value;
+    slot.resolved = !profiling_ || slot.pending.empty();
+
+    // Returns WITHOUT waiting. The caller decides when it needs the results,
+    // and the ones that need them at all are the host reads.
     return signal_value;
+}
+
+uint64_t Recorder::completed_value() const {
+    uint64_t value = 0;
+    // A poll. vkGetSemaphoreCounterValue does not block, which is what lets the
+    // allocator retire memory opportunistically without ever paying the ~40 us
+    // a real wait costs.
+    if (vkGetSemaphoreCounterValue(ctx_.device(), timeline_, &value) != VK_SUCCESS) {
+        return 0;
+    }
+    return value;
 }
 
 void Recorder::wait(uint64_t value) {
@@ -382,7 +486,7 @@ void Recorder::wait(uint64_t value) {
             value));
     }
     check(r, "vkWaitSemaphores");
-    resolve_timestamps();
+    resolve_completed();
 }
 
 void Recorder::wait_idle() {
@@ -455,6 +559,11 @@ void StagingBuffer::download(void* dst, const Allocation& src, uint64_t src_offs
         recorder_.copy(src_buffer, src.offset + src_offset + done, staging_buffer, staging_.offset,
                        chunk);
         const uint64_t ticket = recorder_.submit();
+
+        // THE synchronisation point. Submission is asynchronous, so the data
+        // being read here may be produced by a submission the host has never
+        // waited on; waiting for this copy's ticket covers all of them, because
+        // the timeline is monotonic and this copy was submitted last.
         recorder_.wait(ticket);
 
         // Host-coherent memory needs no invalidate before reading.

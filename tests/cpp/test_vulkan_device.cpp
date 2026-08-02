@@ -819,3 +819,90 @@ TEST_CASE("device-mapped allocations reuse their block") {
     alloc.free(first);
     CHECK(alloc.stats().live_allocations == 0);
 }
+
+// ---------------------------------------------------------------------------
+// ADR 0012 -- the command-buffer ring.
+//
+// `Recorder` used to hold ONE command buffer and one query cursor, so only one
+// submission could ever be un-resolved. With a ring, several are in flight at
+// once and each needs its OWN query range: a shared cursor would let one
+// submission's dispatches overwrite timestamps another had not yet read back.
+//
+// The ring wrapping is what makes that reachable, so the test submits more than
+// kRingSize times without waiting.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the command-buffer ring keeps each submission's timestamps separate") {
+    if (!have_device()) {
+        return;
+    }
+    Context ctx(0, false);
+    vkml::vk::Allocator alloc(ctx);
+    vkml::vk::Recorder rec(ctx, alloc);
+    vkml::vk::PipelineCache pipes(ctx);
+    rec.set_profiling(true);
+
+    constexpr uint32_t kWg = 64;
+    constexpr uint32_t kNumel = 256;
+    const auto buf = alloc.allocate(kNumel * 4, vkml::vk::MemoryKind::DeviceLocal, "ring");
+
+    struct FillPush {
+        uint64_t dst;
+        uint32_t n;
+        float base;
+        float step;
+    } push{buf.address, kNumel, 1.0F, 0.0F};
+
+    vkml::vk::KernelConfig cfg;
+    cfg.workgroup_size = kWg;
+    cfg.spec_constants = {kWg, 0};
+    const auto& pipe =
+        pipes.get("fill", vkml::spv::fill, vkml::spv::fill_size, sizeof(FillPush), cfg);
+
+    // Three times round the ring, submitting without waiting. Each submission
+    // carries a DIFFERENT number of dispatches, so a slot reading another
+    // slot's range would report the wrong count rather than merely the wrong
+    // numbers -- a failure that cannot be mistaken for timing noise.
+    const uint32_t rounds = vkml::vk::Recorder::kRingSize * 3;
+    for (uint32_t i = 0; i < rounds; ++i) {
+        const uint32_t dispatches = 1 + (i % 4);
+        rec.begin();
+        for (uint32_t d = 0; d < dispatches; ++d) {
+            rec.dispatch(pipe, &push, sizeof(push), kNumel);
+            rec.barrier();
+        }
+        CHECK(rec.submit() == uint64_t{i} + 1);
+    }
+    rec.wait_idle();
+
+    // Every submission completed, and the timeline agrees with the count.
+    CHECK(rec.submitted_count() == rounds);
+    CHECK(rec.completed_value() == rounds);
+    CHECK_FALSE(rec.work_outstanding());
+
+    // The last resolved profile describes ONE submission: its own `submit`
+    // window plus its own dispatches, and nothing borrowed from a neighbour.
+    const auto& profile = rec.profile();
+    REQUIRE_FALSE(profile.empty());
+    int submit_windows = 0;
+    for (const auto& entry : profile) {
+        if (entry.label == "submit") {
+            ++submit_windows;
+        }
+        // A slot that read another slot's queries would produce intervals from
+        // a different submission's origin, which shows up as a negative or
+        // absurd duration rather than as a plausible one.
+        CHECK(entry.gpu_ms >= 0.0);
+        CHECK(entry.gpu_ms < 1000.0);
+    }
+    CHECK(submit_windows == 1);
+
+    // Every entry in one profile belongs to one submission -- the field a
+    // consumer joins on, and the thing a shared query cursor would corrupt.
+    const uint64_t submission = profile.front().submission;
+    for (const auto& entry : profile) {
+        CHECK(entry.submission == submission);
+    }
+
+    alloc.free(buf);
+}

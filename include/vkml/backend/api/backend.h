@@ -70,6 +70,12 @@ public:
     [[nodiscard]] virtual bool supports(const Node& node) const = 0;
 
     /// Evaluates `nodes` in order. See the contract above.
+    ///
+    /// MAY RETURN BEFORE THE WORK HAS COMPLETED. An implementation is required
+    /// to have ORDERED the computation by the time this returns, not to have
+    /// finished it; the Vulkan backend submits and continues (docs/adr/0012).
+    /// Anything that reads a result on the host must `synchronize()` first, and
+    /// the paths that do already handle it.
     virtual void compute(std::span<Node* const> nodes) = 0;
 
     /// Copies host bytes into device storage.
@@ -110,7 +116,11 @@ public:
     }
 
     /// Blocks until all previously submitted work has completed. A no-op for
-    /// synchronous backends.
+    /// synchronous backends -- the CPU one, and any other whose `compute()`
+    /// finishes what it starts.
+    ///
+    /// Since docs/adr/0012 this is the ONLY way to establish that a Vulkan
+    /// result is in memory without reading it. It is not a diagnostic.
     virtual void synchronize() {}
 };
 

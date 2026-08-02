@@ -807,6 +807,9 @@ struct VulkanBackend::Impl {
         StorageAllocator(Impl& impl, Device dev) : impl_(impl), device_(dev) {}
 
         [[nodiscard]] std::shared_ptr<Storage> allocate(size_t nbytes) override {
+            // Reclaim anything the GPU has finished with before asking for more,
+            // so a steady-state loop reuses its own memory instead of growing.
+            impl_.drain_retired();
             const vk::Allocation a = impl_.allocator.allocate(nbytes, vk::MemoryKind::DeviceLocal);
 
             // The device address is what a Storage's `data()` reports. It is
@@ -828,7 +831,7 @@ struct VulkanBackend::Impl {
                     const std::lock_guard<std::mutex> lock(impl_.map_mutex);
                     impl_.live.erase(a.address);
                 }
-                impl_.allocator.free(a);
+                impl_.retire_later(a);
             });
         }
 
@@ -870,11 +873,76 @@ struct VulkanBackend::Impl {
             return splitk_ws.address;
         }
         if (splitk_ws.valid()) {
-            allocator.free(splitk_ws);
+            retire_later(splitk_ws);
             splitk_ws = {};
         }
         splitk_ws = allocator.allocate(bytes, vk::MemoryKind::DeviceLocal);
         return splitk_ws.address;
+    }
+
+    // -- deferred deallocation ----------------------------------------------
+    //
+    // Submission is asynchronous, so a Storage can die while a dispatch that
+    // writes its memory is still running. Returning the range to the free list
+    // there would let the next tensor be handed memory the GPU is still writing:
+    // no fault, no validation message, just two tensors sharing one range and
+    // results that are wrong intermittently. See docs/adr/0012 sec4d.
+    //
+    // This lives in the backend rather than in the Allocator because it is the
+    // only place that knows both the allocator and the recorder's timeline. The
+    // Allocator keeps its existing contract -- free() means the memory is free
+    // NOW -- and nothing has to reason about two kinds of free.
+
+    struct Retirement {
+        vk::Allocation alloc;
+        uint64_t after;  ///< timeline value the GPU must pass first
+    };
+
+    std::mutex retire_mutex;
+    std::vector<Retirement> retiring;
+
+    /// Frees `alloc` once the GPU has passed everything submitted so far.
+    ///
+    /// Stamping with the CURRENT submission count is conservative and needs no
+    /// per-allocation tracking of which submissions touched it: anything that
+    /// could reference this memory was submitted at or before now.
+    void retire_later(const vk::Allocation& alloc) {
+        if (!alloc.valid()) {
+            return;
+        }
+        const uint64_t submitted = recorder.submitted_count();
+        {
+            const std::lock_guard<std::mutex> lock(retire_mutex);
+            retiring.push_back(Retirement{alloc, submitted});
+        }
+        drain_retired();
+    }
+
+    /// Returns to the free list everything the GPU has finished with.
+    ///
+    /// A poll, never a wait: `completed_value()` is
+    /// vkGetSemaphoreCounterValue, so calling this on any hot path costs a
+    /// driver query and nothing else.
+    void drain_retired() {
+        const uint64_t completed = recorder.completed_value();
+        std::vector<vk::Allocation> ready;
+        {
+            const std::lock_guard<std::mutex> lock(retire_mutex);
+            auto out = retiring.begin();
+            for (auto in = retiring.begin(); in != retiring.end(); ++in) {
+                if (in->after <= completed) {
+                    ready.push_back(in->alloc);
+                } else {
+                    *out++ = *in;
+                }
+            }
+            retiring.erase(out, retiring.end());
+        }
+        // Freed outside the lock: Allocator::free takes its own, and holding
+        // two in a fixed order here would make a third caller's ordering matter.
+        for (const vk::Allocation& a : ready) {
+            allocator.free(a);
+        }
     }
 
     Impl(int index, bool validation, uint64_t staging_bytes)
@@ -2518,10 +2586,23 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
     }
 
     const uint64_t ticket = rec.submit();
-    // M1 is synchronous: wait here rather than returning a handle. Overlapping
-    // host and device work is a performance change and needs the execution
-    // graph to know what is safe to defer.
-    rec.wait(ticket);
+
+    // NO WAIT. The results are ordered, not yet present; whoever reads them on
+    // the host synchronises first (copy_to_host, item(), synchronize()). This is
+    // the invariant docs/adr/0012 changes, and it is worth ~42 us per
+    // submission -- seven of them in an MNIST step.
+    //
+    // One thing still forces the old behaviour: the dispatch trace below reads
+    // the profile on the host immediately, and a profile is only valid once its
+    // submission has completed.
+    //
+    // Eager mode also needs a wait, so that a failure is attributable to the
+    // operation that caused it -- but that decision is NOT taken here. `eager()`
+    // lives in dispatch, which is layer 5 against this file's layer 4, and the
+    // executor is where the knowledge already is. See realize().
+    if (debug_dispatch_enabled()) {
+        rec.wait(ticket);
+    }
 
     if (debug_dispatch_enabled()) {
         // Printed straight from the profile, which carries its own labels.
@@ -2621,7 +2702,10 @@ void VulkanBackend::copy_device_to_device(std::span<const BufferCopy> copies) {
     }
 
     if (recording) {
-        rec.wait(rec.submit());
+        // Submitted, not waited on. Nothing here is read by the host; the copies
+        // are ordered against later work by submission order plus the barrier
+        // begin() emits, and anything that does read them synchronises first.
+        (void)rec.submit();
     }
 }
 
@@ -2693,11 +2777,20 @@ uint64_t VulkanBackend::profile_submissions_resolved() const {
 
 void VulkanBackend::set_subgroup_override(uint32_t size) { impl_->subgroup_override = size; }
 
-void VulkanBackend::synchronize() { impl_->recorder.wait_idle(); }
+void VulkanBackend::synchronize() {
+    impl_->recorder.wait_idle();
+    // Everything has completed, so every deferred free is now due.
+    impl_->drain_retired();
+}
 
 void VulkanBackend::trim() { impl_->allocator.trim(); }
 
 VulkanStats VulkanBackend::stats() const {
+    // Reclaim first, so the report describes what is genuinely held rather than
+    // what the GPU has merely not been asked about. Without this, a caller that
+    // frees everything, synchronises and then reads the stats would see its own
+    // freed allocations still counted -- a leak that is not one.
+    impl_->drain_retired();
     const vk::AllocatorStats a = impl_->allocator.stats();
     VulkanStats s;
     s.reserved_bytes = a.reserved_bytes;

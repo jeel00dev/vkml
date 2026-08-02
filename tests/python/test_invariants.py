@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -1601,3 +1602,102 @@ def test_an_overlapping_assignment_inside_a_batch_still_works(on_gpu):
 @pytest.mark.parametrize("on_gpu", [False, pytest.param(True, marks=requires_vulkan)])
 def test_assigning_nothing_is_allowed(on_gpu):
     V.assign([], [])
+
+
+# ---------------------------------------------------------------------------
+# ADR 0012 -- asynchronous submission.
+#
+# WHAT THESE CAN AND CANNOT ESTABLISH, stated because the gap matters more than
+# the coverage. ADR 0012 rests on four hazards; only two of them are observable
+# from here.
+#
+# Verified below: that submission is genuinely asynchronous, and that the
+# deferred-free queue returns every allocation it defers.
+#
+# NOT verified by anything, on this hardware: cross-submission ordering. The
+# leading barrier `Recorder::begin()` emits was removed on purpose and all 1550
+# tests still passed, because RADV serialises submissions to one queue in
+# practice -- so no test here can distinguish correct synchronisation from none.
+# It is required by the specification, not by anything measurable on this
+# machine, and vkML's use of buffer device addresses means the validation layer
+# cannot see it either (ADR 0006 sec8). A driver that overlaps submissions would
+# be the first thing able to tell.
+# ---------------------------------------------------------------------------
+
+
+@requires_vulkan
+def test_realize_does_not_wait_for_the_gpu():
+    """`realize()` must return before the work it queued has run.
+
+    The invariant ADR 0012 introduces, and the one a future change is most
+    likely to undo by reinstating a wait "to be safe". Timing is the only signal
+    available -- there is no host-visible flag for "the GPU is still busy" -- so
+    the workload is sized to make the two arms differ by far more than the noise
+    rather than by a threshold chosen to pass.
+    """
+    device = gpu_device()
+    a = V.tensor(np.ones((512, 512), dtype=np.float32), device=device)
+
+    def build():
+        x = a
+        for _ in range(12):
+            x = x @ a
+        return x
+
+    with V.eager_mode(False):
+        for _ in range(3):  # warm pipelines and clocks
+            V.realize(build())
+        V.vulkan_synchronize()
+
+        submit_only = float("inf")
+        with_wait = float("inf")
+        for _ in range(5):
+            root = build()
+            t0 = time.perf_counter()
+            V.realize(root)
+            submit_only = min(submit_only, time.perf_counter() - t0)
+            V.vulkan_synchronize()
+
+            root = build()
+            t0 = time.perf_counter()
+            V.realize(root)
+            V.vulkan_synchronize()
+            with_wait = min(with_wait, time.perf_counter() - t0)
+
+    assert submit_only * 3 < with_wait, (
+        f"realize() took {submit_only * 1e6:.0f} us against {with_wait * 1e6:.0f} us "
+        "including the wait -- submission looks synchronous again"
+    )
+
+
+@requires_vulkan
+def test_deferred_frees_are_all_returned():
+    """Every allocation the retirement queue defers must come back.
+
+    Submission is asynchronous, so an allocation freed while work is in flight
+    cannot be returned to the free list immediately -- a later tensor could be
+    handed memory a running dispatch is still writing (ADR 0012 sec4d). It is
+    therefore queued, and a queue that never drains is a leak that the old
+    synchronous design could not have had.
+
+    Deliberately runs LAZILY. In eager mode the executor synchronises after
+    every realise, so nothing is ever outstanding and the deferral never
+    happens -- the test would pass while exercising none of it.
+    """
+    device = gpu_device()
+    before = V.vulkan_stats(0)
+
+    def churn():
+        with V.eager_mode(False):
+            for _ in range(200):
+                t = V.full([4096], 1.0, device=device)
+                V.realize(V.relu(t))
+
+    churn()
+    V.vulkan_synchronize()
+    after = V.vulkan_stats(0)
+
+    assert after["live_allocations"] == before["live_allocations"], (
+        f"{after['live_allocations'] - before['live_allocations']} allocation(s) never came "
+        "back -- the retirement queue is not draining"
+    )

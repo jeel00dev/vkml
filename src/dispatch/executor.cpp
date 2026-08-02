@@ -131,6 +131,18 @@ void realize(std::span<const NodePtr> roots) {
     VKML_LOG_DEBUG("realize: {} nodes on {}", order.size(), device.str());
     backend.compute(order);
 
+    // Eager mode means "a failure surfaces at the operation that caused it",
+    // which stopped being automatic when compute() stopped waiting (ADR 0012).
+    // Without this an eager run would report a device error at whatever later
+    // call happened to synchronise, which is precisely the diagnosis eager mode
+    // exists to avoid.
+    //
+    // Here rather than in the backend because `eager()` is dispatch's own state:
+    // a backend is layer 4 and could not ask without inverting the layering.
+    if (eager()) {
+        backend.synchronize();
+    }
+
     // Every scheduled node now holds its value. This is the ONLY place a
     // computed graph node is marked, and it happens after compute() returns
     // rather than during binding -- which is the whole point of the split: a

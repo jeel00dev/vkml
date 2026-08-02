@@ -131,6 +131,20 @@ def realize(*tensors) -> None:
 
     Variadic here, a list at the C++ boundary, because the call sites read
     better this way -- ``V.realize(*params)`` is what an optimiser wants.
+
+    **Returns before the GPU has run the work.** On the Vulkan backend this
+    orders the computation and continues; the host blocks only where a value is
+    actually read -- :meth:`Tensor.item`, ``.numpy()``, or an explicit
+    :func:`vulkan_synchronize`. That is worth 3.4x per submission and 1.35x on
+    an MNIST step (``docs/adr/0012-asynchronous-submission.md``).
+
+    Two consequences worth knowing:
+
+    * A shader error surfaces at whatever call next synchronises, not here. Run
+      with ``VKML_EAGER=1`` to get the old behaviour back while debugging.
+    * :func:`vulkan_last_profile` describes the last *completed* submission.
+      Calling it straight after this returns the previous one's intervals; wait
+      first.
     """
     _C.realize(list(tensors))
 

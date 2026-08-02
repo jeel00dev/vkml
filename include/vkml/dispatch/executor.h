@@ -23,6 +23,21 @@ namespace vkml {
 /// intermediate before phase 3 begins, so peak memory is the sum of all
 /// intermediates rather than the true high-water mark. Correct, and fine at
 /// MNIST scale; replacing it is precisely what M5 exists for.
+///
+/// RETURNS BEFORE THE WORK HAS RUN. On a backend that submits asynchronously --
+/// Vulkan does, since docs/adr/0012 -- this ORDERS the computation rather than
+/// performing it. Afterwards every node is marked computed, which means "its
+/// value is determined", not "its bytes are in memory yet".
+///
+/// The distinction only escapes here through a HOST READ, and every one of them
+/// synchronises first: `Tensor::item`, `.numpy()`, anything reaching
+/// `Backend::copy_to_host`. Code that reads device memory by another route owes
+/// itself a `Backend::synchronize()`; there is no way to ask a node whether its
+/// bytes have landed, deliberately, because the only correct answer for a
+/// caller is to wait.
+///
+/// Eager mode does wait, and that is the point of it: a failure names the
+/// operation that caused it.
 void realize(std::span<const NodePtr> roots);
 
 void realize(const NodePtr& root);

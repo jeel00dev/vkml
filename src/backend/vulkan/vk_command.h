@@ -74,24 +74,53 @@ struct ProfileEntry {
 /// ------------------------
 /// Two primitives, both deliberately the simplest correct choice:
 ///
-/// 1. A GLOBAL MEMORY BARRIER between dependent dispatches. Not a per-buffer
-///    barrier: a single vkCmdPipelineBarrier with shaderRead|shaderWrite on
-///    both sides. This is what llama.cpp does, and the reason is that tracking
-///    per-buffer hazards costs more CPU time than the barrier costs GPU time,
-///    for a graph where almost every node depends on its predecessor anyway.
+/// 1. A GLOBAL MEMORY BARRIER after EVERY dispatch. Not a per-buffer barrier:
+///    a single vkCmdPipelineBarrier with shaderRead|shaderWrite on both sides.
 ///    It is conservative -- it orders more than strictly necessary -- which is
-///    the right default when correctness comes first.
+///    the right default when the executor supplies no aliasing information.
 ///
-///    The barrier is NOT optional. Without it a dispatch may read a buffer
-///    another dispatch is still writing; the GPU does not serialise dispatches
-///    on its own. When the M5 planner knows which nodes alias, this can become
-///    selective, and that is the one place skipping it will be justified.
+///    The barrier is NOT optional under that policy. Without it a dispatch may
+///    read a buffer another dispatch is still writing; the GPU does not
+///    serialise dispatches on its own.
+///
+///    WHAT IT COSTS, measured: ~2.4 us, which roughly DOUBLES the GPU time of
+///    small independent work -- sixteen disjoint dispatches take 79.2 us with
+///    barriers and 40.6 us without (docs/SMALL-STEP-LATENCY.md 2). Of the
+///    ~5.4 us a graph node costs, about half is this.
+///
+///    This comment used to say the always-barrier policy "is what llama.cpp
+///    does". IT IS NOT, and the claim survived for months because nobody
+///    checked it. ggml-vulkan.cpp keeps `unsynced_nodes_written` and
+///    `unsynced_nodes_read`, compares buffer RANGES in `overlaps_unsynced`, and
+///    emits its global barrier only when a real overlap is found. What vkML
+///    took from llama.cpp is the barrier's FORM -- global rather than
+///    per-buffer -- and the policy is the opposite of llama.cpp's. Selective
+///    barriers become available once the planner knows which nodes alias.
 ///
 /// 2. A TIMELINE SEMAPHORE for host-side completion. One monotonically
 ///    increasing counter per stream, incremented per submit; waiting for value
 ///    N means "everything up to submit N has finished". This replaces fences
 ///    entirely -- no fence pool, no reset, no per-submit object -- and is why
 ///    the device requires timelineSemaphore.
+///
+/// SUBMISSION IS ASYNCHRONOUS
+/// --------------------------
+/// `submit()` does not wait, and neither does the compute path above it. A
+/// RING of command buffers is what makes that possible: with one buffer,
+/// `begin()` had to wait for the previous submission before it could reset it,
+/// so host and GPU never overlapped.
+///
+/// Measured, one trivial dispatch per submission: 59.3 us blocking, 36.3 us
+/// with a ring of two, 17.7 us with four, 17.4 us with eight. Two is not enough
+/// -- the host comes back to a buffer still in flight -- and eight buys nothing
+/// over four. See docs/adr/0012.
+///
+/// The caller therefore owes the hazard argument that used to be free:
+///   - `wait()` before reading any result on the host;
+///   - allocations freed while work is outstanding must not be reused until the
+///     GPU has passed them (the Allocator's retirement queue);
+///   - ordering between submissions comes from submission order plus the
+///     leading barrier `begin()` emits while anything is in flight.
 class Recorder {
 public:
     Recorder(Context& ctx, Allocator& allocator);
@@ -143,6 +172,16 @@ public:
     /// Blocks until every submission has completed.
     void wait_idle();
 
+    /// The timeline value the GPU has actually reached, without blocking.
+    ///
+    /// A poll, so a caller can retire resources when the device happens to be
+    /// ahead without ever paying the ~40 us wake-up a real wait costs. This is
+    /// what makes the allocator's deferred free free.
+    [[nodiscard]] uint64_t completed_value() const;
+
+    /// Whether any submission has been made that the GPU has not finished.
+    [[nodiscard]] bool work_outstanding() const { return completed_value() < timeline_value_; }
+
     /// Enables timestamp queries around each dispatch.
     ///
     /// Off by default and genuinely zero-cost when off: no query pool is
@@ -154,7 +193,14 @@ public:
 
     [[nodiscard]] bool profiling() const noexcept { return profiling_; }
 
-    /// Intervals from the most recent submission. Valid after wait().
+    /// Intervals from the most recently COMPLETED submission.
+    ///
+    /// "Completed", not "made". Submission is asynchronous, so the newest
+    /// submission usually has not run and its timestamps cannot be read back;
+    /// this holds the newest one that has. Calling it straight after a submit
+    /// therefore returns the PREVIOUS submission's intervals, which used to be
+    /// impossible and is now the normal case -- `wait()` first if that matters.
+    /// It caught bench/latency_bench.py, which understated GPU time by 3x.
     [[nodiscard]] const std::vector<ProfileEntry>& profile() const noexcept { return profile_; }
 
     /// Retains the last `max_submissions` submissions' intervals instead of
@@ -221,14 +267,28 @@ public:
     /// carries the same value, and a consumer joins them.
     [[nodiscard]] uint64_t next_dispatch_id() const noexcept { return dispatch_count_ + 1; }
 
-private:
-    void reset_command_buffer();
+    /// Command buffers in the ring.
+    ///
+    /// Four, measured: two still blocks (36.3 us against 17.7), eight is no
+    /// better than four. docs/adr/0012 has the table.
+    static constexpr uint32_t kRingSize = 4;
 
+    /// Query slots reserved per ring slot, so concurrent submissions cannot
+    /// overwrite each other's timestamps.
+    ///
+    /// 1024 keeps the PER-SUBMISSION capacity exactly what it was before the
+    /// ring existed -- two slots per dispatch plus the whole-submit pair, so 511
+    /// dispatches. Partitioning a 1024-slot pool four ways instead would have
+    /// quietly cut that to 127, and a graph past it stops recording timestamps
+    /// rather than failing, which is the kind of regression nobody notices
+    /// until a profile is missing its tail. The pool costs 8 bytes a slot.
+    static constexpr uint32_t kQueriesPerSlot = 1024;
+
+private:
     Context& ctx_;
     Allocator& allocator_;
 
     VkCommandPool pool_ = VK_NULL_HANDLE;
-    VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     VkSemaphore timeline_ = VK_NULL_HANDLE;
 
     uint64_t timeline_value_ = 0;
@@ -247,9 +307,35 @@ private:
         uint64_t dispatch = 0;  ///< 0 when the interval is not a dispatch
     };
 
-    std::vector<Pending> pending_;
+    /// One ring slot: a command buffer, and whatever has not been resolved for
+    /// the submission it last carried.
+    ///
+    /// The pending list lives HERE rather than on the Recorder because several
+    /// submissions can now be in flight at once, each with its own timestamps
+    /// waiting to be read back. A single shared list would resolve one
+    /// submission's queries against another's, which is the bug the old
+    /// single-buffer design could not have.
+    struct Slot {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        uint64_t value = 0;  ///< timeline value of its last submission; 0 if never used
+        std::vector<Pending> pending;
+        bool resolved = true;  ///< false between submit() and resolve
+    };
+
+    std::vector<Slot> ring_;
+    uint32_t current_ = 0;  ///< the slot begin() opened
+
     std::vector<ProfileEntry> profile_;
     double total_gpu_ms_ = 0.0;
+
+    [[nodiscard]] VkCommandBuffer cmd() const { return ring_[current_].cmd; }
+
+    /// First query index belonging to `slot`.
+    [[nodiscard]] static uint32_t query_base(uint32_t slot) { return slot * kQueriesPerSlot; }
+
+    /// Reads back and publishes every slot the GPU has finished with.
+    void resolve_completed();
+    void resolve_slot(Slot& slot);
 
     // Retention. `history_spans_` holds one entry count per retained
     // submission, so the oldest can be dropped without re-scanning for
@@ -261,7 +347,6 @@ private:
 
     void begin_timestamp(const char* label, uint64_t dispatch_id = 0);
     void end_timestamp();
-    void resolve_timestamps();
     void retain(const std::vector<ProfileEntry>& entries);
 };
 

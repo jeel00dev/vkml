@@ -72,6 +72,9 @@ slope, which is what makes the two separable at all:
 ```
 
 > **A submission costs ~66 µs. A node costs ~5 µs and the GPU owns it.**
+>
+> These are the *before* numbers, kept because everything below is reasoning from them. §6 has
+> what they became.
 
 An MNIST step makes **seven** submissions — two uploads, one backward, three optimiser, two
 for `.item()` — so roughly 460 µs of the 1189 is submission overhead before any arithmetic.
@@ -199,26 +202,40 @@ Two things this settles:
   sweep in `EXTENSIBILITY-ROADMAP.md` §4a is the same effect seen from the other end — the two
   GPUs stop tying above batch 256 precisely when the arithmetic grows past the constant.
 
-## 6. The next concrete step
+## 6. Asynchronous submission — done, and what it moved
 
-**Asynchronous submission**, and it is an ADR before it is code, because it changes a stated
-invariant -- `Recorder` is documented as synchronous and `dispatch/executor.h` relies on it.
-Its parts, in order:
+Implemented as `docs/adr/0012-asynchronous-submission.md`: a ring of four command buffers,
+`realize()` submitting without waiting, a deferred-free queue, and a leading barrier carrying
+the cross-submission ordering.
 
-1. A **ring of command buffers** so `begin()` need not wait for the previous submission.
-   Depth 4, from the table in §4.
-2. `realize()` **submits without waiting**; `copy_to_host` and `item()` wait first.
-3. A **deferred-free queue**. Under the synchronous model an allocation could be released the
-   moment its `Storage` died, because nothing was ever in flight. Asynchronously it can be
-   handed to a new tensor while a running dispatch still writes it.
-4. A **cross-submission hazard argument**. Within a submission the global barrier orders
-   everything; between submissions on one queue, ordering needs stating rather than assuming.
-   `docs/adr/0006` §8 records that vkML's synchronisation cannot be machine-checked -- it uses
-   buffer device addresses, so the validation layer sees no resource access -- so this argument
-   has to be made on the specification and held by construction.
+The projection stated **before** the work was ~340 µs of 1189, "a 1.4× step". Measured after:
 
-Expected effect, from §4: seven blocking submissions per step at ~66 µs become seven
-non-blocking ones at ~17 µs, worth roughly **340 µs of the 1189**. That is a **1.4× step**,
-and the honest projection is stated before the work rather than after. The step does not get
-7× faster because the block is not the only thing in it -- §2's table accounts for 460 µs of
-1189, and the rest is upload, autograd graph construction and Python.
+```
+                                 before      after
+  per submission (fixed)       66.32 us   19.52 us     3.4x
+  per node (marginal, wall)     4.83 us    2.40 us
+  per node (marginal, GPU)      5.40 us    5.35 us     unchanged
+
+  MNIST MLP 784-128-10, b=64     1189 us     883 us     1.35x
+```
+
+The per-node GPU cost did not move, which is the control: nothing about the barriers between
+nodes changed, so a figure that *had* moved would mean the measurement was wrong.
+
+## 7. What is now the largest line
+
+The host is no longer the per-node bottleneck — 2.40 µs of wall against 5.35 µs of GPU — so the
+order of the remaining work has changed:
+
+1. **The barrier between every node, ~2.4 µs of the 5.35.** §2's table measures it at 1.68–1.95×
+   of GPU time for independent dispatches. llama.cpp's `overlaps_unsynced` shows the shape of
+   the fix: track written and read ranges, barrier only on a real overlap. It needs aliasing
+   information the executor does not yet produce, so it is an ADR before it is code.
+2. **`vkQueueSubmit2` at ~16.5 µs, seven times per step.** With the block gone this is the
+   floor, and the only lever left is fewer submissions — batching upload, backward and the
+   optimiser into one. ADR 0006 already took this from 39 to 8.
+3. **The ~630 µs of a step that is none of the above**: upload (219 µs), autograd graph
+   construction, and the Python model code. Unattributed, and now the largest share.
+
+Command-buffer replay stays rejected on §4's number until submissions are batched enough that
+recording is a meaningful share of one — at 0.24 µs a dispatch, about seventy of them.
