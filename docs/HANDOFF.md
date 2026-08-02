@@ -119,6 +119,31 @@ is now spent, because it is satisfiable by changing the batch size. A successor
 should name a **step at a fixed shape**: host and driver below 20% of a batch-64
 MNIST step, say.
 
+## #118's premise is partly disproven
+
+"8 unmet P1 modules" was measured by name grep against an API that deliberately
+uses **PyTorch's spellings**. Three of the eight existed five days before the
+audit was written:
+
+```
+  Attention / MultiHeadAttention  ->  nn.MultiheadAttention      (c12622b)
+  TransformerBlock                ->  nn.TransformerEncoderLayer (c12622b)
+  FeedForward                     ->  inside the encoder layer, as torch keeps it
+```
+
+`PROJECT-SCOPE-ANALYSIS.md` had already confessed this exact mistake once, for
+the losses, in the same table — and made it again in the row above. The cause is
+permanent: the manifesto uses one vocabulary and the code another, on purpose.
+
+`scripts/check_module_coverage.py` now **declares** the mapping and fails when a
+declared target stops resolving. **28 of 34 present, 6 real gaps:** Conv1d,
+Conv3d, PositionalEncoding, DataLoader prefetch (#22), DataLoader transforms
+(#23), autograd checkpointing.
+
+`PositionalEncoding` is the interesting one — it is what stands between the
+existing attention/encoder modules and a GPT-shaped model, which is
+PHASE2-MANIFESTO P3.
+
 ## Next concrete step — a decision, not an implementation
 
 Eight submissions per CIFAR step: 2 uploads, 1 backward, 3 optimiser, 2 for

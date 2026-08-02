@@ -82,13 +82,23 @@ P6 optimisation · P7 engineering excellence · P8 community readiness · P9 cro
 
 ### EVIDENCE — P1 measured against the code
 
-Verified by importing the built module and inspecting the API, 2026-08-02:
+**Now generated, not written.** `scripts/check_module_coverage.py` maps every P1 item to the
+API symbol that satisfies it and fails if a declared target stops resolving. Run it:
+
+```
+28 of 34 P1 modules present, 6 not implemented
+not implemented: Conv1d, Conv3d, PositionalEncoding, DataLoader prefetch,
+                 DataLoader transforms, autograd checkpointing
+```
 
 | P1 item | State |
 |---|---|
-| Linear, Conv2d, Embedding | present |
+| Linear, Conv2d, Embedding, BatchNorm2d, LayerNorm, Dropout, pooling, Flatten, Sequential | present |
 | **Conv1d, Conv3d** | **absent** |
-| **Attention, MultiHeadAttention, FeedForward, PositionalEncoding, TransformerBlock** | **absent** |
+| Attention / MultiHeadAttention | present as **`nn.MultiheadAttention`** |
+| TransformerBlock | present as **`nn.TransformerEncoderLayer`** |
+| FeedForward | present, **inside the encoder layer** as `linear1`/activation/`linear2` — where torch keeps it too |
+| **PositionalEncoding** | **absent** |
 | SGD, Momentum, Adam, AdamW, RMSProp | present |
 | MSE, CrossEntropy, BCE, KL, Huber | present — as functions (`mse_loss`, `cross_entropy`, `binary_cross_entropy_with_logits`, `kl_div`, `huber_loss`), not classes |
 | Dataset, DataLoader, batching, shuffling | present |
@@ -96,12 +106,33 @@ Verified by importing the built module and inspecting the API, 2026-08-02:
 | model save/load/checkpoint | present (`V.Checkpoint`) |
 | **autograd checkpointing** | **absent** — `V.Checkpoint` is model serialisation, a different thing |
 
-A correction to my own first pass: I initially recorded all five losses as absent. That was a
-class-name grep against an API that exposes them as functions. The losses are complete.
+#### The same mistake, twice, for a permanent reason
+
+The first pass of this table recorded **all five losses as absent** — a class-name grep
+against an API that exposes them as functions. The correction was made and the cause
+written down.
+
+**The row above it was wrong for the same reason and was not caught.** *"Attention,
+MultiHeadAttention, FeedForward, PositionalEncoding, TransformerBlock — absent"* was three
+parts wrong: `MultiheadAttention` and `TransformerEncoderLayer` had existed since
+`c12622b`, **five days before this document was written**, and the feed-forward block lives
+inside the latter.
+
+The condition is permanent, which is why it produced the same error twice. **vkML
+deliberately uses PyTorch's spellings** — `nn.py` says so at the encoder layer: *"Parameter
+names match `torch.nn.TransformerEncoderLayer` so a state_dict loads unchanged"* — and the
+manifesto uses its own. A grep for either name is wrong about half the list, and will stay
+wrong.
+
+So the mapping between the two vocabularies is now **declared, in
+`scripts/check_module_coverage.py`**, and the gate fails if a declared target stops
+resolving. The remaining risk is the opposite one — an item built and nobody adding it to
+the map — which is a one-line edit rather than a re-derivation, and which shows up as a
+count that has not moved.
 
 **Cross-checked against `README.md`**, which independently lists *"Missing layers: Conv1d,
-Conv3d, gradient checkpointing"* — agreeing with the measurement on three of the gaps and
-silent on the five transformer modules.
+Conv3d, gradient checkpointing"* — agreeing on three of the six real gaps, and silent on
+the rest.
 
 ---
 

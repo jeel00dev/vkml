@@ -225,6 +225,15 @@ jobs:
       - name: Documentation examples
         run: python scripts/check_docs_examples.py
 
+      # The manifesto's P1 module list against the API that exists. Written
+      # after PROJECT-SCOPE-ANALYSIS recorded three transformer modules as
+      # absent five days after they were built -- a name grep against an API
+      # that deliberately uses PyTorch's spellings. This one fails when a
+      # declared mapping stops resolving, so the list cannot drift silently in
+      # either direction.
+      - name: Manifesto P1 module coverage
+        run: python scripts/check_module_coverage.py
+
       # Line numbers are the part of a source reference that goes stale
       # quietly: inserting lines at the top of a header moves every link below
       # it, the file still exists, the link still resolves, and it now points at

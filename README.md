@@ -715,7 +715,8 @@ half an hour in:
   today: `prod`. It is listed here
   as well as there because it is a real limit on what vkML can run, whatever the
   reasoning behind it.
-- **Missing layers:** Conv1d, Conv3d, gradient checkpointing.
+- **Missing layers:** Conv1d, Conv3d, positional encoding, gradient checkpointing.
+  `python scripts/check_module_coverage.py` generates this list from the API rather than restating it — 28 of the manifesto's 34 P1 modules are present.
 - **Tensors are limited to rank 4.** This is a deliberate push-constant budget
   decision, not an oversight.
 - **f16 matmul is correct but slower than f32**, because the vectorised tile load

@@ -99,6 +99,17 @@ CONTROLS: list[Control] = [
         artifacts="the generated layer diagram on arch-overview",
     ),
     Control(
+        gate="check_module_coverage.py",
+        guards="a declared P1 module mapping that no longer resolves",
+        source_of_truth="the imported vkml API, against the manifesto's P1 list",
+        target="scripts/check_module_coverage.py",
+        find='("Linear", "nn.Linear", ""),',
+        replace='("Linear", "nn.LinearLayer", ""),',
+        defect="a module renamed without the completeness list following it -- which "
+               "reads as a gap that was never closed, or a gap silently reopened",
+        artifacts="PROJECT-SCOPE-ANALYSIS's P1 evidence table",
+    ),
+    Control(
         gate="check_css_bindings.py",
         guards="markup and stylesheet disagreeing about which classes exist",
         source_of_truth="web/_site against web/theme/vkml.css",

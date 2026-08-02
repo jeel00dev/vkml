@@ -148,6 +148,7 @@ python scripts/check_push_constants.py
 python scripts/check_precise_gemm.py
 python scripts/check_docs_references.py
 python scripts/check_docs_examples.py     # needs a built extension
+python scripts/check_module_coverage.py   # the manifesto's P1 list vs the API
 python scripts/check_versions.py
 python scripts/check_design_system.py   # font/colour scale
 python scripts/check_min_spec.py        # the Vulkan guaranteed floor is still tested
