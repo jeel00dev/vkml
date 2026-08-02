@@ -208,11 +208,45 @@ float relu_op(float x) {
 /// agrees on -0.0, so the old behaviour matched neither reference (issue #27).
 ///
 /// GLSL's built-in sign() would give the right answer for -0.0 and is undefined
-/// for NaN, so the comparisons are still written out.
+/// for NaN, so the comparisons are written out.
+///
+/// THE SIGN OF THE ZERO IS NORMALISED EXPLICITLY, and two drivers disagree
+/// about why that is needed. Written as the obvious chain --
+///
+///     if (x > 0.0) { return 1.0; }
+///     if (x < 0.0) { return -1.0; }
+///     return 0.0;
+///
+/// -- this returns **-0.0 on lavapipe for every input that falls through**:
+/// +0.0, -0.0, +NaN and -NaN alike, measured by reading the bits back. RADV
+/// gives +0.0 for the same SPIR-V, so it went unnoticed until a second driver
+/// ran it. The transform that explains it is merging the `-1.0` and `0.0`
+/// returns into a negation, whose zero case is -0.0; many optimisers treat the
+/// sign of a zero as free to change.
+///
+/// Two rewrites were measured on both drivers before this one was chosen:
+///
+///   - Spelling the zero as `uintBitsToFloat(0u)` does nothing. It compiles to
+///     BYTE-IDENTICAL SPIR-V, because glslang folds it long before a driver
+///     sees it -- verified by hashing the generated module.
+///   - `float(x > 0.0) - float(x < 0.0)` is branchless and fixes lavapipe, and
+///     it is WRONG ON RADV: NaN comes back as -1.0, so the comparison it
+///     compiles to is not the ordered one the source asks for. It would have
+///     traded one driver's bug for another's.
+///
+/// So the branches stay -- they are correct on RADV, and ordered comparisons
+/// make NaN fall through with the zeros -- and the result's sign bit is cleared
+/// when its magnitude is zero. That is a no-op for ±1.0 and forces +0.0 for
+/// everything else, whatever the optimiser did on the way.
 float sign_op(float x) {
-    if (x > 0.0) { return 1.0; }
-    if (x < 0.0) { return -1.0; }
-    return 0.0;
+    float r = 0.0;
+    if (x > 0.0) {
+        r = 1.0;
+    } else if (x < 0.0) {
+        r = -1.0;
+    }
+    const uint bits = floatBitsToUint(r);
+    return (bits & 0x7fffffffu) == 0u ? 0.0 : r;
 }
 
 float apply_op(float x) {
