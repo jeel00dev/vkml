@@ -1701,3 +1701,60 @@ def test_deferred_frees_are_all_returned():
         f"{after['live_allocations'] - before['live_allocations']} allocation(s) never came "
         "back -- the retirement queue is not draining"
     )
+
+
+@requires_vulkan
+def test_an_upload_does_not_drain_queued_work():
+    """Uploading must wait for the staging buffer, not for the whole queue.
+
+    `StagingBuffer::upload` blocks so the staging memory is not overwritten
+    while a copy still reads it. Waiting on the copy's own ticket AFTER
+    submitting it does that -- and, once submission became asynchronous, also
+    drains every earlier submission, because the timeline is monotonic. An
+    upload in the middle of a training step therefore drained the whole step.
+
+    The wait belongs immediately before the next memcpy instead, which is the
+    thing it actually protects. Measured: 477 us behind queued work against
+    109 us on an idle device, and 40 us after the fix.
+    """
+    device = gpu_device()
+    batch = np.random.rand(64, 1, 28, 28).astype(np.float32)
+    weights = V.tensor(np.random.rand(512, 512).astype(np.float32), device=device)
+
+    def queue_real_work():
+        with V.eager_mode(False):
+            x = weights
+            for _ in range(8):
+                x = x @ weights
+            V.realize(x)
+
+    def upload():
+        return V.tensor(batch, device=device)
+
+    with V.eager_mode(False):
+        for _ in range(10):  # warm pipelines and clocks
+            queue_real_work()
+            upload()
+        V.vulkan_synchronize()
+
+        idle = float("inf")
+        behind = float("inf")
+        for _ in range(20):
+            V.vulkan_synchronize()
+            t0 = time.perf_counter()
+            upload()
+            idle = min(idle, time.perf_counter() - t0)
+
+            V.vulkan_synchronize()
+            queue_real_work()
+            t0 = time.perf_counter()
+            upload()
+            behind = min(behind, time.perf_counter() - t0)
+        V.vulkan_synchronize()
+
+    # Generous: the claim is "does not drain the queue", and the queued work is
+    # far longer than an upload. A drain would put `behind` well above `idle`.
+    assert behind < idle * 2.0, (
+        f"an upload behind queued work took {behind * 1e6:.0f} us against "
+        f"{idle * 1e6:.0f} us on an idle device -- it is draining the queue"
+    )

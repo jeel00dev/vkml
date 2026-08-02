@@ -208,6 +208,14 @@ Implemented as `docs/adr/0012-asynchronous-submission.md`: a ring of four comman
 `realize()` submitting without waiting, a deferred-free queue, and a leading barrier carrying
 the cross-submission ordering.
 
+**End to end, against the frozen baseline at `d399fdd`** — a realistic MNIST step, DataLoader
+and upload and `loss.item()` included, minimum of 200:
+
+```
+  before   1603 us
+  after    1045 us      1.53x
+```
+
 The projection stated **before** the work was ~340 µs of 1189, "a 1.4× step". Measured after:
 
 ```
@@ -254,10 +262,26 @@ before it, the two were strictly additive.
    driver (ADR 0012 §4b bis). An unverifiable safety mechanism guarding the project's defining
    guarantee is a bad trade at 4%. Revisit if a workload appears with genuinely wide
    independent work, or on a driver that can falsify it.
-2. **`vkQueueSubmit2` at ~16.5 µs, six times per step.** With the block gone this is the floor,
+2. ~~**The upload, 352 µs.**~~ **Fixed, and it was a regression this change caused.**
+   `StagingBuffer::upload` blocks so the staging memory is not overwritten while a copy still
+   reads it, and it did that by waiting on the copy's own ticket *after* submitting. That is
+   equivalent while every submission blocks anyway, and wrong once they do not: the timeline is
+   monotonic, so waiting on a later ticket drains **every earlier submission**. An upload in the
+   middle of a step drained the step.
+
+   The wait belongs immediately *before* the next memcpy, which is the thing it actually
+   protects. A single-chunk upload — every tensor smaller than the 32 MiB staging buffer — now
+   blocks not at all.
+
+   ```
+     one 200 KiB upload, device idle           109 us
+     the same, behind a step's queued work     477 us   ->   40 us
+   ```
+
+3. **`vkQueueSubmit2` at ~16.5 µs, six times per step.** With the block gone this is the floor,
    and the only lever left is fewer submissions — batching upload, backward and the optimiser
    into one. ADR 0006 already took this from 39 to 8.
-3. **`loss.item()`, 371 µs of the 863.** Attributed by removal rather than by synchronising
+4. **`loss.item()`, 371 µs of the 863.** Attributed by removal rather than by synchronising
    between phases, which would destroy the overlap being measured:
 
    ```

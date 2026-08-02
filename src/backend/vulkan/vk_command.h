@@ -382,6 +382,20 @@ private:
     Allocator& allocator_;
     Recorder& recorder_;
     Allocation staging_;
+
+    /// Timeline value of the last submission that READS the staging memory.
+    ///
+    /// An upload memcpys into the staging buffer and then queues a copy out of
+    /// it. Overwriting it while that copy is still running would corrupt the
+    /// transfer, so the host must wait -- but only for THAT, and only
+    /// immediately before the next memcpy.
+    ///
+    /// Waiting after the submit instead, which is what this did while every
+    /// submission blocked anyway, drains every earlier submission too: the
+    /// timeline is monotonic, so a later ticket implies all the earlier ones.
+    /// Measured after submission went asynchronous, one 200 KiB upload cost
+    /// 109 us on an idle device and 477 us behind a training step's queued work.
+    uint64_t staging_ticket_ = 0;
 };
 
 }  // namespace vkml::vk

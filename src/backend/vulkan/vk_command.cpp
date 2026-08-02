@@ -522,6 +522,23 @@ void StagingBuffer::upload(const void* src, const Allocation& dst, uint64_t dst_
     while (done < bytes) {
         const uint64_t chunk = std::min(bytes - done, staging_.size);
 
+        // Wait for the PREVIOUS use of the staging memory, immediately before
+        // overwriting it -- not after submitting, which is where this wait used
+        // to be.
+        //
+        // The distinction did not matter while every submission blocked. It
+        // matters now: the timeline is monotonic, so waiting on this copy's own
+        // ticket drains EVERY submission made before it, and an upload in the
+        // middle of a training step therefore drained the whole step. Measured:
+        // one 200 KiB upload cost 109 us on an idle device and 477 us behind a
+        // step's queued work.
+        //
+        // Moving it here is not a weaker guarantee. What the wait protects is
+        // the staging buffer against being rewritten while a copy still reads
+        // it, and that is exactly what waiting before the memcpy establishes. A
+        // single-chunk upload -- every tensor smaller than the staging buffer,
+        // which is the common case -- now blocks not at all.
+        recorder_.wait(staging_ticket_);
         std::memcpy(staging_.mapped, bytes_in + done, chunk);
 
         recorder_.begin();
@@ -529,13 +546,7 @@ void StagingBuffer::upload(const void* src, const Allocation& dst, uint64_t dst_
                        chunk);
         // The copy must be visible to any shader that reads this buffer next.
         recorder_.barrier();
-        const uint64_t ticket = recorder_.submit();
-
-        // Blocking before reusing the staging memory. A ring of several
-        // regions would let the next memcpy overlap this copy; that is a
-        // performance change and is deliberately deferred until measurements
-        // justify it.
-        recorder_.wait(ticket);
+        staging_ticket_ = recorder_.submit();
         done += chunk;
     }
 }
@@ -560,11 +571,16 @@ void StagingBuffer::download(void* dst, const Allocation& src, uint64_t src_offs
                        chunk);
         const uint64_t ticket = recorder_.submit();
 
-        // THE synchronisation point. Submission is asynchronous, so the data
-        // being read here may be produced by a submission the host has never
-        // waited on; waiting for this copy's ticket covers all of them, because
-        // the timeline is monotonic and this copy was submitted last.
+        // THE synchronisation point, and the only one that cannot be deferred:
+        // the memcpy below reads host memory the GPU is filling. Submission is
+        // asynchronous, so the data may be produced by a submission nobody has
+        // waited on; this copy's ticket covers all of them, because the timeline
+        // is monotonic and this copy was submitted last.
+        //
+        // It therefore also covers the staging buffer's own previous use, which
+        // is what `staging_ticket_` guards on the upload path.
         recorder_.wait(ticket);
+        staging_ticket_ = ticket;
 
         // Host-coherent memory needs no invalidate before reading.
         std::memcpy(bytes_out + done, staging_.mapped, chunk);
