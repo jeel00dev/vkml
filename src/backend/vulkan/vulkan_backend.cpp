@@ -2495,9 +2495,25 @@ std::vector<ProfileRecord> VulkanBackend::last_profile_records() const {
     // a field -- and so this one can be deleted without touching the other.
     std::vector<ProfileRecord> out;
     for (const vk::ProfileEntry& e : impl_->recorder.profile()) {
-        out.push_back(ProfileRecord{e.label, e.gpu_ms, e.dispatch});
+        out.push_back(ProfileRecord{e.label, e.gpu_ms, e.start_ms, e.submission, e.dispatch});
     }
     return out;
+}
+
+void VulkanBackend::set_profile_history(size_t max_submissions) {
+    impl_->recorder.set_profile_history(max_submissions);
+}
+
+std::vector<ProfileRecord> VulkanBackend::profile_history() const {
+    std::vector<ProfileRecord> out;
+    for (const vk::ProfileEntry& e : impl_->recorder.profile_history()) {
+        out.push_back(ProfileRecord{e.label, e.gpu_ms, e.start_ms, e.submission, e.dispatch});
+    }
+    return out;
+}
+
+uint64_t VulkanBackend::profile_submissions_resolved() const {
+    return impl_->recorder.profile_submissions_resolved();
 }
 
 void VulkanBackend::set_subgroup_override(uint32_t size) { impl_->subgroup_override = size; }

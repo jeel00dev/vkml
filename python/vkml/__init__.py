@@ -202,6 +202,10 @@ if has_vulkan:
     vulkan_set_subgroup_override = _C.vulkan_set_subgroup_override
     vulkan_pipeline_stats = _C.vulkan_pipeline_stats
     vulkan_profile_records = _C.vulkan_profile_records
+    vulkan_set_profile_history = _C.vulkan_set_profile_history
+    vulkan_profile_history = _C.vulkan_profile_history
+    vulkan_profile_submissions_resolved = _C.vulkan_profile_submissions_resolved
+    vulkan_synchronize = _C.vulkan_synchronize
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +384,13 @@ class eager_mode:
         return False
 
 
-from . import data, nn, optim, serialize  # noqa: E402  (last: they import from this module)
+from . import (  # noqa: E402  (last: they import from this module)
+    attribution,
+    data,
+    nn,
+    optim,
+    serialize,
+)
 from .serialize import Checkpoint, load, load_module, save, save_module  # noqa: E402
 
 __all__ = [name for name in dir() if not name.startswith("_")]

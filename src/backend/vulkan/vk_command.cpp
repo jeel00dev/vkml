@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include <format>
+#include <limits>
 
 namespace vkml::vk {
 
@@ -73,6 +74,31 @@ void Recorder::set_profiling(bool enabled) {
     }
 }
 
+void Recorder::set_profile_history(size_t max_submissions) {
+    history_limit_ = max_submissions;
+    history_resolved_ = 0;
+    history_.clear();
+    history_spans_.clear();
+    if (max_submissions == 0) {
+        history_.shrink_to_fit();
+    }
+}
+
+void Recorder::retain(const std::vector<ProfileEntry>& entries) {
+    if (history_limit_ == 0 || entries.empty()) {
+        return;
+    }
+    ++history_resolved_;
+    history_.insert(history_.end(), entries.begin(), entries.end());
+    history_spans_.push_back(entries.size());
+
+    while (history_spans_.size() > history_limit_) {
+        const size_t oldest = history_spans_.front();
+        history_spans_.pop_front();
+        history_.erase(history_.begin(), history_.begin() + static_cast<ptrdiff_t>(oldest));
+    }
+}
+
 void Recorder::begin_timestamp(const char* label, uint64_t dispatch_id) {
     if (!profiling_ || query_index_ + 2 > kMaxQueries) {
         return;
@@ -114,17 +140,30 @@ void Recorder::resolve_timestamps() {
     if (r == VK_SUCCESS) {
         // Ticks are device-specific; timestampPeriod converts to nanoseconds.
         const double ns_per_tick = static_cast<double>(ctx_.info().timestamp_period);
+
+        // Every interval is reported relative to one origin, so that a consumer
+        // can place them on a common line and take their union. The earliest
+        // start is that origin -- normally the whole-submit window's, which is
+        // written before any other command, but taken as a minimum rather than
+        // assumed so that a profile without a submit entry is still coherent.
+        uint64_t origin = std::numeric_limits<uint64_t>::max();
+        for (const auto& p : pending_) {
+            origin = std::min(origin, raw[p.slot]);
+        }
+
         for (const auto& [label, slot, dispatch_id] : pending_) {
             const uint64_t start = raw[slot];
             const uint64_t end = raw[slot + 1];
             const double ms =
                 end > start ? static_cast<double>(end - start) * ns_per_tick / 1e6 : 0.0;
-            profile_.push_back(ProfileEntry{label, ms, dispatch_id});
+            const double start_ms = static_cast<double>(start - origin) * ns_per_tick / 1e6;
+            profile_.push_back(ProfileEntry{label, ms, start_ms, timeline_value_, dispatch_id});
             // Only the whole-submit window accumulates; see total_gpu_ms().
             if (label == "submit") {
                 total_gpu_ms_ += ms;
             }
         }
+        retain(profile_);
     }
     pending_.clear();
 }

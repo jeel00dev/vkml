@@ -216,6 +216,20 @@ std::vector<int> to_axes(const nb::object& obj, int ndim) {
     return axes;
 }
 
+#if defined(VKML_HAS_VULKAN)
+/// One measured interval as a dict. Shared by the last-submission and the
+/// retained-history views so the two cannot describe the same fact differently.
+nb::dict profile_record(const vkml::ProfileRecord& r) {
+    nb::dict e;
+    e["label"] = r.label;
+    e["gpu_ms"] = r.gpu_ms;
+    e["start_ms"] = r.start_ms;
+    e["submission"] = r.submission;
+    e["dispatch"] = r.dispatch;
+    return e;
+}
+#endif
+
 }  // namespace
 
 NB_MODULE(_vkml_core, m) {
@@ -854,17 +868,53 @@ NB_MODULE(_vkml_core, m) {
             for (const vkml::ProfileRecord& r :
                  static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index))
                      .last_profile_records()) {
-                nb::dict e;
-                e["label"] = r.label;
-                e["gpu_ms"] = r.gpu_ms;
-                e["dispatch"] = r.dispatch;
-                out.append(e);
+                out.append(profile_record(r));
             }
             return out;
         },
         "index"_a = 0,
         "Measured GPU intervals carrying the DispatchId each one measured. Join "
         "against decisions() on `dispatch` to attribute cost to a kernel choice.");
+    m.def(
+        "vulkan_synchronize", [](int index) { vkml::vulkan_backend(index).synchronize(); },
+        "index"_a = 0,
+        "Block until every submission has completed. Anything timing a region "
+        "with a host clock must call this before stopping it: work that has "
+        "been SUBMITTED has not been measured.");
+    m.def(
+        "vulkan_set_profile_history",
+        [](size_t submissions, int index) {
+            static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index))
+                .set_profile_history(submissions);
+        },
+        "submissions"_a, "index"_a = 0,
+        "Retain the last N submissions' intervals instead of only the most "
+        "recent. 0 disables and frees them. A training step is many "
+        "submissions, so attributing one needs more than the last.");
+    m.def(
+        "vulkan_profile_history",
+        [](int index) {
+            nb::list out;
+            for (const vkml::ProfileRecord& r :
+                 static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index)).profile_history()) {
+                out.append(profile_record(r));
+            }
+            return out;
+        },
+        "index"_a = 0,
+        "Every retained submission's intervals, oldest first. Group by "
+        "`submission`: `start_ms` is measured from that submission's own "
+        "window, and only whole-submit windows may be summed across them.");
+    m.def(
+        "vulkan_profile_submissions_resolved",
+        [](int index) {
+            return static_cast<vkml::VulkanBackend&>(vkml::vulkan_backend(index))
+                .profile_submissions_resolved();
+        },
+        "index"_a = 0,
+        "Submissions offered to the retention window, INCLUDING any it "
+        "dropped. Compare with the distinct `submission` values in "
+        "vulkan_profile_history() to detect a truncated report.");
     m.def(
         "vulkan_set_subgroup_override",
         [](uint32_t size, int index) {

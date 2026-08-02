@@ -5,6 +5,7 @@
 #include "vk_pipeline.h"
 
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -15,6 +16,34 @@ namespace vkml::vk {
 struct ProfileEntry {
     std::string label;
     double gpu_ms = 0.0;
+
+    /// Where the interval STARTS, in milliseconds after its submission's own
+    /// window opened. With `gpu_ms` this makes the entry an interval rather
+    /// than a duration, and that is the difference between an attribution a
+    /// consumer can trust and one it cannot.
+    ///
+    /// Durations alone cannot distinguish dispatches that ran one after another
+    /// from dispatches that ran at the same time, so a consumer summing them
+    /// silently multiply-counts the concurrent case. Measured: split-K's
+    /// sixteen partitions each report ~0.065 ms and sum to 1.056 ms against a
+    /// true submission window of 0.105 ms, giving a REMAINDER OF -0.95 ms. A
+    /// negative remainder is the visible symptom; the invisible one is every
+    /// per-kernel share being wrong by the same factor.
+    ///
+    /// With intervals the consumer takes the UNION and the arithmetic closes.
+    /// Only meaningful against entries from the same `submission` -- each
+    /// submission's window is its own origin.
+    double start_ms = 0.0;
+
+    /// Which submission this interval belongs to: the timeline value the
+    /// recorder signalled for it. IDENTITY, NOT DESCRIPTION, exactly as
+    /// `dispatch` below.
+    ///
+    /// Required to read `start_ms` at all, and required by rule 3: whole-submit
+    /// windows may be summed across submissions because submissions are serial,
+    /// while the intervals inside one may not. A consumer that loses track of
+    /// which submission an entry came from cannot honour either rule.
+    uint64_t submission = 0;
 
     /// Which dispatch this interval measured, or 0 when the interval is not a
     /// dispatch (the whole-submission entry is the case that exists today).
@@ -128,6 +157,39 @@ public:
     /// Intervals from the most recent submission. Valid after wait().
     [[nodiscard]] const std::vector<ProfileEntry>& profile() const noexcept { return profile_; }
 
+    /// Retains the last `max_submissions` submissions' intervals instead of
+    /// only the most recent. 0 -- the default -- disables retention and frees
+    /// what was held.
+    ///
+    /// A training step is many submissions (twelve, measured, for an MLP), and
+    /// `profile()` holds one. Anything reasoning about a STEP rather than a
+    /// dispatch therefore had nothing to read, which is why per-kernel cost
+    /// across a step could not be computed from outside. This is retention
+    /// only: it stores what is already produced and interprets none of it.
+    void set_profile_history(size_t max_submissions);
+
+    /// Every retained submission's intervals, oldest first, grouped by
+    /// `ProfileEntry::submission`. Empty unless retention was asked for.
+    [[nodiscard]] const std::vector<ProfileEntry>& profile_history() const noexcept {
+        return history_;
+    }
+
+    /// Submissions offered to the window since retention began, INCLUDING any
+    /// it dropped. Compare with the distinct submissions in
+    /// `profile_history()` to detect truncation.
+    ///
+    /// The parallel to `decisions_published()`, and it exists for the same
+    /// reason: a bounded window that silently drops its oldest entries
+    /// produces a report that is quietly wrong rather than visibly short.
+    ///
+    /// Counts SUBMISSIONS WITH DISPATCHES, which is not every submission --
+    /// a download is a copy with nothing to time. `submitted_count()` is the
+    /// other number, and the difference between the two is itself worth
+    /// reading.
+    [[nodiscard]] uint64_t profile_submissions_resolved() const noexcept {
+        return history_resolved_;
+    }
+
     /// Names subsequent dispatches, for the profile report. Applies until
     /// changed or until the next begin(), so an op that issues SEVERAL
     /// dispatches -- split-K GEMM, a multi-level reduction -- names all of
@@ -189,9 +251,18 @@ private:
     std::vector<ProfileEntry> profile_;
     double total_gpu_ms_ = 0.0;
 
+    // Retention. `history_spans_` holds one entry count per retained
+    // submission, so the oldest can be dropped without re-scanning for
+    // submission boundaries.
+    size_t history_limit_ = 0;
+    uint64_t history_resolved_ = 0;
+    std::vector<ProfileEntry> history_;
+    std::deque<size_t> history_spans_;
+
     void begin_timestamp(const char* label, uint64_t dispatch_id = 0);
     void end_timestamp();
     void resolve_timestamps();
+    void retain(const std::vector<ProfileEntry>& entries);
 };
 
 /// Host-visible scratch used to move data to and from device-local memory.

@@ -125,7 +125,11 @@ struct DeviceReport {
 struct ProfileRecord {
     std::string label;
     double gpu_ms = 0.0;
-    uint64_t dispatch = 0;  ///< 0 when the interval is not a dispatch
+    /// Start of the interval, milliseconds after its own submission's window
+    /// opened. Only comparable within one `submission`.
+    double start_ms = 0.0;
+    uint64_t submission = 0;  ///< which submission the interval belongs to
+    uint64_t dispatch = 0;    ///< 0 when the interval is not a dispatch
 };
 
 class VulkanBackend final : public Backend {
@@ -177,6 +181,26 @@ public:
     /// kernel ran, which stays the backend's fact
     /// (docs/OBSERVABILITY-ARCHITECTURE.md 4b).
     [[nodiscard]] std::vector<ProfileRecord> last_profile_records() const;
+
+    /// Retains the last `max_submissions` submissions' intervals. 0 disables.
+    ///
+    /// `last_profile_records()` covers one submission and a training step is
+    /// many, so attributing a STEP needs the recorder to keep more than the
+    /// most recent. Retention only -- nothing here interprets what it stores.
+    void set_profile_history(size_t max_submissions);
+
+    /// Every retained submission's intervals, oldest first.
+    ///
+    /// Group by `ProfileRecord::submission`: `start_ms` is measured from that
+    /// submission's own window, and whole-submit windows may be summed across
+    /// submissions where the intervals inside one may not
+    /// (docs/MEASUREMENT-AUDIT.md 3, rule 3).
+    [[nodiscard]] std::vector<ProfileRecord> profile_history() const;
+
+    /// Submissions offered to the retention window, including any it dropped.
+    /// Compare with the distinct submissions in `profile_history()`: a report
+    /// built from a truncated window is wrong rather than short.
+    [[nodiscard]] uint64_t profile_submissions_resolved() const;
 
     /// Overrides the subgroup width kernels request, for measurement.
     ///
