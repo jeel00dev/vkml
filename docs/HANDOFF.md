@@ -8,10 +8,9 @@ next session has absorbed it — it is a note, not a document.
 `main` is **17 commits ahead of `origin/main`** and has not been pushed. Working
 tree clean.
 
-Green: `ctest` on release, debug and asan · 1543 Python tests · 1537 at
-`VKML_MIN_SPEC=1` · the CPU-only suite · all 17 gates, 11 with an automated
-control · `mutation_check --patterns` 30/30 · the site at 61 pages, 113
-documented members, every link resolving.
+Green: `ctest` on release · 1550 Python tests · 1544 at `VKML_MIN_SPEC=1` ·
+the CPU-only suite · all 17 gates, 11 with an automated control · the site at
+61 pages, 113 documented members, every link resolving.
 
 ---
 
@@ -43,8 +42,32 @@ predicting the next one** (`docs/adr/0006` §10, §11, §12):
   GPU / wall         0.58      0.64       0.66          0.76
 ```
 
-No kernel changed and every result is bit-identical. `matmul` at 23.7% is now
-the largest line in the table, which it has never been before.
+No kernel changed and every result is bit-identical.
+
+**Then two kernel changes, each found by re-running the same measurement.**
+
+`docs/adr/0010` — `reduce.comp` launched one workgroup per output, so a weight
+gradient folding 64 samples into 73,728 values launched 73,728 workgroups to do
+64 loads each. Throughput tracked the workgroup count, not the bytes: 1.6 GB/s
+at four elements per output. A second lane-per-output structure, chosen on
+coalescing and occupancy, gives **up to 83× on the kernel**.
+
+`docs/adr/0011` — `im2col` and `col2im` were **ALU-bound on integer division**.
+`relu` moving the same bytes ran at 228–235 GB/s while `im2col` managed 29–44,
+because it performed nine integer divisions per output element and a 3×3
+`col2im` performed *thirty-six*. Specialising the geometry lets the compiler
+strength-reduce every one, unroll the loops, and delete the `x % stride` test
+where stride is 1.
+
+```
+                 at P0  scheduling  reductions  unfold
+  sum, share       —      14.9%       4.7%       3.6%+1.7%
+  im2col + col2im  —      15.9%      15.9%       6.1%
+  step wall     13.57 ms  10.07 ms    8.87 ms    8.07 ms
+```
+
+**13.57 ms → 8.07 ms, a 1.68× end-to-end speedup**, every result bit-identical.
+`matmul` at 30.3% is now by far the largest line in the table.
 
 **P1 module completeness: 28 → 31 of 34.** `PositionalEncoding`, `Conv1d` and
 DataLoader transforms built; the list is now *generated* by
@@ -108,22 +131,28 @@ driver below 20% of a batch-64 MNIST step, say.
 
 So the open question is what comes next, and the profile now answers most of it:
 
-1. **Convolution — the largest measured item after `matmul`, and #101 is
-   verified.** `im2col` (10.7%) + `col2im` (5.2%) is **15.9% of a step spent
-   moving memory** so the GEMM can be dense. Worse, the weight-gradient path
+1. **`matmul`, at 30.3% and now by far the largest line.** `M3_ROADMAP`'s
+   sixteen GEMM items were deferred on the argument that arithmetic was a
+   quarter of a step; it is ~70%, and `matmul` alone is nearly a third. At the
+   CNN's shapes it reaches 890–2320 GFLOP/s. The headroom is real, and unlike
+   ADR 0010 and 0011 it is an *arithmetic* problem rather than an addressing
+   one — which is why it was hard and they were not.
+2. **`max_pool2d_backward` at 9.6%**, the second-largest and entirely
+   unexamined. It recomputes the argmax rather than storing it, so it re-reads
+   the whole forward input. Worth measuring against its bandwidth roof before
+   assuming that is the cost — the last two kernels that looked memory-bound
+   were not.
+3. **Convolution's structure, and #101 is verified.** The weight-gradient path
    materialises a per-sample gradient — **18.9 MB for one layer of one step** —
    before reducing it. ADR 0010 made that reduction 20× faster, which was the
    cheap half; the expensive half is that the intermediate exists at all.
-   Implicit GEMM (CUTLASS is cloned) removes the im2col write; folding the batch
-   into the GEMM's K axis removes the weight-gradient one.
-2. **`M3_ROADMAP`'s GEMM work is no longer mis-sequenced.** The argument for
-   deferring it was that arithmetic was a quarter of a CIFAR step. It is now
-   ~70%, and `matmul` alone is **25.6%** — the largest single line.
-3. **Remaining P1 completeness.** Conv3d needs a genuinely 3-D `im2col` and does
+   Folding the batch into the GEMM's K axis removes it. Implicit GEMM (CUTLASS
+   is cloned) would delete `im2col` rather than speed it up.
+4. **Remaining P1 completeness.** Conv3d needs a genuinely 3-D `im2col` and does
    not compose. **Autograd checkpointing needs an autograd extension point that
    does not exist** — `apply_backward` is a closed switch over `OpKind`, so a
    user-defined backward has nowhere to go. That is an ADR before it is code.
-4. **The R-series** (#119–#123): release verification, mutation coverage, a
+5. **The R-series** (#119–#123): release verification, mutation coverage, a
    performance regression gate, and a public claim generated from measurement.
 
 ## The one open decision, unchanged
