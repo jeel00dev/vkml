@@ -52,7 +52,12 @@ jobs:
       - name: Build vkml and install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy nanobind scikit-build-core pillow
+          # clang-format is PINNED, and it is here for verify_gates rather than
+          # for this workflow's own checks. check_format.py refuses any other
+          # version, so without it that gate stays red whatever the dashboard
+          # does to the source -- reported as "the gate stayed red after the
+          # damage was reverted", which names the wrong cause.
+          python -m pip install numpy nanobind scikit-build-core pillow clang-format==18.1.8
           # EDITABLE, and that is not a stylistic choice. web/build.py puts the
           # source tree's python/ on sys.path, so python/vkml/__init__.py
           # shadows any site-packages copy and then fails to find _vkml_core,
