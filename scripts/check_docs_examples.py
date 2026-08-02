@@ -76,8 +76,23 @@ def all_examples():
 
 norm = lambda s: re.sub(r"\s+", " ", s).strip()
 
-bad = checked = 0
+# A transcript that needs a Vulkan device cannot be checked by a build that has
+# none, and reporting it as a MISMATCH is wrong twice over: the page is not
+# wrong, and the first failure poisons every later statement in the block
+# through NameError on a variable the failed line was meant to bind. Three CI
+# jobs build CPU-only, so this is the ordinary case, not the exotic one.
+#
+# Skipped per BLOCK rather than per statement, precisely because of that
+# cascade. Counted and printed, so "checked" never quietly means "checked the
+# easy ones" -- a gate reporting PASS over content it did not open is the
+# failure mode all_examples() above already exists to prevent.
+NEEDS_DEVICE = re.compile(r"init_vulkan|vulkan:\d|vulkan_")
+
+bad = checked = skipped = 0
 for name, block in all_examples():
+    if not vkml.has_vulkan and NEEDS_DEVICE.search(block):
+        skipped += 1
+        continue
     for stmt, claimed, actual in run_example(block):
         # A line marked as machine-specific is reported, not failed: the device
         # index and driver version legitimately differ per machine.
@@ -89,5 +104,6 @@ for name, block in all_examples():
             print(f"  MISMATCH {name}: {stmt}")
             print(f"    claimed: {claimed}")
             print(f"    actual : {actual}")
-print(f"\n  {checked} statements checked, {bad} mismatches")
+note = f", {skipped} blocks skipped (no Vulkan in this build)" if skipped else ""
+print(f"\n  {checked} statements checked, {bad} mismatches{note}")
 sys.exit(1 if bad else 0)
