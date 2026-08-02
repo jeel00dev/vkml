@@ -86,8 +86,13 @@ MUTATIONS = [
      "if (h >= 0 && h < p.image_h && x >= 0 && x < p.image_w) {",
      "if (h >= 0 && h < p.image_h && x >= 0 && x < p.image_w || true) {", "test_im2col"),
 
+    # STRIDE_H, not p.stride_h: ADR 0011 moved the geometry into specialisation
+    # constants so the compiler could strength-reduce the division, and this
+    # anchor was left pointing at the old spelling. It decayed at 53758a9 and
+    # nothing noticed, because the CI step that runs --patterns sits after
+    # clang-format in a job where clang-format had been failing.
     ("col2im: drop the stride-boundary test", "shaders/col2im.comp",
-     "if (top < 0 || (top % p.stride_h) != 0) { continue; }",
+     "if (top < 0 || (top % STRIDE_H) != 0) { continue; }",
      "if (top < 0) { continue; }", "test_col2im"),
 
     ("max_pool2d: tie rule picks the last maximum", "shaders/max_pool2d.comp",
