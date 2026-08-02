@@ -168,9 +168,32 @@ def main() -> int:
         print("\n  Delete them, or record why they are kept in EXEMPT_UNUSED.\n",
               file=sys.stderr)
 
-    if unstyled or unused:
+    # --- structure the stylesheet expects and the markup must supply -----
+    #
+    # `pre .copy` styles a button the renderers put inside every code block.
+    # A `<pre>` without one is not a class mismatch, it is the same defect a
+    # level up: markup and stylesheet disagreeing about what an element
+    # contains. Found by hand -- highlight_raw_blocks() coloured hand-written
+    # blocks and did not give them the button, so get-started.html shipped six
+    # code blocks and zero copy buttons.
+    bare: list[tuple[str, int]] = []
+    for page in pages:
+        blocks = re.findall(r"<pre\b.*?</pre>", page.read_text(), re.S)
+        missing = sum(1 for b in blocks if 'class="copy"' not in b)
+        if missing:
+            bare.append((page.name, missing))
+    if bare:
+        print(f"\n  {sum(n for _, n in bare)} code block(s) with no copy button, "
+              f"which `pre .copy` styles and both renderers emit:", file=sys.stderr)
+        for name, n in bare:
+            print(f"    {name}: {n}", file=sys.stderr)
+        print("\n  A <pre> reached the site without going through code_block() or "
+              "highlight_raw_blocks().\n", file=sys.stderr)
+
+    if unstyled or unused or bare:
         return 1
-    print("  every element is styled by something, and every rule has a user")
+    print("  every element is styled by something, every rule has a user, "
+          "and every code block has its button")
     return 0
 
 

@@ -292,6 +292,11 @@ REPL_LINE = re.compile(r"^(>>> |\.\.\. )(.*)$")
 
 RAW_PRE = re.compile(r"<pre><code>(.*?)</code></pre>", re.S)
 
+#: One definition, used by both renderers. `pre .copy` in the stylesheet expects
+#: it inside every block, and scripts/check_css_bindings.py fails if a `<pre>`
+#: reaches the site without one.
+COPY_BUTTON = '<button class="copy" type="button">copy</button>'
+
 
 def highlight_raw_blocks(html_text: str) -> str:
     """Colour <pre><code> written by hand in web/content/.
@@ -305,12 +310,48 @@ def highlight_raw_blocks(html_text: str) -> str:
     added by hand in future is coloured for free instead of depending on the
     author remembering. The source inside is already escaped, so it is
     unescaped before tokenising and re-escaped by highlight() as it goes.
+
+    The copy button is NOT added here; see ensure_copy_buttons(), which covers
+    every block rather than only the ones this pass rewrites.
     """
     def paint(m: re.Match) -> str:
         src = html.unescape(m.group(1))
         return f"<pre><code>{highlight(src)}</code></pre>"
 
     return RAW_PRE.sub(paint, html_text)
+
+
+ANY_PRE = re.compile(r"<pre\b[^>]*>", re.S)
+
+
+def ensure_copy_buttons(html_text: str) -> str:
+    """Every code block gets the control the stylesheet styles.
+
+    WHY A PASS AND NOT A RULE FOR AUTHORS. `pre .copy` expects a button inside
+    every block, and three separate things emit blocks: code_block(),
+    highlight_raw_blocks(), and hand-written HTML in web/content/. The first
+    added the button, the second did not, and the third could not -- so
+    get-started.html shipped six code blocks and zero copy buttons, on the page
+    a reader is most likely to copy a command from.
+
+    Adding the button in each emitter would have left the third uncovered and
+    the next emitter uncovered too. One pass over the finished body covers all
+    of them, including the two hand-tokenised REPL transcripts in guide.py that
+    deliberately do not go through either renderer.
+
+    scripts/check_css_bindings.py fails if a <pre> reaches the site without one,
+    so this pass cannot quietly stop working.
+    """
+    out, last = [], 0
+    for m in ANY_PRE.finditer(html_text):
+        end = html_text.find("</pre>", m.end())
+        block = html_text[m.end():end] if end != -1 else ""
+        out.append(html_text[last:m.end()])
+        if 'class="copy"' not in block:
+            out.append(COPY_BUTTON)
+        last = m.end()
+    out.append(html_text[last:])
+    return "".join(out)
 
 
 def css_version() -> str:
@@ -332,7 +373,7 @@ def css_version() -> str:
 
 def code_block(src: str, repl: bool = False) -> str:
     src = src.strip("\n")
-    copy = '<button class="copy" type="button">copy</button>'
+    copy = COPY_BUTTON
     if not repl:
         return f"<pre>{copy}<code>{highlight(src)}</code></pre>"
     rows = []
@@ -1568,6 +1609,7 @@ def build() -> int:
     for slug, title, body in all_pages:
         body = with_diagrams(body, slug)
         body = highlight_raw_blocks(body)
+        body = ensure_copy_buttons(body)
         body = with_heading_ids(body)
         # Prev/next, so the guide reads straight through as well as by search.
         # `pagenav()` and its eight CSS rules existed and were called from
