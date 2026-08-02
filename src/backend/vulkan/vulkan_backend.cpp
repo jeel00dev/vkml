@@ -515,9 +515,22 @@ enum class GemvMode : uint8_t { Auto, Off, Forced };
     return mode;
 }
 
-/// How split-K was requested. AUTO is deliberately identical to OFF: M3-03
-/// implements the mechanism, and the occupancy heuristic that would drive AUTO
-/// is a separate stage with its own evidence requirement.
+/// How split-K was requested.
+///
+/// AUTO asks `plan_split_k` whether splitting is profitable and takes its
+/// answer; FORCED bypasses that rule with an explicit partition count; OFF never
+/// splits. This comment used to say AUTO was "deliberately identical to OFF",
+/// which was true when only the mechanism existed and became false the moment
+/// the profitability rule landed. Measured, (64,784)@(784,128) -- the MNIST
+/// MLP's first Linear:
+///
+///     auto      8 dispatches   44.8 us      MLP step 635 us
+///     off       1 dispatch    106.0 us      MLP step 871 us
+///     forced    8 dispatches   45.0 us      MLP step 619 us
+///
+/// So AUTO behaves as FORCED here, split-K is ON by default, and it is worth
+/// 2.4x on that GEMM and 1.37x on the whole step. A reader trusting the old
+/// comment would have believed the opposite of all three.
 enum class SplitKMode : uint8_t { Auto, Off, Forced };
 
 [[nodiscard]] SplitKMode split_k_mode() {
