@@ -89,9 +89,31 @@ POD key and a hand-written hash was implemented and measured:
 **0.3% — indistinguishable, ranges fully overlapping.** Reverted: it added a 60-line key
 struct and a hand-written hash for no measured gain, which is the trade §3 says loses.
 Recorded so the next reader does not spend the same afternoon on the same plausible suspect.
-**Where the 12–14 µs actually goes is not yet known** — the remaining candidates are
-`topological_order`, per-node storage allocation (10,236 suballocations were counted over
-640 realises), and the per-node `vkCmdPipelineBarrier2`.
+
+### Where it does go, decomposed
+
+There is no `perf` on this machine, so the split was obtained by choosing graphs that
+exercise different parts of the same path. A graph of **views** walks the topological order
+and binds storage but allocates nothing and dispatches nothing; a graph of **compute** nodes
+does all of that plus allocate, record, barrier and dispatch. Sizes are tiny in both, so GPU
+time is the same floor and cannot explain a difference.
+
+```
+  16 compute nodes   realize 242.1 µs   15.13 µs/node   32 allocations
+  16 view    nodes   realize  61.3 µs    3.83 µs/node    0 allocations
+  ------------------------------------------------------------------
+  traversal + binding, no alloc/dispatch          3.83 µs/node   (25%)
+  allocate + record + barrier + dispatch         11.30 µs/node   (75%)
+```
+
+**A quarter of the cost is the graph walk itself**, before anything touches Vulkan —
+`topological_order` builds vectors and an `unordered_set` per realise. The other three
+quarters are allocation, command recording and the per-node barrier, which this experiment
+does not separate further; that is the next measurement.
+
+Note the allocation count: **32 for 16 expressions**, because `a + 1.0` also materialises the
+scalar. Per *node* the costs are therefore about half the figures above, and the ratio is
+what matters — the walk is not free and the recording is not dominant on its own.
 
 ## 4. What 15–20× would require, arithmetically
 

@@ -208,10 +208,20 @@ constant.
 **Rejected, with the measurement:** `PipelineCache::get` builds a string key
 with a dozen `std::format` calls on every dispatch and looked like the
 per-dispatch cost. Replacing it with a POD key measured **0.3% — indistinguishable**
-(min 14.129 µs vs 14.167 µs, ranges overlapping) and was reverted. Where the
-12–14 µs/dispatch actually goes is **still unknown**; remaining suspects are
-`topological_order`, per-node allocation (10,236 suballocations over 640
-realises), and the per-node barrier.
+(min 14.129 µs vs 14.167 µs, ranges overlapping) and was reverted. **The 12–14 µs/dispatch is now decomposed** (no `perf` here, so by
+comparing a graph of views — which walks and binds but neither allocates nor
+dispatches — against one of compute nodes):
+
+```
+  traversal + binding, no alloc/dispatch   3.83 µs/node   25%
+  allocate + record + barrier + dispatch  11.30 µs/node   75%
+```
+
+**A quarter is the graph walk itself**, before Vulkan is touched —
+`topological_order` builds vectors and an `unordered_set` every realise. The
+remaining three quarters are not yet separated from each other; that is the
+next measurement, and it decides whether the allocator or the recorder is the
+target.
 
 ### Next concrete step — asynchronous submission, ADR first
 
