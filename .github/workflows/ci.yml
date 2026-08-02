@@ -71,12 +71,16 @@ jobs:
       # The other half of the same problem. check_push_constants reads one limit
       # out of the GLSL; VKML_MIN_SPEC makes a live device report ALL of them at
       # the guaranteed floor, which is how the suite tests the case no machine
-      # here has. Without a device this checks the part it still can -- that the
-      # facility exists, and that a job somewhere actually runs the suite under
-      # it. Both were true of nothing until now: five months after #21 closed,
-      # VKML_MIN_SPEC appeared in no script and no workflow.
-      - name: Minimum-spec facility
-        run: python scripts/check_min_spec.py
+      # here has.
+      #
+      # --static-only because this job deliberately builds NOTHING: it checks
+      # that the facility exists and that some job runs the suite under it. The
+      # live-device half runs where there is a device, in the real-GPU job. Run
+      # unqualified here it failed -- correctly -- with "cannot import vkml",
+      # and had done since the day it was added: clang-format failed ahead of it
+      # for fifteen commits, so this step had never once executed.
+      - name: Minimum-spec facility (static half)
+        run: python scripts/check_min_spec.py --static-only
 
       # ADR 0005: GEMM accumulators must forbid FMA contraction. The decoration
       # is invisible in behaviour on RADV -- byte-identical machine code either
@@ -551,6 +555,14 @@ jobs:
         run: |
           cmake --preset release -DVKML_VULKAN=ON -DVKML_BUILD_PYTHON=ON
           cmake --build build/release -j$(nproc)
+
+      # The live-device half of scripts/check_min_spec.py. It needs what only
+      # this job has: the extension built WITH Vulkan, numpy, and a device to
+      # report limits. Until this was added the runtime half had never run in
+      # CI at all -- the static job could not run it, and no other job called
+      # the script.
+      - name: Minimum-spec facility (live device)
+        run: python scripts/check_min_spec.py
 
       - name: Resolve which device is which
         # BY PROPERTY, NEVER BY INDEX. The enumeration order is not stable

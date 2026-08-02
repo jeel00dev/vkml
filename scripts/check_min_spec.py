@@ -34,6 +34,7 @@ warns about is that the copy drifts silently and the drift always looks correct.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -194,13 +195,32 @@ def check_device(floors: dict[str, int]) -> int:
 
 
 def main() -> int:
+    # --static-only exists because the two halves need different environments
+    # and one job cannot have both. `declared_floors` and `check_ci` read the
+    # source and the workflow; `check_device` runs the library and needs it
+    # BUILT, with numpy, against a real device.
+    #
+    # Run without the flag in a job that has none of that, `check_device`
+    # reports a broken environment -- correctly, by its own rules, because it
+    # cannot tell "nobody built anything here" from "the wrong interpreter is
+    # on PATH", and the second is the one worth failing over. The static job
+    # says which half it is asking for instead of the script guessing.
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--static-only", action="store_true",
+                        help="skip the live-device half, for a job with no build")
+    args = parser.parse_args()
+
     print("\n  VKML_MIN_SPEC — the Vulkan 1.3 guaranteed floor\n")
     floors = declared_floors()
     if not floors:
         return 1
     print(f"  {len(floors)} limits clamped by vk_device.cpp: "
           f"{', '.join(f'{k}={v}' for k, v in sorted(floors.items()))}")
-    bad = check_device(floors) + check_ci()
+    bad = check_ci()
+    if args.static_only:
+        print("  skip  the live-device half: --static-only")
+    else:
+        bad += check_device(floors)
     print()
     return 1 if bad else 0
 
