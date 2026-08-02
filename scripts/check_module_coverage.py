@@ -91,9 +91,9 @@ P1_MODULES: list[tuple[str, str | None, str]] = [
     ("DataLoader batching", "data.DataLoader", "the batch_size argument"),
     ("DataLoader shuffling", "data.DataLoader", "the shuffle argument"),
     ("DataLoader prefetch", None,
-     "absent; tracker #22. Its ceiling was 0.2% of a step and is 21% for an "
-     "augmented run -- the trigger is met and the work is queued, see "
-     "python/vkml/data.py's module docstring"),
+     "absent; tracker #22. NOT a DataLoader problem: the bindings hold the GIL "
+     "through the GPU wait (17-24% available), so a producer thread cannot "
+     "overlap. See python/vkml/data.py's module docstring"),
     ("DataLoader transforms", "data.Compose",
      "the hook is DataLoader(transform=...), taking f(rng, arrays) -> arrays; "
      "Compose, RandomHorizontalFlip and RandomCrop are the standard CIFAR pipeline"),

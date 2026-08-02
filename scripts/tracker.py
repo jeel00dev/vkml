@@ -79,9 +79,10 @@ T: dict[int, tuple] = {
     19: ("done", DEFECT,   PRODUCT, "", None),
     20: ("done", DEBT,     PRODUCT, "", None),
     21: ("done", PLANNED,  VERIFY,  "", None),
-    22: ("open", PLANNED,  PRODUCT, "TRIGGER NOW MET: prefetch's ceiling was 0.2% of a step and "
-                                     "is 21% with augmentation on. Measure a thread before "
-                                     "designing a worker pool -- numpy drops the GIL", LOCAL),
+    22: ("open", DEFERRED, PRODUCT, "RESHAPED by measurement: not a DataLoader problem. The "
+                                    "bindings hold the GIL through the GPU wait (17-24% "
+                                    "available), so no producer thread can overlap. Needs a "
+                                    "threading contract, which is ADR-sized", LOCAL),
     23: ("done", PLANNED,  PRODUCT, "CLOSED: DataLoader(transform=f(rng, arrays)) plus Compose, "
                                     "RandomHorizontalFlip and RandomCrop; the rng is passed in so "
                                     "augmentation cannot quietly become irreproducible", None),
@@ -236,6 +237,9 @@ T: dict[int, tuple] = {
     133: ("done", DEFECT,   KNOW,    "CLOSED: a class naming another class in its `see` list "
                                      "rendered NOTHING -- the filter held operators only. 14 class "
                                      "pages were orphaned by it; prose links 101 -> 142", None),
+    134: ("done", DEFECT,   PRODUCT, "CLOSED: 'vectorise, never loop' made the crop 3.8x and the "
+                                     "flip 3.3x SLOWER than the loops they replaced -- both did "
+                                     "work for samples they discarded. Output byte-identical", None),
     117: ("open", PLANNED,  OBSERVE, "MEASURED 58.8ns / 131.7ns per publish; end-to-end could not "
                                      "resolve it (4 orders under noise). Regression gate remains", SHARED),
 }

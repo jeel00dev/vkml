@@ -13,26 +13,39 @@ DELIBERATELY ABSENT, recorded so the omissions are decisions rather than gaps:
   a shutdown path. Revisit when a dataset does not fit in memory or when a
   profile shows the training loop waiting on data.
 
-  MEASURED, and the number MOVED when transforms arrived -- which is the
-  honest reason to keep re-reading a deferral rather than citing it. On
-  examples/cifar100, which times the loader, the upload and the compute
-  separately:
+  MEASURED, and the number MOVED TWICE -- which is the honest reason to keep
+  re-reading a deferral rather than citing it. On examples/cifar100, which
+  times the loader, the upload and the compute separately:
 
-      no augmentation      batch  1.7%   transfer 5.8%   compute 92.6%
-      --augment            batch 21.2%   transfer 4.9%   compute 73.9%
+      no augmentation             batch  1.7%   transfer 5.8%   compute 92.6%
+      --augment, first version    batch 21.2%   transfer 4.9%   compute 73.9%
+      --augment, after the fix    batch 10.6%   transfer 6.1%   compute 83.3%
 
-  Prefetching hides the first column only. Its ceiling was two tenths of one
-  percent when this paragraph was written and is TWENTY-ONE PERCENT for an
-  augmented run, because the crop and the flip are real work on the host.
+  Prefetching hides the first column only, so its ceiling went 0.2% -> 21% when
+  transforms arrived and 21% -> 10.6% when the transforms were made 3.7x faster
+  (see the note at each transform: the vectorised forms were slower than the
+  loops they replaced).
 
-  STILL DEFERRED, and now for a different reason than "there is nothing to
-  hide". Overlapping 21% needs a thread the GIL does not serialise -- numpy
-  releases it inside a vectorised call, so a thread rather than a process may
-  well be enough here, which is a much smaller change than the worker pool this
-  paragraph assumed. That is worth measuring before designing, and neither
-  example trains long enough for 21% of a 4.7 s epoch to be the thing standing
-  between vkML and anything. The trigger is met; the work is queued rather than
-  refused, which is a different state and is recorded as one.
+  STILL DEFERRED, and the reason is now a measurement about THIS process rather
+  than an argument about workers. Overlapping the loader needs a producer
+  thread that runs while the main thread waits for the GPU, and it does not get
+  to:
+
+      GIL available to another thread, main thread sleeping        100%
+      ...during the augmentation                                   ~100%
+      ...during realize() and its wait for the GPU                 17-24%
+
+  numpy drops the GIL as hoped, but vkML's bindings hold it through the
+  blocking wait -- nanobind does not release it unless asked. So a producer
+  thread would get roughly a fifth of the window it needs to hide 10.6%.
+
+  What that makes the task: **not a DataLoader change at all.** Releasing the
+  GIL around the blocking calls would help every threaded use, and it is not a
+  one-line addition -- `Recorder` is not thread-safe, so it needs a stated
+  threading contract first. That is ADR-sized, it belongs to the runtime rather
+  than to this file, and 10.6% of an epoch is not what justifies it. Recorded
+  here so the next person to reach for prefetching finds the blocker before
+  building the queue.
 
 PRESENT, and here for a reason the docstring above once used to defer it:
 
@@ -242,8 +255,13 @@ def split(dataset: ArrayDataset, fraction: float, seed: int = 0
 # EVERY ONE IS BATCHED AND PER-SAMPLE AT THE SAME TIME, which is the part worth
 # reading carefully. A flip that draws ONE coin for the whole batch is not
 # augmentation -- it doubles the dataset instead of multiplying it, and it
-# correlates every sample in a step. So the decision is drawn per sample and
-# applied with a vectorised select, never with a Python loop.
+# correlates every sample in a step. So the decision is drawn per sample.
+#
+# HOW it is then applied was decided by measurement rather than by the usual
+# rule, and the usual rule lost. "Vectorise, never loop in Python" produced a
+# crop 3.8x slower than sixty-four contiguous slices and a flip 3.3x slower than
+# reversing only the chosen rows -- both because the vectorised form does work
+# for samples it then discards. The measurements are recorded at each site.
 #
 # THEY TRANSFORM THE FIRST ARRAY ONLY. A batch is `(inputs, labels)`, and a
 # spatial augmentation applies to the images and not to the integers beside
@@ -292,13 +310,18 @@ class RandomHorizontalFlip:
             raise ValueError(
                 f"RandomHorizontalFlip expects (N, C, H, W), got shape {images.shape}"
             )
-        # One coin per SAMPLE. `np.where` over the whole batch rather than a
-        # loop: the flipped copy costs one vectorised reverse, and selecting
-        # between two arrays is a single pass.
+        # One coin per SAMPLE, then reverse only the samples that won it.
+        #
+        # NOT `np.where(flip, images[..., ::-1], images)`, which was the first
+        # version and is 3.3x slower -- measured, 0.231 ms against 0.070 ms on a
+        # CIFAR batch. It builds a flipped copy of EVERY sample and then selects,
+        # so it does the reverse for the half that were not chosen and pays a
+        # third pass to choose. Copy-then-overwrite-a-subset touches each byte
+        # twice at worst and once for the unflipped half.
         flip = rng.random(len(images)) < self.p
-        flipped = images[:, :, :, ::-1]
-        out = _np.where(flip[:, None, None, None], flipped, images)
-        return (_np.ascontiguousarray(out),) + tuple(arrays[1:])
+        out = images.copy()
+        out[flip] = images[flip][:, :, :, ::-1]
+        return (out,) + tuple(arrays[1:])
 
     def __repr__(self) -> str:
         return f"RandomHorizontalFlip(p={self.p})"
@@ -336,19 +359,25 @@ class RandomCrop:
                 f"crop {self.size} does not fit a padded image of {height}x{width}"
             )
 
-        # One offset per sample, then gathered with fancy indexing. Building the
-        # index arrays costs O(N x H x W) integers, which for a CIFAR batch is
-        # 64 x 32 x 32 -- cheaper than 64 Python-level slices and, unlike them,
-        # one pass over the data.
+        # One offset per sample, then a contiguous slice per sample.
+        #
+        # A PYTHON LOOP, AND IT IS THE FAST VERSION -- which is the opposite of
+        # what the first implementation assumed. That one built O(N x H x W)
+        # index arrays and gathered with fancy indexing, on the reasoning that a
+        # vectorised gather beats 64 Python-level slices. Measured on a CIFAR
+        # batch it is **3.8x slower**: 1.305 ms against 0.342 ms. The gather
+        # reads strided, materialises the index arrays, and lands the two
+        # indexed axes first -- so the result is (N, H, W, C) and needs a
+        # transposing copy to become (N, C, H, W) again. Sixty-four contiguous
+        # memcpys beat all of that, and the loop overhead is 64 iterations.
+        #
+        # The draws are unchanged -- `rng.integers(..., size=n)`, once -- so the
+        # same seed still gives the same crops as before.
         top = rng.integers(0, height - out_h + 1, size=n)
         left = rng.integers(0, width - out_w + 1, size=n)
-        rows = top[:, None] + _np.arange(out_h)[None, :]
-        cols = left[:, None] + _np.arange(out_w)[None, :]
-        sample = _np.arange(n)[:, None, None]
-        out = images[sample, :, rows[:, :, None], cols[:, None, :]]
-        # The gather above puts the two indexed spatial axes first, so the
-        # result is (N, H, W, C) and has to come back to vkML's (N, C, H, W).
-        out = _np.ascontiguousarray(out.transpose(0, 3, 1, 2))
+        out = _np.empty((n, images.shape[1], out_h, out_w), dtype=images.dtype)
+        for i in range(n):
+            out[i] = images[i, :, top[i]:top[i] + out_h, left[i]:left[i] + out_w]
         return (out,) + tuple(arrays[1:])
 
     def __repr__(self) -> str:

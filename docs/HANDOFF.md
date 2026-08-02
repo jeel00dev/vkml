@@ -175,21 +175,47 @@ unseeded `default_rng()` and a divergence could not be re-observed.
 3-D `im2col`; does not compose), DataLoader prefetch (#22) and autograd
 checkpointing.
 
-### #22's deferral changed its own premise
+### #22 is reshaped, not deferred again — and it is not a DataLoader problem
 
-`data.py` deferred prefetch on a measurement: batch production was **0.2% of a
-step**, so prefetch's whole ceiling was two tenths of one percent. With
-transforms it is **21.2%** — the crop and the flip are real host work:
+`data.py` deferred prefetch on a measurement: batch production was 0.2% of a
+step. With transforms it became 21.2%, then 10.6% once the transforms were made
+3.7× faster:
 
 ```
-  no augmentation    batch  1.7%   transfer 5.8%   compute 92.6%
-  --augment          batch 21.2%   transfer 4.9%   compute 73.9%
+  no augmentation             batch  1.7%   transfer 5.8%   compute 92.6%
+  --augment, first version    batch 21.2%   transfer 4.9%   compute 73.9%
+  --augment, after the fix    batch 10.6%   transfer 6.1%   compute 83.3%
 ```
 
-Still deferred, but for a different reason and with a smaller design than the
-docstring assumed: numpy releases the GIL inside a vectorised call, so a
-**thread** may be enough and the worker-process pool that paragraph imagined may
-never be needed. Measure a thread before designing anything.
+**The blocker is the GIL, and it is in the bindings, not the loader.** Measured
+by spinning a counter thread and comparing its rate:
+
+```
+  GIL available, main thread sleeping         100%
+  ...during the augmentation                 ~100%   numpy drops it, as hoped
+  ...during realize() and its GPU wait      17-24%   nanobind does not
+```
+
+A producer thread would get about a fifth of the window it needs. Releasing the
+GIL around the blocking calls would help every threaded use — and it is not a
+one-line change: `Recorder` is not thread-safe, so it needs a stated threading
+contract first. ADR-sized, belongs to the runtime, and 10.6% of an epoch is not
+what justifies it.
+
+### "Vectorise, never loop in Python" was wrong here, measured
+
+Both shipped transforms were written vectorised on that rule and both were
+**slower than the loops they replaced**, because the vectorised form does the
+work for samples it then discards:
+
+```
+  crop   1.305 ms -> 0.342 ms   3.8x   64 contiguous slices beat a fancy-index gather
+  flip   0.231 ms -> 0.070 ms   3.3x   reverse only the chosen rows, not all of them
+```
+
+Byte-identical output — the draws are unchanged, so the same seed gives the same
+crops. The comments at each site now record the measurement rather than the
+assumption.
 
 Found while documenting these: **a class naming another class in its `see` list
 rendered nothing** — the filter held operators only, so `MultiheadAttention`

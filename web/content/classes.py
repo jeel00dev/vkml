@@ -517,8 +517,11 @@ CLASSES["DataLoader"] = {
             "size — it is **not** dropped unless `drop_last` says so, so every sample is "
             "seen exactly once per epoch.",
     "warning": "Augmentation is real host work: it takes CIFAR-100's batch-production time "
-               "from **1.7% of a step to 21.2%**, measured. That is also the number that "
-               "decides whether prefetching is worth building.",
+               "from **1.7% of a step to 10.6%**, measured. That is also the number that "
+               "decides whether prefetching is worth building — and prefetching turns out "
+               "not to be a DataLoader change at all, because the bindings hold the GIL "
+               "through the GPU wait and a producer thread would get only a fifth of the "
+               "window it needs.",
     "groups": [("Construction", ["__init__"]), ("Iteration", ["__iter__", "__len__"])],
     "see": ["ArrayDataset", "Compose", "rand"],
 }
@@ -537,8 +540,13 @@ CLASSES["Compose"] = {
               "maintenance surface built ahead of a user.",
     "note": "Every shipped transform decides **per sample**, not per batch. A flip that "
             "draws one coin for the whole batch is not augmentation — it doubles the "
-            "dataset instead of multiplying it, and it correlates every sample in a step. "
-            "The decision is drawn per sample and applied with a vectorised select.",
+            "dataset instead of multiplying it, and it correlates every sample in a step.",
+    "warning": "**How that decision is applied was decided by measurement, and the usual "
+               "rule lost.** \"Vectorise, never loop in Python\" gave a crop 3.8× slower "
+               "than sixty-four contiguous slices and a flip 3.3× slower than reversing "
+               "only the chosen rows — both because the vectorised form does the work for "
+               "samples it then discards. The output is byte-identical either way; only "
+               "the cost differs.",
     "groups": [("Construction", ["__init__"]), ("Call", ["__call__"]),
                ("Internals", ["__repr__"])],
     "see": ["DataLoader", "ArrayDataset"],
