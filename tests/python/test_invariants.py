@@ -1647,7 +1647,7 @@ def test_realize_does_not_wait_for_the_gpu():
     with V.eager_mode(False):
         for _ in range(3):  # warm pipelines and clocks
             V.realize(build())
-        V.vulkan_synchronize()
+        V.vulkan_synchronize(VULKAN_DEVICE)
 
         submit_only = float("inf")
         with_wait = float("inf")
@@ -1656,12 +1656,12 @@ def test_realize_does_not_wait_for_the_gpu():
             t0 = time.perf_counter()
             V.realize(root)
             submit_only = min(submit_only, time.perf_counter() - t0)
-            V.vulkan_synchronize()
+            V.vulkan_synchronize(VULKAN_DEVICE)
 
             root = build()
             t0 = time.perf_counter()
             V.realize(root)
-            V.vulkan_synchronize()
+            V.vulkan_synchronize(VULKAN_DEVICE)
             with_wait = min(with_wait, time.perf_counter() - t0)
 
     assert submit_only * 3 < with_wait, (
@@ -1685,7 +1685,7 @@ def test_deferred_frees_are_all_returned():
     happens -- the test would pass while exercising none of it.
     """
     device = gpu_device()
-    before = V.vulkan_stats(0)
+    before = V.vulkan_stats(VULKAN_DEVICE)
 
     def churn():
         with V.eager_mode(False):
@@ -1694,8 +1694,8 @@ def test_deferred_frees_are_all_returned():
                 V.realize(V.relu(t))
 
     churn()
-    V.vulkan_synchronize()
-    after = V.vulkan_stats(0)
+    V.vulkan_synchronize(VULKAN_DEVICE)
+    after = V.vulkan_stats(VULKAN_DEVICE)
 
     assert after["live_allocations"] == before["live_allocations"], (
         f"{after['live_allocations'] - before['live_allocations']} allocation(s) never came "
@@ -1735,22 +1735,22 @@ def test_an_upload_does_not_drain_queued_work():
         for _ in range(10):  # warm pipelines and clocks
             queue_real_work()
             upload()
-        V.vulkan_synchronize()
+        V.vulkan_synchronize(VULKAN_DEVICE)
 
         idle = float("inf")
         behind = float("inf")
         for _ in range(20):
-            V.vulkan_synchronize()
+            V.vulkan_synchronize(VULKAN_DEVICE)
             t0 = time.perf_counter()
             upload()
             idle = min(idle, time.perf_counter() - t0)
 
-            V.vulkan_synchronize()
+            V.vulkan_synchronize(VULKAN_DEVICE)
             queue_real_work()
             t0 = time.perf_counter()
             upload()
             behind = min(behind, time.perf_counter() - t0)
-        V.vulkan_synchronize()
+        V.vulkan_synchronize(VULKAN_DEVICE)
 
     # Generous: the claim is "does not drain the queue", and the queued work is
     # far longer than an upload. A drain would put `behind` well above `idle`.
@@ -1832,18 +1832,18 @@ def test_scaled_add_costs_one_dispatch_not_four():
     a = V.tensor(np.ones((4096,), dtype=np.float32), device=device)
     b = V.tensor(np.ones((4096,), dtype=np.float32), device=device)
     V.realize(a, b)
-    V.vulkan_synchronize()
+    V.vulkan_synchronize(VULKAN_DEVICE)
 
     with V.eager_mode(False):
-        before = V.vulkan_stats(0)["dispatches"]
+        before = V.vulkan_stats(VULKAN_DEVICE)["dispatches"]
         V.realize(V.scaled_add(a, b, 0.9, 1.0))
-        V.vulkan_synchronize()
-        fused = V.vulkan_stats(0)["dispatches"] - before
+        V.vulkan_synchronize(VULKAN_DEVICE)
+        fused = V.vulkan_stats(VULKAN_DEVICE)["dispatches"] - before
 
-        before = V.vulkan_stats(0)["dispatches"]
+        before = V.vulkan_stats(VULKAN_DEVICE)["dispatches"]
         V.realize(a * 0.9 + b)
-        V.vulkan_synchronize()
-        composed = V.vulkan_stats(0)["dispatches"] - before
+        V.vulkan_synchronize(VULKAN_DEVICE)
+        composed = V.vulkan_stats(VULKAN_DEVICE)["dispatches"] - before
 
     assert fused == 1, f"scaled_add took {fused} dispatches"
     assert composed == 3, (

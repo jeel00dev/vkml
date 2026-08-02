@@ -928,7 +928,12 @@ def test_the_transform_runs_before_the_device_transfer(device_arg):
     if device_arg and not V.vulkan_available():
         pytest.skip("no Vulkan device")
     x = _images(4)
-    device = V.device("vulkan:0") if device_arg else None
+    # gpu_device(), not a hardcoded vulkan:0: CI runs this suite with
+    # VKML_TEST_DEVICE set to whichever index the discrete card has, and only
+    # that device is initialised. Naming device 0 fails with "no backend
+    # registered" whenever the discrete card is not first, which is a property
+    # of the machine rather than of anything this test is about.
+    device = gpu_device() if device_arg else None
     loader = DataLoader(ArrayDataset(x), batch_size=4, device=device,
                         transform=RandomHorizontalFlip(p=1.0))
     got = next(iter(loader))[0]
