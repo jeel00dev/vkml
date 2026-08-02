@@ -309,6 +309,19 @@ def pipeline_resources() -> list[dict]:
     return [p for p in V.vulkan_pipeline_stats(0) if p.get("available")]
 
 
+def _validation_layers_observed() -> bool:
+    """Whether the backend actually created the device with validation layers.
+
+    Falls back to the environment only when nothing has consulted the switch,
+    which means no Vulkan device exists yet and there is no observation to
+    report. See docs/MEASUREMENT-AUDIT.md 6c.
+    """
+    for entry in V.configuration():
+        if entry["name"] == "VKML_VULKAN_VALIDATION":
+            return entry["value"][:1] != "0" if entry["set"] else True
+    return os.environ.get("VKML_VULKAN_VALIDATION", "1") != "0"
+
+
 def metadata() -> dict:
     caps = V.vulkan_capabilities(0)
     return {
@@ -325,7 +338,14 @@ def metadata() -> dict:
         # against this baseline interpretable: measured on an RX 5600M, the same
         # suite reports 14 regressions past 15% with layers on and 2 with them
         # off, and twelve of those fourteen are wall-clock only.
-        "validation_layers": os.environ.get("VKML_VULKAN_VALIDATION", "1") != "0",
+        #
+        # Read from configuration(), which the library populates AT THE POINT OF
+        # READING, rather than from os.environ. The two answer different
+        # questions -- the environment says what was asked for, configuration
+        # says what the backend saw -- and they disagree whenever the variable is
+        # set after import, which records an arm that never ran
+        # (docs/MEASUREMENT-AUDIT.md 6c).
+        "validation_layers": _validation_layers_observed(),
     }
 
 

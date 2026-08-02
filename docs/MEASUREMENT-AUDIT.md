@@ -279,6 +279,44 @@ This nearly produced a false refutation of P1'' recorded as a cross-kernel failu
 
 ---
 
+## 6c. Rule 5 is violated by DOING NOTHING, and was (2026-08-02)
+
+Rule 5 says *never benchmark with validation layers enabled*. It is written as a prohibition,
+which quietly assumes that enabling them is an act. **In vkML it is the default.**
+`vulkan_backend()` reads `VKML_VULKAN_VALIDATION` with a fallback of `true`, deliberately —
+`web/content/reference_env.py` states it as a correctness-first choice, and CI depends on it
+(`macos-moltenvk.yml` reasons about what validation reports without ever setting the switch).
+
+So a measurement obeys rule 5 only by *acting*, and `docs/SMALL-STEP-LATENCY.md`'s original
+decomposition did not. Measured, RX 5600M / RADV, minimum of 200:
+
+```
+                                    layers ON   layers OFF   inflation
+  one-node realise                    98.0 us      60.0 us       1.63x
+  MNIST MLP 784-128-10 step, b=64     1720 us      1189 us       1.45x
+```
+
+**A third of that document's headline number was the instrument.**
+
+The knowledge was already in the repository and did not reach the measurement.
+`bench/gpu_bench.py` records `validation_layers` in every baseline and its comment gives the
+effect on the regression count — but it reads `os.environ`, which says what was *asked for*
+rather than what the library *read*. A process that sets the variable after import records an
+arm it did not run.
+
+> **Rule 5, extended.** A benchmark must (a) set the switch itself, before the backend is
+> created, and (b) report the value **as observed by the library** — `vkml.configuration()`,
+> which is populated at the point of reading and cannot disagree with the code — not as read
+> back from the environment.
+>
+> `bench/latency_bench.py` does both and is the pattern to copy.
+
+The general lesson is the one §5's table ends on, in a new form: **a default is part of the
+instrument.** An instrument audit that only examines the tools a measurement *chooses* misses
+every tool it merely *inherits*.
+
+---
+
 ## 7. Rules, collected
 
 1. Effects below ~2 % require GPU timestamps and repeated independent trials.
@@ -289,7 +327,9 @@ This nearly produced a false refutation of P1'' recorded as a cross-kernel failu
 3b. To attribute cost *within* a submission, take the **union of intervals**. It equals the
     sum when nothing overlaps, so it needs no prior knowledge of whether anything did (3b).
 4. Never compare profiled against unprofiled timings.
-5. Never benchmark with validation layers enabled.
+5. Never benchmark with validation layers enabled — and note that they are ON BY DEFAULT, so
+   this rule is broken by omission. Set the switch before the backend exists and report what
+   `vkml.configuration()` observed, not what the environment says (6c).
 6. Warm pipelines before timing; compilation is setup, not measurement.
 7. An A/B toggle is only valid if the A arm is the **frozen, unmodified** baseline
    (Stage 6.5's spurious 1.4×).
