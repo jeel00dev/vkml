@@ -151,9 +151,20 @@ def attribute_steps(args) -> None:
 
     This is `docs/EXTENSIBILITY-ROADMAP.md` 4a P0's exit criterion: a per-kernel
     table for a CIFAR step summing to the measured wall time, with the
-    unaccounted remainder shown rather than hidden. The remainder is the point
-    -- P1's whole subject is the ~74% of a step that is not arithmetic, and
-    until now the only evidence for it was indirect.
+    unaccounted remainder shown rather than hidden. P1's whole subject is the
+    part of a step that is not arithmetic, and until now the evidence for its
+    size was indirect.
+
+    SEVERAL ROUNDS, AND THE MINIMUM IS REPORTED. Rule 2, and it is not a
+    refinement here: this machine parks at 400 MHz of a possible 1500 and one
+    round of the same work varies between 11.8 and 18.9 ms. A single round
+    reports whatever clock state it landed in, and since GPU time and host time
+    do not scale together it distorts the SPLIT and not just the total. The
+    first version of this printed one round and overstated host and driver by
+    roughly a factor of two.
+
+    The whole breakdown comes from the winning round, not a per-row minimum
+    across rounds -- rows from different runs do not add up.
 
     Deliberately a separate path from `train()`. Wrapping the training loop
     would have put a measurement concern inside the thing being measured, and
@@ -189,24 +200,30 @@ def attribute_steps(args) -> None:
     for _ in range(ATTRIBUTION_WARMUP_STEPS):
         one_step()
 
-    # A CIFAR step submits ~28 times, so the default window truncates at 18
+    # A CIFAR step submits 39 times, so the default window truncates at 13
     # steps and says so. 128 per step is headroom rather than a fit, and the
     # report still warns if this turns out to be wrong on another shape.
     index = int(str(device).partition(":")[2] or 0)
-    with V.attribution.capture(index=index, submissions=args.attribute * 128) as cap:
-        for _ in range(args.attribute):
-            one_step()
-    report = cap.report()
+    rounds = []
+    for _ in range(args.attribute_rounds):
+        with V.attribution.capture(index=index, submissions=args.attribute * 128) as cap:
+            for _ in range(args.attribute):
+                one_step()
+        rounds.append(cap.report())
+    report = min(rounds, key=lambda r: r.wall_ms)
 
     print()
     print("=" * 62)
     print(f"  {args.attribute} steps of cnn on cifar100, batch {args.batch_size}, on {device}")
-    print(f"  after {ATTRIBUTION_WARMUP_STEPS} warm-up steps")
+    print(f"  after {ATTRIBUTION_WARMUP_STEPS} warm-up steps, "
+          f"best of {args.attribute_rounds} rounds")
     print("=" * 62)
     print(report.table())
     print()
     print(f"  per step: {report.wall_ms / args.attribute:.2f} ms wall, "
           f"{report.host_ms / args.attribute:.2f} ms outside every submission")
+    spread = " ".join(f"{r.wall_ms / args.attribute:.2f}" for r in rounds)
+    print(f"  ms/step per round: {spread}")
     print("=" * 62)
 
 
@@ -386,6 +403,9 @@ def main() -> None:
     parser.add_argument("--attribute", type=int, default=0, metavar="STEPS",
                         help="profile STEPS training steps and print where their time "
                              "went, instead of training")
+    parser.add_argument("--attribute-rounds", type=int, default=5, metavar="N",
+                        help="repeat the profiled block N times and report the fastest "
+                             "round; this machine's clock state varies runs by 60%%")
     args = parser.parse_args()
 
     if args.attribute:

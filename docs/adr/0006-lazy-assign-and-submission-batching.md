@@ -2,9 +2,9 @@
 
 **Status:** accepted. **Stage A implemented and measured (7 below). Stage B is
 part built**: multi-root realize shipped and is measured in 9 — `realize()` takes
-a list of tensors, `dispatch/executor.h` takes `std::span<const NodePtr>` — but
-the Assign node did **not**, and is blocked on the two findings in 9. Stage C is
-still proposed.
+a list of tensors, `dispatch/executor.h` takes `std::span<const NodePtr>` — and
+**the optimisers now use it, measured in 10** — but the Assign node did **not**,
+and is blocked on the two findings in 9. Stage C is still proposed.
 
 This line said "stages B and C still proposed" while 9 below described stage B's
 first half as built and measured, so the summary contradicted the body and a
@@ -540,3 +540,91 @@ Both are ADR-sized. Recorded here rather than absorbed into an implementation
 commit, because the estimate in 4 -- "the largest change here" -- understated it
 in a specific way worth naming: the cost is not in the Assign node, it is in the
 two invariants around it.
+
+---
+
+## 10. The batched optimiser, as built and measured (2026-08-02)
+
+9 concluded that the Assign node was "no longer the next step". It was right
+about that and wrong about what *was*: the batching multi-root realize already
+makes possible had not been claimed, and it does not need the Assign node,
+`detach()` to stop forcing, or a collapse rule. It needs the passes ordered so
+that **nothing is detached before the batched realise**.
+
+`Optimizer.step()` is now three passes, in the base class, for all four
+optimisers:
+
+```
+pass 1   build EVERY parameter's state update lazily, realise them together
+pass 2   build EVERY parameter's new value from that state, realise together
+pass 3   assign
+```
+
+### Results
+
+CIFAR-100 CNN, 8 parameters, optimiser phase only so it dominates the measured
+window (rule 1b). Minimum of 40 warm steps within a process, and the minimum
+across four process runs per arm; the A arm is the frozen unmodified build
+restored with `git stash` (rule 7).
+
+```
+                    submissions          ms
+                  before  after    before  after   speedup
+  SGD               16      9       1.097  0.675    1.63x
+  SGD momentum      24     10       1.659  1.134    1.46x
+  SGD nesterov      24     10       1.862  1.147    1.62x
+  RMSProp           24     10       2.058  1.255    1.64x
+  RMSProp cent+mom  40     10       3.356  1.790    1.87x
+  Adam              32     10       3.032  1.719    1.76x
+  AdamW             32     10       3.199  1.911    1.67x
+```
+
+**Every arm's parameters are bit-identical to the baseline's** after 60 training
+steps, checked as a float64 sum over every parameter. This is a scheduling
+change and the check is what makes that a statement rather than an intention.
+
+The submission count is now `2 + N` and no longer varies with the optimiser:
+RMSProp centered-with-momentum has three state tensors per parameter and Adam
+two, and both realise them in one submission. That is the multi-root realize
+sharing a common subgraph — the dependency between RMSProp's momentum buffer
+and its running average costs a dispatch, not a submission.
+
+Whole CIFAR-100 step, best of 5 rounds of 20 steps:
+
+```
+                     before    after
+  submissions/step     39        25
+  step wall         13.57 ms  12.09 ms
+  host and driver    42.0%     35.7%
+  GPU / wall          0.58      0.64
+```
+
+### The finding worth keeping: fewer submissions is not the same as faster
+
+An intermediate arm batched **only** pass 1: 24 → 17 submissions, and
+1.836 → 2.123 ms. **Seven fewer submissions and slower than doing nothing.**
+Pass 2 is where most of the submissions were, so removing a few from pass 1
+while leaving pass 2 per-parameter merely made one big submission the GPU
+finishes before the host can queue the next.
+
+This is the counter-example to treating submission count as the objective, and
+it is measured rather than argued. §4a of `EXTENSIBILITY-ROADMAP.md` should be
+read with it in hand.
+
+### What is now the next step, and what is not
+
+The remaining `N` is `assign_`, still eager, one submission per parameter. That
+is what the Assign node removes, and 9's two blockers still stand in front of
+it. Nothing here made them easier or harder.
+
+**Stage C (horizontal fusion) remains deferred**, and this sharpens its revisit
+trigger: with the constant term at 2 and the per-parameter term at 1, a model
+with hundreds of parameters pays almost all of its optimiser cost in `assign_`.
+Stage B's Assign node addresses that directly; concatenating parameters does
+not, and would still be the wrong lever.
+
+**Regression-tested.** `tests/python/test_invariants.py::
+test_an_optimizer_step_stays_within_its_submission_budget` pins `2 + N` for all
+seven configurations, in a subprocess because the suite's eager fixture would
+make the batching unobservable. Verified by restoring the per-parameter realise:
+all seven turn red, and green again when reverted.

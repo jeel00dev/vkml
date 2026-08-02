@@ -1116,6 +1116,82 @@ def test_multi_root_realize_uses_one_submission():
     )
 
 
+# The budget an optimiser step is held to, as a function of the parameter count.
+#
+# 1 for every parameter's state realized together, 1 for every parameter's new
+# value realized together, and 1 per parameter for `assign_`, which is still
+# eager (docs/adr/0006, stage B). So 2 + N, and the constant does not grow with
+# the optimiser: Adam has two moment tensors per parameter and RMSProp centered
+# with momentum has three, and both realize them in the same submission.
+#
+# A BOUND, not an equality. Splitting a large graph across submissions is
+# legitimate; what this forbids is going back to a per-parameter loop, which for
+# these seven configurations cost 16, 24, 24, 24, 40, 32 and 32 submissions
+# against a uniform 9 or 10 now.
+OPTIMIZER_SUBMISSION_BUDGET = "2 + one per parameter"
+
+
+@requires_vulkan
+@pytest.mark.parametrize("maker,name", [
+    ("V.optim.SGD(ps, lr=0.05)", "sgd"),
+    ("V.optim.SGD(ps, lr=0.05, momentum=0.9)", "sgd-momentum"),
+    ("V.optim.SGD(ps, lr=0.05, momentum=0.9, nesterov=True)", "sgd-nesterov"),
+    ("V.optim.RMSProp(ps, lr=1e-3)", "rmsprop"),
+    ("V.optim.RMSProp(ps, lr=1e-3, momentum=0.9, centered=True)", "rmsprop-centered"),
+    ("V.optim.Adam(ps, lr=1e-3)", "adam"),
+    ("V.optim.AdamW(ps, lr=1e-3)", "adamw"),
+])
+def test_an_optimizer_step_stays_within_its_submission_budget(maker, name):
+    """One step must cost 2 + N submissions, not a multiple of N.
+
+    WHY A BUDGET AND NOT A TIMING. `docs/adr/0006` section 6 records this as the
+    right gate for the stage, and the reason is that submission COUNTS are
+    exact and clock-independent while wall clock on this machine varies by 60%
+    between runs of identical code. A regression here would be invisible to a
+    timing assertion at any threshold loose enough to be stable.
+
+    In a subprocess for the same reason `test_multi_root_realize_uses_one_submission`
+    is: the suite's autouse fixture forces EAGER mode, which realises every
+    operation as it is built, so the batching being measured cannot happen and
+    the test would pass against an optimiser that batched nothing.
+
+    Four parameters, so the per-parameter term and the constant are separable:
+    a per-parameter loop would give 8 or more, and 2 + 4 = 6 is the budget.
+    """
+    parameters = 4
+    # The gradients are uploaded ONCE, outside the measured window. Creating
+    # them per step costs one submission each and would have been counted as
+    # the optimiser's -- which is what the first version of this did, reporting
+    # 10 against a budget of 6 for every optimiser including the ones that
+    # already met it.
+    script = (
+        "import sys;sys.path.insert(0,'python');import numpy as np,vkml as V;"
+        "V.set_log_level(V.LogLevel.ERROR);V.init_vulkan(0);"
+        "d=V.device('vulkan:0');rng=np.random.default_rng(0);"
+        f"ps=[V.tensor(rng.random((32,32),dtype=np.float32),device=d,requires_grad=True)"
+        f" for _ in range({parameters})];"
+        f"gs=[V.tensor(rng.random((32,32),dtype=np.float32),device=d)"
+        f" for _ in range({parameters})];"
+        f"o={maker};"
+        "step=lambda: ([setattr(p,'grad',g) for p,g in zip(ps,gs)], o.step());"
+        "step();step();"                       # warm: pipelines, and Adam's t
+        "c=V.vulkan_stats(0)['submissions'];"
+        "step();"
+        "print(V.vulkan_stats(0)['submissions']-c)"
+    )
+    out = subprocess.run([sys.executable, "-c", script], cwd=REPO, env=_env({}),
+                         capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0, out.stderr[-2000:]
+    used = int(out.stdout.strip().splitlines()[-1])
+    budget = 2 + parameters
+    assert used <= budget, (
+        f"{name}: {used} submissions for a {parameters}-parameter step, budget {budget} "
+        f"({OPTIMIZER_SUBMISSION_BUDGET}). A step that scales as a MULTIPLE of the "
+        f"parameter count means the per-parameter realize is back -- see "
+        f"python/vkml/optim.py's module docstring for why the three passes are ordered "
+        f"as they are")
+
+
 def test_gelu_keeps_relative_accuracy_in_its_negative_tail():
     """gelu's tail has to survive in RELATIVE terms, on the CPU, with no GPU here.
 

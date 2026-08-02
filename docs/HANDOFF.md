@@ -44,12 +44,36 @@ single item, larger than `matmul` at 17.1%, so P1's sequencing holds with a
 lower ceiling. Two things only direct attribution could say — 39 submissions per
 step of which 11 carry no compute, and GPU idle inside submissions is 0.4%.
 
+## P1's first slice is taken
+
+The attribution showed the optimiser spending 24 of a step's 39 submissions on
+eight parameters. `Optimizer.step()` is now three passes in the base class —
+build every parameter's state, realise together; build every new value, realise
+together; assign — and all four optimisers implement one `_plan` hook.
+
+**39 → 25 submissions per step, 1.5–1.9× on the optimiser phase across all
+seven configurations, parameters bit-identical over 60 steps.** Host and driver
+fell from 42.0% to 35.7% of a step. `docs/adr/0006` §10.
+
+The finding worth keeping: an intermediate arm removed **seven** submissions and
+was **slower**. Submission count is a proxy, not the objective.
+
 ## Next concrete step
 
-**#100, P1 — dispatch and submission overhead.** The candidates are re-ordered
-in `EXTENSIBILITY-ROADMAP.md` §4a P1 by what P0 measured. The cheapest first
-item is now the 11-in-39 submissions that carry no compute at all: uploads and
-the download behind `.item()`, each paying full submission cost for a copy.
+**ADR 0006 stage B — the Assign node.** It is now the whole of what remains in
+the optimiser: the budget is `2 + N` and the `N` is `assign_`, still eager, one
+submission per parameter. It also fixes `nn.BatchNorm2d`'s forward path, which
+pays the same cost per layer.
+
+Two ADR-sized changes sit in front of it, both recorded in `docs/adr/0006` §9
+and neither started:
+
+1. `detach()` must stop forcing evaluation.
+2. An assigned tensor must not retain its history — otherwise each step's Assign
+   holds the previous step's graph alive, transitively, for the whole run.
+
+`docs/adr/0007` already separated "bound" from "computed", which was the third
+blocker and is done.
 
 Then #118 (8 unmet P1 modules), #119-123, #124.
 

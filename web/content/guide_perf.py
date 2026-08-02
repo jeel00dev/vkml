@@ -92,31 +92,49 @@ whole step:</p>
 <table>
 <thead><tr><th>Kernel</th><th>Dispatches</th><th>GPU ms</th><th>% of step</th></tr></thead>
 <tbody>
-<tr><td>matmul</td><td>540</td><td>64.321</td><td>17.1%</td></tr>
-<tr><td>sum</td><td>180</td><td>37.254</td><td>9.9%</td></tr>
-<tr><td>im2col</td><td>60</td><td>32.034</td><td>8.5%</td></tr>
-<tr><td>max_pool2d_backward</td><td>60</td><td>21.222</td><td>5.6%</td></tr>
-<tr><td>add</td><td>240</td><td>14.503</td><td>3.9%</td></tr>
-<tr><td>col2im</td><td>40</td><td>13.603</td><td>3.6%</td></tr>
-<tr><td>16 more</td><td>2020</td><td>23.980</td><td>6.6%</td></tr>
-<tr><td><strong>GPU busy</strong></td><td></td><td><strong>205.917</strong></td>
-    <td><strong>54.8%</strong></td></tr>
-<tr><td>GPU idle inside submissions</td><td></td><td>1.334</td><td>0.4%</td></tr>
-<tr><td><strong>host and driver</strong></td><td></td><td><strong>168.419</strong></td>
-    <td><strong>44.8%</strong></td></tr>
-<tr><td>step wall</td><td></td><td>375.670</td><td>100.0%</td></tr>
+<tr><td>matmul</td><td>540</td><td>48.392</td><td>20.0%</td></tr>
+<tr><td>sum</td><td>180</td><td>29.831</td><td>12.3%</td></tr>
+<tr><td>im2col</td><td>60</td><td>21.507</td><td>8.9%</td></tr>
+<tr><td>max_pool2d_backward</td><td>60</td><td>15.441</td><td>6.4%</td></tr>
+<tr><td>col2im</td><td>40</td><td>9.970</td><td>4.1%</td></tr>
+<tr><td>add</td><td>240</td><td>9.485</td><td>3.9%</td></tr>
+<tr><td>16 more</td><td>2020</td><td>20.402</td><td>8.4%</td></tr>
+<tr><td><strong>GPU busy</strong></td><td></td><td><strong>155.027</strong></td>
+    <td><strong>64.1%</strong></td></tr>
+<tr><td>GPU idle inside submissions</td><td></td><td>0.618</td><td>0.3%</td></tr>
+<tr><td><strong>host and driver</strong></td><td></td><td><strong>86.237</strong></td>
+    <td><strong>35.7%</strong></td></tr>
+<tr><td>step wall</td><td></td><td>241.882</td><td>100.0%</td></tr>
 </tbody>
 </table>
 </div>
 
-<p>20 steps at batch 64 after 20 warm-up steps, on the RX 5600M. <strong>Nearly half a step is
-spent outside every submission window</strong> — more than any single kernel, and the reason
-dispatch overhead is sequenced ahead of GEMM tuning.</p>
+<p>20 steps at batch 64 after 20 warm-up steps, best of 5 rounds, on the RX 5600M. One
+round of identical work varies between 12.1 and 16.9 ms on this machine — GPU time and host
+time do not scale together, so a single round distorts the <em>split</em> and not only the
+total. <strong>Over a third of a step is spent outside every submission window</strong> —
+more than any single kernel, and the reason dispatch overhead is sequenced ahead of GEMM
+tuning.</p>
 
-<p>Two things only direct attribution could say. The 20 steps made <strong>780
-submissions</strong> — 39 each — and <strong>11 of every 39 carry no compute at all</strong>,
-being uploads and the download behind <code>.item()</code>. And GPU idle time inside
-submissions is <strong>0.4%</strong>: the barriers between dispatches are not the cost.</p>
+<p>Two things only direct attribution could say. The 20 steps made <strong>500
+submissions</strong> — 25 each — and <strong>11 of every 25 carry no compute at all</strong>,
+being uploads, parameter assignments and the download behind <code>.item()</code>. And GPU
+idle time inside submissions is <strong>0.3%</strong>: the barriers between dispatches are
+not the cost.</p>
+
+<p>This measurement paid for itself immediately. It showed the optimiser spending 24 of the
+step's 39 submissions on eight parameters, so the optimisers were rewritten to build every
+parameter's update first and realise them together: <strong>39 → 25 submissions per step,
+1.5–1.9× on the optimiser phase</strong> across all seven configurations, with parameters
+bit-identical to before. The table above is the result.</p>
+
+<div class="admon warn"><span class="label">⚠ Fewer submissions is not the same as faster</span><div class="body">
+<p>An intermediate version of that change removed <em>seven</em> submissions from the
+optimiser and was <strong>slower than doing nothing</strong> — 17 submissions at 2.12 ms
+against 24 at 1.84 ms. The saving only appeared once both of the optimiser's passes
+batched. Submission count is a proxy for host cost, and the relationship is not
+monotonic.</p>
+</div></div>
 
 <p>The same report over any code of your own:</p>
 
@@ -133,14 +151,13 @@ print(cap.report().table())</code></pre>
 duration and turns them off again on exit. It is a <em>consumer</em>: it joins what the
 profiler and the planner each publish, and neither of them knows it exists.</p>
 
-<div class="admonition note">
-<p class="admonition-title">What this number is worth</p>
+<div class="admon note"><span class="label">ⓘ What this number is worth</span><div class="body">
 <p>The <em>host and driver</em> row is an <strong>upper bound</strong>. Its wall clock is a
 profiled one, and vkML's own measurement rules forbid subtracting an unprofiled run to remove
 the profiler's readback — so the readback lands in that bucket. The GPU rows are timestamps
 and are unaffected. The report prints <code>GPU / wall</code> alongside, because below about
 0.5 a wall-clock comparison is inadmissible whatever the effect size.</p>
-</div>
+</div></div>
 
 <h2 id="corroboration">Three independent observations agree</h2>
 
@@ -154,7 +171,7 @@ arithmetic.</li>
 
 <p>CIFAR-100's CNN spends <strong>96.3%</strong> of its step in the forward/backward/optimiser
 region rather than in batch loading and transfer. That is a statement about the data path, not
-about the GPU: attributing <em>inside</em> that region puts 44.8% of the CNN's step outside
+about the GPU: attributing <em>inside</em> that region puts 35.7% of the CNN's step outside
 every submission window too. Submission overhead is not confined to small models.</p>
 
 <h2 id="devices">Two GPUs, identical results</h2>

@@ -163,9 +163,9 @@ T: dict[int, tuple] = {
     99:  ("done", DEFECT,   OBSERVE, "CLOSED: DispatchId joined cost to choice, then intervals and "
                                      "submission retention made the join ADD UP; a CIFAR step now "
                                      "prints a per-kernel table with the remainder shown", None),
-    100: ("open", DEFECT,   PRODUCT, "PREMISE CORRECTED by #99: submission cost is 44.8%, not 74%. "
-                                     "Still the largest single item and larger than any kernel, so "
-                                     "the work stands with a lower ceiling", FOUND),
+    100: ("open", DEFECT,   PRODUCT, "PREMISE CORRECTED by #99: submission cost was 44.8%, not 74%, "
+                                     "and is 35.7% since the optimiser batched (#127). Still the "
+                                     "largest single item; the rest needs ADR 0006 stage B", FOUND),
     101: ("open", DESIGN,   PRODUCT, "verifying convolution is NOT materialised im2col+GEMM; the "
                                      "roadmap says verify before designing", SHARED),
     102: ("open", DEFERRED, PRODUCT, "M3.2: P0+P1 showing arithmetic is not the remaining cost", SHARED),
@@ -208,6 +208,10 @@ T: dict[int, tuple] = {
     126: ("done", DEFECT,   PRODUCT, "CLOSED: the observability bindings were compiled out with the "
                                      "Vulkan backend, so `import vkml` died on the three CPU-only "
                                      "CI jobs", None),
+    # ---- P1's first slice, taken with #99's instrument ----
+    127: ("done", PLANNED,  PRODUCT, "CLOSED: optimiser step batched into 2 passes -- 39 -> 25 "
+                                     "submissions/step, 1.5-1.9x on the phase, parameters "
+                                     "bit-identical; ADR 0006 section 10", None),
     117: ("open", PLANNED,  OBSERVE, "MEASURED 58.8ns / 131.7ns per publish; end-to-end could not "
                                      "resolve it (4 orders under noise). Regression gate remains", SHARED),
 }
