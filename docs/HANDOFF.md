@@ -95,34 +95,48 @@ Three findings worth keeping:
 - **Three of the four claims the roadmap's P1 list started with were wrong**,
   and only re-measuring after each change could show it.
 
-## P1's exit criterion is still unmet, and now says what blocks it
+## P1's exit criterion turned out to be about the batch size
 
-`EXTENSIBILITY-ROADMAP.md` §4a P1 exits when the discrete and integrated GPUs
-stop tying on MNIST. Measured after all three fixes: **2.18 vs 2.05 s/epoch —
-still tied, and the integrated one is still faster.** Both halved (from 4.41),
-so the work helped, equally, on both.
+It exits when the discrete and integrated GPUs stop tying on MNIST. They do —
+**above batch 256**, and cleanly:
 
-Attributing an MNIST step says why: **GPU busy 40.5%, host 58.5%, 7 submissions
-of which only 3 carry compute.** A 784→128→10 MLP at batch 64 is 0.61 ms of
-arithmetic against 0.89 ms of host time; no kernel work can close that.
+```
+  batch    discrete 36 CU   integrated 6 CU
+     64        2.18 s           1.99 s      tied (integrated faster)
+    128        1.12 s           1.20 s      tied
+    256        0.62 s           0.67 s      tied
+    512        0.43 s           0.63 s      1.47x
+   1024        0.25 s           0.43 s      1.72x
+```
 
-The four non-compute submissions are two uploads and the two behind `.item()`.
+At batch 64 it cannot separate and no submission work will make it. That step
+is **0.61 ms of arithmetic** against 0.89 ms of host; removing every one of its
+four non-compute submissions is worth ~0.13 ms measured. Every size above
+halved from this work; the tie at 64 did not move, and could not.
 
-## Next concrete step
+The criterion was well chosen — it stayed red through three real fixes — and it
+is now spent, because it is satisfiable by changing the batch size. A successor
+should name a **step at a fixed shape**: host and driver below 20% of a batch-64
+MNIST step, say.
+
+## Next concrete step — a decision, not an implementation
 
 Eight submissions per CIFAR step: 2 uploads, 1 backward, 3 optimiser, 2 for
 `.item()`. **`matmul` at 23.7% is now the largest line in the table.**
 
-Two readings, and the choice between them is the next decision:
+**Candidate 4 is measured and deferred.** The `.item()` half has a fix that was
+tried and rejected — adding the root to `backward()`'s realise removes one
+submission and, on `sum(a @ b)`, adds the whole forward (4 dispatches to 6,
+caught by `test_backward_emits_no_degenerate_reductions`); the reasoning is in
+`src/autograd/autograd.cpp` beside the code that would do it. The upload half is
+worth **0.065 ms — 4% of a batch-64 step** (0.171 ms for two uploads against
+0.104 ms for one of the same total bytes, minimum of 300 warm repeats) and needs
+a new public API to collect it.
 
-1. **Keep going on P1**, which is where the MNIST criterion is blocked. The
-   `.item()` half has a fix that was **tried and rejected**: adding the root to
-   `backward()`'s realise removes one submission and, on `sum(a @ b)`, adds the
-   whole forward — 4 dispatches to 6, caught by
-   `test_backward_emits_no_degenerate_reductions`. The reasoning is recorded in
-   `src/autograd/autograd.cpp` beside the code that would do it. What is left
-   is the uploads, and that needs a design decision: an explicit batched
-   constructor, or a deferred upload.
+So the open question is whether P1 continues at all:
+
+1. **Command-buffer reuse** (candidate 5) attacks the per-submission cost
+   itself, which is ~0.5 ms of MNIST's 0.89 ms host time. Unmeasured.
 2. **`M3_ROADMAP`'s GEMM work is no longer mis-sequenced.** The argument for
    deferring it was that arithmetic was a quarter of the step; on CIFAR it is
    now three quarters, and `matmul` alone is 23.7%.

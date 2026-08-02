@@ -199,9 +199,10 @@ and are unaffected. The report prints <code>GPU / wall</code> alongside, because
 <h2 id="corroboration">Three independent observations agree</h2>
 
 <ul>
-<li>MNIST trains at <strong>4.41 s/epoch on the 36-CU discrete card and 4.35 s/epoch on the 6-CU
-integrated one</strong>. Six times the compute, no difference — the workload never reaches the
-arithmetic.</li>
+<li>MNIST at batch 64 trained at <strong>4.41 s/epoch on the 36-CU discrete card and 4.35
+s/epoch on the 6-CU integrated one</strong>. Six times the compute, no difference — the
+workload never reaches the arithmetic. Both are 2.18 / 1.99 s/epoch after the scheduling
+work above, and the tie breaks above batch 256.</li>
 <li>A submission costs about <strong>105 µs against 9 µs for a dispatch</strong>.</li>
 <li>The optimiser is <strong>62.7% of an MLP step</strong>, across 12 submissions.</li>
 </ul>
@@ -217,7 +218,7 @@ every submission window too. Submission overhead is not confined to small models
 <table>
 <thead><tr><th>Workload</th><th>Discrete (36 CU)</th><th>Integrated (6 CU)</th><th>Test accuracy</th></tr></thead>
 <tbody>
-<tr><td>MNIST MLP, 10 epochs</td><td>4.41 s/epoch</td><td>4.35 s/epoch</td>
+<tr><td>MNIST MLP, 10 epochs, batch 64</td><td>2.18 s/epoch</td><td>1.99 s/epoch</td>
     <td><strong>97.47% on both</strong></td></tr>
 <tr><td>CIFAR-100 CNN, 10 epochs</td><td>17.48 s/epoch</td><td>60.45 s/epoch</td>
     <td><strong>28.90% on both</strong></td></tr>
@@ -229,8 +230,30 @@ every submission window too. Submission overhead is not confined to small models
 contract holding across hardware, not a coincidence.</p>
 
 <p>The timings show the same split as the batch scaling: on the compute-bound CNN the 6-CU part
-is 3.5× slower, as its compute-unit count predicts; on the submission-bound MLP it <em>ties the
+is 3.5× slower, as its compute-unit count predicts; on the MLP at batch 64 it <em>ties the
 discrete card</em>.</p>
+
+<p>That tie was read as a framework problem for a long time, and it is a property of the
+<em>batch size</em>. One epoch of the MLP, after the scheduling work above:</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Batch</th><th>Discrete (36 CU)</th><th>Integrated (6 CU)</th>
+    <th>Separation</th></tr></thead>
+<tbody>
+<tr><td>64</td><td>2.18 s</td><td>1.99 s</td><td>tied — integrated faster</td></tr>
+<tr><td>128</td><td>1.12 s</td><td>1.20 s</td><td>tied</td></tr>
+<tr><td>256</td><td>0.62 s</td><td>0.67 s</td><td>tied</td></tr>
+<tr><td>512</td><td>0.43 s</td><td>0.63 s</td><td><strong>1.47×</strong></td></tr>
+<tr><td>1024</td><td>0.25 s</td><td>0.43 s</td><td><strong>1.72×</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Above batch 256 the two separate cleanly and in the right direction, and the gap grows with
+the batch. A 784→128→10 MLP at batch 64 is <strong>0.61 ms of arithmetic</strong> — small
+enough that a fixed per-step host cost dominates it no matter how small that cost gets. Every
+size above halved from this section's work; the tie at 64 did not move, and could not.</p>
 
 <h2 id="torch-parity">Against PyTorch, on accuracy</h2>
 

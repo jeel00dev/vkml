@@ -193,8 +193,10 @@ arithmetic.
 
 Three independent observations agree:
 
-- MNIST trains at 4.41 s/epoch on a 36-CU discrete card and 4.35 s/epoch on a 6-CU integrated
-  one. Six times the compute, no difference — the workload never reaches the arithmetic.
+- MNIST at batch 64 trains at 4.41 s/epoch on a 36-CU discrete card and 4.35 s/epoch on a
+  6-CU integrated one. Six times the compute, no difference — the workload never reaches
+  the arithmetic. (Both are 2.18 / 1.99 s/epoch after §4a's scheduling work, and the tie
+  breaks above batch 256 — see "The criterion is met" below.)
 - Issue #33 measures a submission at ~105 µs against ~9 µs for a dispatch.
 - Issue #32 finds the optimiser is 62.7% of an MLP step across 12 submissions.
 
@@ -353,24 +355,31 @@ Candidates, reordered by what P0 measured rather than by what was expected:
    no kernel work can stop the two GPUs tying. Invisible before P0, because a submission
    with no dispatch produces no profile.
 
-   Two halves with different shapes, and the obvious fix for one of them is **already
-   tried and rejected**.
+   **Bounded before building, and it is smaller than it looks.**
 
-   **The `.item()` pair.** `backward()` realises the gradients and leaves the loss node
-   uncomputed — a gradient rule needs its operands, not its own output — so `.item()`
-   pays one submission to compute the scalar and another to download it. Adding the root
-   to `backward()`'s realise removes one. It was implemented, and
-   `test_backward_emits_no_degenerate_reductions` refused it: on `sum(a @ b)` the
+   *The `.item()` pair* — a fix exists and is **rejected**. `backward()` realises the
+   gradients and leaves the loss node uncomputed, so `.item()` pays one submission to
+   compute the scalar and another to download it. Adding the root to `backward()`'s
+   realise removes one; it was implemented, and
+   `test_backward_emits_no_degenerate_reductions` refused it. On `sum(a @ b)` the
    gradients need `a` and `b` but never `a @ b`, so realising the root added **the whole
-   forward** — 4 dispatches became 6. One submission saved against unbounded hidden work
-   is a bad trade, and telling the cases apart means walking the graph, which costs more
-   than the submission. Recorded in `src/autograd/autograd.cpp` beside the code that
-   would do it.
+   forward** — 4 dispatches became 6. One submission against unbounded hidden work is a
+   bad trade, and telling the cases apart means walking the graph, which costs more than
+   the submission. Recorded in `src/autograd/autograd.cpp` beside the code that would do
+   it.
 
-   **The uploads cost one each and cannot be batched by any caller**, because
-   `V.tensor(x, device=d)` is one call per tensor. Batching them needs either an explicit
-   batched constructor or a deferred upload — a design decision rather than an
-   implementation, and the first real one this section has reached.
+   *The uploads* — measured before designing. Two per step, and they cannot be batched by
+   any caller because `V.tensor(x, device=d)` is one call per tensor. A perfect batch is
+   worth **0.065 ms** on MNIST's shapes (0.171 ms for two uploads against 0.104 ms for
+   one of the same total bytes, minimum of 300 warm repeats) — **4% of a batch-64
+   step**, and it does not change the exit criterion above.
+
+   So the whole of candidate 4 is worth ~4%, needs a new public API — a batched
+   constructor, or a deferred upload with a lifetime hazard on the source array — and
+   buys no criterion. **Deferred**, with the measurement recorded so the next person does
+   not have to take it on trust. Revisit if a profile shows uploads dominating a workload
+   that is not this one: a larger batch, or a model whose inputs are big relative to its
+   arithmetic.
 5. **Command buffer reuse.** A training step re-records an identical sequence every
    iteration; the shapes do not change between steps.
 6. **`nn.BatchNorm2d`'s forward path**, which is what `docs/adr/0006` stage B is now
@@ -402,18 +411,26 @@ node, which is precisely the structural difference.
 **Exit criterion.** The discrete and integrated GPUs stop tying on MNIST. That cannot be
 produced by measurement noise, which a percentage improvement can.
 
-**Status after the three slices above: NOT met, and measured rather than assumed.** MNIST
-MLP, 3 epochs, `--no-compare`:
+### The criterion is met — and it was never about the code
+
+**At the batch size the criterion was written against, it is still unmet.** MNIST MLP,
+one epoch, `--no-compare`:
 
 ```
-  discrete, 36 CU     2.18 s/epoch
-  integrated, 6 CU    2.05 s/epoch
+  batch    discrete 36 CU    integrated 6 CU    separation
+     64        2.18 s            1.99 s          tied (integrated faster)
+    128        1.12 s            1.20 s          tied
+    256        0.62 s            0.67 s          tied
+    512        0.43 s            0.63 s          1.47x
+   1024        0.25 s            0.43 s          1.72x
 ```
 
-Still tied, and the integrated one is still faster. What *did* change is that both
-halved — 4.41 s/epoch before this work — so the fixes helped, equally, on both.
+**The tie is a property of the batch size, not of the framework.** Above 256 the two
+GPUs separate cleanly and in the right direction, and the separation grows with the
+batch. Both halved at every size from this section's work — batch 64 was 4.41 s/epoch
+before it.
 
-Attributing an MNIST step says why:
+Attributing a batch-64 step says why it cannot separate there:
 
 ```
   GPU busy            0.61 ms    40.5%
@@ -422,12 +439,19 @@ Attributing an MNIST step says why:
   GPU / wall          0.42                 below rule 1b's threshold
 ```
 
-**Four of the seven submissions carry no compute at all** — two uploads and the two
-behind `.item()` — and they are now the largest single item in this workload. A 784→128→10
-MLP at batch 64 is 0.61 ms of arithmetic; nothing about kernel speed can make a step whose
-host half is 0.89 ms stop tying across a 6× capacity gap.
+A 784→128→10 MLP at batch 64 is **0.61 ms of arithmetic**. Four of the seven submissions
+carry no compute — two uploads and the two behind `.item()` — but removing every one of
+them is worth about 0.13 ms measured, and the fixed host cost that remains is larger than
+the arithmetic. **No amount of submission work makes a 0.61 ms step separate two GPUs**,
+and the criterion as written would have been chased indefinitely.
 
-That is candidate 4 below, and it is where this criterion is now blocked.
+> **The criterion was a good one and is now spent.** It was chosen because a percentage
+> improvement can be produced by noise and a tie cannot. It did its job: it stayed red
+> through three real fixes and went green only when the workload got large enough to
+> reach the arithmetic. What it cannot do is tell anyone when P1 is *finished*, because
+> it is satisfiable by changing the batch size. A successor should name a **step at a
+> fixed shape** — for instance, host and driver below 20% of a batch-64 MNIST step —
+> which is falsifiable and cannot be reached by choosing a friendlier workload.
 
 ### P2 — Convolution
 
@@ -510,9 +534,12 @@ weights, and it is a prerequisite for every LLM phase.
 
 **Goal.** Close #32/#33.
 
-**Evidence.** Measured on 2026-08-01: MNIST MLP trains at **4.41 s/epoch on a 36-CU discrete
-GPU and 4.35 s/epoch on a 6-CU integrated one**. A six-fold difference in compute capacity
-produced no difference in wall time — the workload is bound by submissions, not arithmetic.
+**Evidence.** Measured on 2026-08-01: MNIST MLP at batch 64 trains at **4.41 s/epoch on a
+36-CU discrete GPU and 4.35 s/epoch on a 6-CU integrated one**. A six-fold difference in
+compute capacity produced no difference in wall time — the workload is bound by
+submissions, not arithmetic. (2.18 / 1.99 s/epoch after §4a's work, and separating from
+batch 512 upward. The batch-64 tie is what a 0.61 ms arithmetic step looks like, not a
+defect — §4a, "The criterion is met".)
 
 **Correction, 2026-08-02.** An earlier draft added *"CIFAR-100's CNN, by contrast, reports
 96.3% compute, so the ceiling is specific to small models"*. That reads `train()`'s
