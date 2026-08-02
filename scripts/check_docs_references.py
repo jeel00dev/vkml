@@ -138,6 +138,10 @@ DOC_PATH_EXCEPTIONS = {
 INDEX_SKIP = {".git", ".venv", "build", "node_modules", "_site", "actions-runner",
               "__pycache__"}
 
+# Vendored locally and gitignored, so it is present on a developer's tree and on
+# no runner. Its absence is what makes the file index incomplete.
+REFERENCE_TREE = ROOT / "third_party" / "reference"
+
 
 def _file_index() -> dict:
     index: dict[str, list] = {}
@@ -186,6 +190,7 @@ def stale_docs_references():
     they are for.
     """
     out = []
+    unverifiable = []
     index = _file_index()
     docs = sorted(ROOT.glob("docs/**/*.md")) + [ROOT / n for n in
                                                 ("README.md", "CONTRIBUTING.md", "CLAUDE.md")]
@@ -201,6 +206,16 @@ def stale_docs_references():
             cands = _candidates(rel, index)
             where = doc.relative_to(ROOT)
             if not cands:
+                # The vendored reference trees are gitignored, so NO runner has
+                # them -- and the design documents cite them constantly, which
+                # is why INDEX_SKIP deliberately does not skip them. With the
+                # index incomplete, an unresolved path cannot be told apart from
+                # a citation into CUTLASS or llama.cpp, so it is reported and
+                # not failed. On a full tree the check is exact, and that is
+                # where it has teeth.
+                if not REFERENCE_TREE.is_dir():
+                    unverifiable.append(f"{where}: `{rel}`")
+                    continue
                 out.append(f"{where}: `{rel}` names no file in the tree")
             elif line and not any(
                     int(line) <= c.read_text(errors="ignore").count("\n") + 1
@@ -208,6 +223,10 @@ def stale_docs_references():
                 out.append(f"{where}: `{rel}:{line}` but no file of that name is "
                            f"that long (closest: {cands[0].relative_to(ROOT)}, "
                            f"{cands[0].read_text(errors='ignore').count(chr(10)) + 1} lines)")
+    if unverifiable:
+        print(f"  note  {len(unverifiable)} path citations not checked: "
+              f"{REFERENCE_TREE.relative_to(ROOT)} is not checked out, so the file "
+              f"index is incomplete")
     return out
 
 

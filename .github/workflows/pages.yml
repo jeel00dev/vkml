@@ -80,6 +80,16 @@ jobs:
           python scripts/docs_graph.py --check
           python scripts/check_source_links.py
           python scripts/check_design_system.py
+          # Moved from ci.yml, which ran them against a site built from a
+          # CPU-only module -- web/build.py cannot do that, so the step died
+          # before any of these ran. They need the site AND numpy, and this is
+          # the job that has both.
+          python scripts/check_css_bindings.py
+          python scripts/check_docs_references.py
+          # The dashboard breaks each gate on purpose and checks it goes red.
+          # Two of its controls damage a page in web/_site, so it needs the
+          # site too.
+          python scripts/verify_gates.py
 
       - uses: actions/upload-pages-artifact@v3
         with:

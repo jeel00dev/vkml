@@ -100,7 +100,15 @@ def main() -> int:
                     f"{page.name}: {rel}#L{line_s} is labelled for {name!r}, "
                     f"which does not appear within {WINDOW} lines of it")
 
-    print(f"  {checked} source links checked across {len(list(SITE.glob('*.html')))} pages")
+    pages = len(list(SITE.glob("*.html")))
+    print(f"  {checked} source links checked across {pages} pages")
+    # A gate that reports PASS over content it never opened is the failure mode
+    # this project keeps finding. Run without a built site this printed
+    # "0 source links checked across 0 pages" and exited 0 -- which is exactly
+    # what it did in ci.yml, where web/build.py had died a step earlier.
+    if pages == 0 or checked == 0:
+        print("  FAIL  nothing to check: run python web/build.py first")
+        return 1
     if problems:
         print(f"  {missing} unresolvable, {drifted} pointing at the wrong place")
         for p in problems[:25]:

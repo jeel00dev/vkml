@@ -91,9 +91,6 @@ jobs:
 
       # The documentation gates. They import vkml only for the example runner,
       # which is why that one lives in the Python job instead of here.
-      - name: Documentation references
-        run: python scripts/check_docs_references.py
-
       # Version numbers stated in prose against the file that decides them.
       # The get-started page said CMake 3.24 while CMakeLists.txt requires
       # 3.25 -- a reader with 3.24 would have followed the docs and failed to
@@ -128,12 +125,11 @@ jobs:
       - name: Mutation anchors
         run: python scripts/mutation_check.py --patterns
 
-      # Every gate proves it can fail. check_docs_links.py printed the broken
-      # links it found and exited 0 for its entire life, reporting PASS in this
-      # very job. This breaks something on purpose for each gate and checks the
-      # exit status, so a gate that has gone blind fails the build.
-      - name: Verification dashboard
-        run: python scripts/verify_gates.py
+      # verify_gates.py moved to pages.yml with the site gates. Two of the
+      # controls it runs -- check_docs_links and check_docs_references -- damage
+      # a page in web/_site and check the gate goes red, so they need the site
+      # that this job does not build. Run here they reported "the gate stayed
+      # red after the damage was reverted", which names the wrong cause.
 
       # The other half of that question. verify_gates asks whether each gate CAN
       # fail; this asks whether anything ever gives it the chance. Two gates
@@ -238,44 +234,23 @@ jobs:
       - name: Manifesto P1 module coverage
         run: python scripts/check_module_coverage.py
 
-      # Line numbers are the part of a source reference that goes stale
-      # quietly: inserting lines at the top of a header moves every link below
-      # it, the file still exists, the link still resolves, and it now points at
-      # a different declaration. This checks the association, not the existence.
-      - name: Documentation source links
-        run: |
-          python web/build.py
-          python scripts/check_source_links.py
-
-      # Both of these could fail and neither was ever given the chance.
+      # THE SITE GATES LIVE IN pages.yml, not here.
       #
-      # check_docs_links.py was the gate that exited 0 for its entire life. It
-      # was fixed, and a control in verify_gates.py proves it can fail -- but
-      # nothing ran it over the real site. A broken link would still have failed
-      # the build, as an accident of the dashboard re-running it after restoring
-      # its own damage, and the message would have read "the gate stayed red
-      # after the damage was reverted", which names the wrong cause.
+      # This job builds the extension WITHOUT Vulkan -- one of the three CPU-only
+      # configurations -- and web/build.py cannot build a site from that. It
+      # introspects the module to render each member's signature, so the fourteen
+      # names python/vkml binds under `if has_vulkan:` are simply absent and it
+      # dies on the first one. pages.yml installs with VKML_VULKAN=ON precisely
+      # for this reason and says so.
       #
-      # docs_graph.py --check has a baseline, a governance rule and a manual
-      # entry in the dashboard, and was executed by nothing at all. New orphans
-      # were unguarded the whole time.
+      # check_source_links.py, check_docs_links.py, docs_graph.py --check and
+      # check_css_bindings.py all run there instead, against a site built from a
+      # complete module. The first three were duplicated here already; the fourth
+      # moved with them because it needs the same site.
       #
-      # Same build as the step above, so the site is already there.
-      - name: Documentation link graph
-        run: |
-          python scripts/check_docs_links.py
-          python scripts/docs_graph.py --check
-
-      # Markup and stylesheet agreeing about which classes exist. Two
-      # admonitions shipped using Sphinx's `admonition`/`admonition-title`
-      # rather than this project's `admon warn` -- they rendered as bare divs,
-      # and the build, the link check and the design-system check all passed
-      # because none of them compares the two files. The other direction is
-      # dead rules: seven selectors matched nothing on the site.
-      #
-      # Same build as the steps above, so the site is already there.
-      - name: CSS bindings
-        run: python scripts/check_css_bindings.py
+      # Running them here was worse than useless: with the site absent,
+      # check_source_links reported "0 source links checked across 0 pages" and
+      # PASSED. It fails on an empty site now.
 
       - name: Run validation suite
         # Coverage is recorded on the same run: it costs nothing measurable and
