@@ -257,25 +257,30 @@ total). RX 5600M / RADV.
 
 ```
   kernel                        count     gpu ms   % step
-  matmul                          540     47.158    25.6%
-  im2col                           60     19.722    10.7%
-  max_pool2d_backward              60     14.677     8.0%
-  col2im                           40      9.512     5.2%
-  add                             240      9.073     4.9%
-  sum:reduce_workgroup_tree       140      5.843     3.2%
-  sum:reduce_lane_per_output       40      2.700     1.5%
-  (17 more)                      2100     19.760    10.6%
+  matmul                          540     49.624    30.9%
+  add                             240      9.583     6.0%
+  im2col                           60      7.349     4.6%
+  max_pool2d_backward              60      7.274     4.5%
+  sum:reduce_workgroup_tree       140      6.016     3.7%
+  sum:reduce_lane_per_output       40      2.847     1.8%
+  col2im                           40      2.586     1.6%
+  (17 more)                      2100     19.933    12.4%
   --------------------------------------------------------
-  GPU busy                                128.445    69.7%
-  GPU idle in submits                       0.357     0.2%
-  host and driver *                        55.559    30.1%
+  GPU busy                                105.212    65.4%
+  GPU idle in submits                       0.385     0.2%
+  host and driver *                        55.183    34.3%
   ========================================================
-  step wall                               184.361   100.0%
+  step wall                               160.781   100.0%
 
   160 submissions, 80 of them with work to time
   * upper bound: a profiled wall clock includes the profiler's own readback
-  GPU / wall = 0.70
+  GPU / wall = 0.65
 ```
+
+**`matmul` is 30.9% and the next line is 6.0%.** Five rounds of measure-fix-remeasure have
+taken every other kernel below a tenth of the step. What is left is arithmetic and host
+cost — where `M3_ROADMAP` and P1 respectively point, and neither is an addressing problem
+of the kind the last three fixes were.
 
 The two `sum` rows are the **kernel choice joined to its cost** — the reduction publishes
 which structure it picked and the report groups by the join, which is what §4a P0 built
@@ -317,10 +322,18 @@ predicting the next one** — `docs/adr/0006` §10, §11 and §12, then `docs/ad
 The first three are scheduling: **host and driver fell from 42% to 24% and the step from
 13.57 to 10.07 ms with no kernel changed and every result bit-identical.**
 
-The fourth is a kernel — the reduction restructure in `docs/adr/0010`, which took `sum`
-from 14.9% of the step to 4.7% and the step to 8.87 ms. It is also why the host share
-*rises* in the last column: the same host cost against a smaller step. **A percentage is a
-ratio and this one has two moving ends;** the milliseconds are the thing to read.
+The last three are kernels, and all three turned out to be **addressing-bound rather than
+memory-bound** — a diagnosis only a comparison against an equivalent-traffic kernel could
+make. `docs/adr/0010` restructured the reduction (`sum` 14.9% → 5.5%); `docs/adr/0011`
+specialised the geometry of `im2col`/`col2im` (15.9% → 6.2%) and then of `max_pool2d`
+(9.6% → 4.5%).
+
+They are also why the host share *rises* while the step shrinks: the same host cost against
+a smaller step. **A percentage is a ratio and this one has two moving ends;** the
+milliseconds are the thing to read — GPU busy fell 128.4 → 105.2 ms per 20 steps.
+
+**13.57 ms → 8.04 ms, a 1.69× end-to-end speedup**, every result bit-identical, and every
+step found by re-running the same measurement rather than by predicting it.
 
 **Two things the table says that batch scaling could not.**
 

@@ -1374,10 +1374,26 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 const bool image_contiguous = image.shape.is_contiguous();
                 push.image_op = to_gpu_operand(image.shape, dtype_size(node->dtype));
 
+                // The geometry joins BACKWARD and CONTIGUOUS as specialisation
+                // constants, for the reason docs/adr/0011 establishes: the
+                // adjoint runs a stride test per kernel position with an argmax
+                // scan inside it, so a 2x2 pool performed ~20 integer divisions
+                // per input element and ran at 5-7x off `relu` on the same
+                // traffic. Only divisors and loop bounds are here.
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.spec_constants = {wg, backward ? 1U : 0U, spec_dtype(node->dtype),
-                                      image_contiguous ? 1U : 0U};
+                cfg.spec_constants = {wg,
+                                      backward ? 1U : 0U,
+                                      spec_dtype(node->dtype),
+                                      image_contiguous ? 1U : 0U,
+                                      static_cast<uint32_t>(push.kernel_h),
+                                      static_cast<uint32_t>(push.kernel_w),
+                                      static_cast<uint32_t>(push.stride_h),
+                                      static_cast<uint32_t>(push.stride_w),
+                                      static_cast<uint32_t>(push.image_h),
+                                      static_cast<uint32_t>(push.image_w),
+                                      static_cast<uint32_t>(push.out_h),
+                                      static_cast<uint32_t>(push.out_w)};
 
                 if (debug_dispatch_enabled()) {
                     trace_dispatch(*node, "max_pool2d", cfg, sizeof(PoolPush),

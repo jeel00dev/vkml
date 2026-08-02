@@ -2,8 +2,9 @@
 
 **Status:** accepted, implemented and measured.
 **Date:** 2026-08-02
-**Covers:** `shaders/im2col.comp`, `shaders/col2im.comp`, and the general question the
-measurement raised: *when is a shader's cost its addressing rather than its memory?*
+**Covers:** `shaders/im2col.comp`, `shaders/col2im.comp`, `shaders/max_pool2d.comp`, and the
+general question the measurement raised: *when is a shader's cost its addressing rather than
+its memory?*
 **Hardware:** AMD RX 5600M (RDNA1), RADV.
 
 ---
@@ -162,6 +163,60 @@ existing strided-input tests in `test_layout_and_scale.py`.
 
 ---
 
+## 4b. Applied a second time, to `max_pool2d` — and a regression that was not one
+
+Re-profiling after §3 put `max_pool2d_backward` at 9.6% of a step, second only to `matmul`
+and entirely unexamined. It is the same shape of problem: the adjoint runs a stride test per
+kernel position with an argmax scan inside it, so a 2×2 pool performed roughly twenty integer
+divisions per input element.
+
+```
+                        before    after     % of peak
+  backward 32ch @32      51.4  ->  77.0     17.8 -> 26.7
+  backward 64ch @16      30.1  ->  46.7     10.5 -> 16.2
+  backward 128ch @8      24.8  ->  37.3      8.6 -> 12.9
+```
+
+End to end, `max_pool2d_backward` went **9.6% → 4.5%** of a step and GPU busy 112.1 → 105.2 ms.
+
+`BACKWARD` and `CONTIGUOUS` were already specialisation constants here, so this adds variants
+along axes the cache already split on.
+
+### The forward looked like a 12% regression, and was not
+
+The first measurement showed the forward at 128ch @8×8 going from 103.7 to 83 GB/s. Two
+things stopped that being accepted:
+
+- **The driver's own view.** `vulkan_pipeline_stats` reports 10 VGPRs forward and 14
+  backward, **no spilling and no scratch** — so the unrolling did not cost occupancy, which
+  was the obvious hypothesis. An independent producer contradicting the guess is exactly what
+  §5 of `OBSERVABILITY-ARCHITECTURE.md` asks for.
+- **The control.** `relu`, which did not change at all, varied by **32%** between runs on that
+  same 25-microsecond dispatch. Rule 1 says an effect of that size needs repeated independent
+  trials; here the noise was larger than the effect.
+
+Measured properly — shapes large enough that the kernel dominates its own timestamp bracket,
+minimum of 120 warm runs, A/B against the frozen baseline restored with `git stash` (rule 7):
+
+```
+                        before     after
+  128ch @8x8            0.0350  ->  0.0338    faster
+   64ch @16x16          0.0528  ->  0.0520    flat
+   32ch @32x32          0.0773  ->  0.0567    1.36x faster
+   32ch @64x64          0.2117  ->  0.2127    flat, 197 GB/s
+   64ch @64x64          0.4076  ->  0.4082    flat, 206 GB/s
+```
+
+**There is no regression.** The forward is faster or equal at every size, and flat at the
+large ones because it is already at ~200 GB/s — bandwidth-bound, with nothing left to win
+from addressing. The 12% was noise on a measurement the constitution's own rules say cannot
+resolve 12%.
+
+Recorded because the near-miss is the useful part: a regression was very nearly accepted and
+documented as a trade, on a number that did not exist.
+
+---
+
 ## 5. Consequences
 
 - **`im2col` is still 3.6× off its roof** while `col2im` has reached it. The remaining cost
@@ -172,7 +227,12 @@ existing strided-input tests in `test_layout_and_scale.py`.
   §4a P2 proposes fusing the im2col addressing into the GEMM's operand load so the expansion
   is never written. This ADR makes the expansion cheaper; that would make it free. The two do
   not conflict — this is the version that exists.
-- **The technique generalises and is deliberately not generalised yet.** `reduce`, `binary`,
-  `unary` and the rest all call `operand_offset`, and all would benefit from a
-  `SRC_CONTIGUOUS` fast path. Doing it here first, where it is 16% of a step, is the measured
-  order; doing it everywhere at once would be an unmeasured change to every kernel.
+- **The technique generalises and is being generalised in measured order.** Applied to
+  `im2col`/`col2im` (§3) and then to `max_pool2d` (§4b), in the order the profile named them.
+  `reduce`, `binary`, `unary` and the rest all call `operand_offset` and all would benefit
+  from a `SRC_CONTIGUOUS` fast path — but each is a pipeline-variant trade to be justified
+  where it is measured, not a blanket change to every kernel.
+- **Two kernels are now at the bandwidth roof and one is not.** `col2im` reaches 62–82% of
+  peak and `max_pool2d` forward ~200 GB/s; both are memory-bound and done. `im2col` is at
+  22–31% and its residual is the gather's access pattern, which is a different problem from
+  the one this ADR solves.

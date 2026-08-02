@@ -11,6 +11,24 @@
 // Padding is -infinity, not zero, so a window of negative values reports its
 // true maximum. That is why max pooling cannot compose as a max over im2col,
 // which pads with zero.
+//
+// THE GEOMETRY IS SPECIALISED, for the reason docs/adr/0011 establishes and
+// which bites hardest here. The adjoint runs a stride test per kernel position
+// and then an argmax scan inside it, so a 2x2 pool performed roughly twenty
+// integer divisions by runtime values per input element. Measured against
+// `relu` over the same tensor -- same traffic, one flat index:
+//
+//     max_pool2d_backward   51.4    30.1    24.8 GB/s
+//     relu                 231.1   171.5   148.3 GB/s     5.1x to 6.7x apart
+//
+// With the divisors known the compiler strength-reduces every one, unrolls
+// both loops, and where stride equals the kernel extent -- the ordinary
+// non-overlapping pool -- it can see that only one window can reach a given
+// input position and drops the rest of the scan.
+//
+// `BACKWARD` and `CONTIGUOUS` were already specialisation constants, so this
+// adds variants along axes the pipeline cache already splits on: the geometry
+// is per-layer, and a CNN has a handful of pooling layers.
 
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
@@ -30,6 +48,18 @@ layout(constant_id = 2) const uint DTYPE = T_F32;
 // caller that forgets to set it gets the correct-but-slower path rather than
 // wrong addresses, which is the same default unary.comp and where.comp use.
 layout(constant_id = 3) const bool CONTIGUOUS = false;
+
+// The divisors and the loop bounds. Only values this kernel DIVIDES by or
+// ITERATES over are here; one it merely multiplies by would cost a pipeline
+// variant and buy nothing.
+layout(constant_id = 4) const int KERNEL_H = 1;
+layout(constant_id = 5) const int KERNEL_W = 1;
+layout(constant_id = 6) const int STRIDE_H = 1;
+layout(constant_id = 7) const int STRIDE_W = 1;
+layout(constant_id = 8) const int IMAGE_H = 1;
+layout(constant_id = 9) const int IMAGE_W = 1;
+layout(constant_id = 10) const int OUT_H = 1;
+layout(constant_id = 11) const int OUT_W = 1;
 
 layout(push_constant, scalar) uniform Params {
     uint64_t src;      // forward: input.  backward: incoming gradient.
@@ -76,18 +106,18 @@ int argmax_in_window(uint64_t buf, uint plane_first, int oh, int ow) {
     float best = -1.0 / 0.0;   // -infinity
     int best_offset = -1;
 
-    for (int ki = 0; ki < p.kernel_h; ++ki) {
-        const int h = oh * p.stride_h - p.pad_h + ki * p.dilation_h;
-        if (h < 0 || h >= p.image_h) { continue; }
+    for (int ki = 0; ki < KERNEL_H; ++ki) {
+        const int h = oh * STRIDE_H - p.pad_h + ki * p.dilation_h;
+        if (h < 0 || h >= IMAGE_H) { continue; }
 
-        for (int kj = 0; kj < p.kernel_w; ++kj) {
-            const int x = ow * p.stride_w - p.pad_w + kj * p.dilation_w;
-            if (x < 0 || x >= p.image_w) { continue; }
+        for (int kj = 0; kj < KERNEL_W; ++kj) {
+            const int x = ow * STRIDE_W - p.pad_w + kj * p.dilation_w;
+            if (x < 0 || x >= IMAGE_W) { continue; }
 
-            const float v = load_f(buf, image_index(plane_first + uint(h * p.image_w + x)), DTYPE);
+            const float v = load_f(buf, image_index(plane_first + uint(h * IMAGE_W + x)), DTYPE);
             if (v > best) {
                 best = v;
-                best_offset = ki * p.kernel_w + kj;
+                best_offset = ki * KERNEL_W + kj;
             }
         }
     }
@@ -95,24 +125,24 @@ int argmax_in_window(uint64_t buf, uint plane_first, int oh, int ow) {
 }
 
 void forward(uint i) {
-    const int positions = p.out_h * p.out_w;
-    const int ow    = int(i) % p.out_w;
-    const int oh    = (int(i) / p.out_w) % p.out_h;
+    const int positions = OUT_H * OUT_W;
+    const int ow    = int(i) % OUT_W;
+    const int oh    = (int(i) / OUT_W) % OUT_H;
     const int plane = int(i) / positions;
 
-    const uint plane_first = uint(plane) * uint(p.image_h * p.image_w);
+    const uint plane_first = uint(plane) * uint(IMAGE_H * IMAGE_W);
     const int offset = argmax_in_window(p.src, plane_first, oh, ow);
 
-    const int h = oh * p.stride_h - p.pad_h + (offset / p.kernel_w) * p.dilation_h;
-    const int x = ow * p.stride_w - p.pad_w + (offset % p.kernel_w) * p.dilation_w;
-    store_f(p.dst, i, load_f(p.src, image_index(plane_first + uint(h * p.image_w + x)), DTYPE),
+    const int h = oh * STRIDE_H - p.pad_h + (offset / KERNEL_W) * p.dilation_h;
+    const int x = ow * STRIDE_W - p.pad_w + (offset % KERNEL_W) * p.dilation_w;
+    store_f(p.dst, i, load_f(p.src, image_index(plane_first + uint(h * IMAGE_W + x)), DTYPE),
             DTYPE);
 }
 
 void backward(uint i) {
-    const int pixels = p.image_h * p.image_w;
-    const int x     = int(i) % p.image_w;
-    const int h     = (int(i) / p.image_w) % p.image_h;
+    const int pixels = IMAGE_H * IMAGE_W;
+    const int x     = int(i) % IMAGE_W;
+    const int h     = (int(i) / IMAGE_W) % IMAGE_H;
     const int plane = int(i) / pixels;
 
     const uint plane_first = uint(plane) * uint(pixels);
@@ -122,21 +152,21 @@ void backward(uint i) {
     // element the property of one invocation, so nothing contends and the fold
     // order is fixed -- the same reason col2im and scatter_add are inverted.
     float acc = 0.0;
-    for (int ki = 0; ki < p.kernel_h; ++ki) {
+    for (int ki = 0; ki < KERNEL_H; ++ki) {
         const int top = h + p.pad_h - ki * p.dilation_h;
-        if (top < 0 || (top % p.stride_h) != 0) { continue; }
-        const int oh = top / p.stride_h;
-        if (oh >= p.out_h) { continue; }
+        if (top < 0 || (top % STRIDE_H) != 0) { continue; }
+        const int oh = top / STRIDE_H;
+        if (oh >= OUT_H) { continue; }
 
-        for (int kj = 0; kj < p.kernel_w; ++kj) {
+        for (int kj = 0; kj < KERNEL_W; ++kj) {
             const int left = x + p.pad_w - kj * p.dilation_w;
-            if (left < 0 || (left % p.stride_w) != 0) { continue; }
-            const int ow = left / p.stride_w;
-            if (ow >= p.out_w) { continue; }
+            if (left < 0 || (left % STRIDE_W) != 0) { continue; }
+            const int ow = left / STRIDE_W;
+            if (ow >= OUT_W) { continue; }
 
             // Only the window's first maximum receives its gradient.
-            if (argmax_in_window(p.image, plane_first, oh, ow) == ki * p.kernel_w + kj) {
-                acc += load_f(p.src, (plane * p.out_h + oh) * p.out_w + ow, DTYPE);
+            if (argmax_in_window(p.image, plane_first, oh, ow) == ki * KERNEL_W + kj) {
+                acc += load_f(p.src, (plane * OUT_H + oh) * OUT_W + ow, DTYPE);
             }
         }
     }
