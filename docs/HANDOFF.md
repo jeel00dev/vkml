@@ -95,19 +95,37 @@ Three findings worth keeping:
 - **Three of the four claims the roadmap's P1 list started with were wrong**,
   and only re-measuring after each change could show it.
 
+## P1's exit criterion is still unmet, and now says what blocks it
+
+`EXTENSIBILITY-ROADMAP.md` §4a P1 exits when the discrete and integrated GPUs
+stop tying on MNIST. Measured after all three fixes: **2.18 vs 2.05 s/epoch —
+still tied, and the integrated one is still faster.** Both halved (from 4.41),
+so the work helped, equally, on both.
+
+Attributing an MNIST step says why: **GPU busy 40.5%, host 58.5%, 7 submissions
+of which only 3 carry compute.** A 784→128→10 MLP at batch 64 is 0.61 ms of
+arithmetic against 0.89 ms of host time; no kernel work can close that.
+
+The four non-compute submissions are two uploads and the two behind `.item()`.
+
 ## Next concrete step
 
-The optimiser is no longer the largest item and neither is backward. Eight
-submissions per step: 2 uploads, 1 backward, 3 optimiser, 2 for `.item()`.
-**`matmul` at 23.7% is now the largest line in the table.**
+Eight submissions per CIFAR step: 2 uploads, 1 backward, 3 optimiser, 2 for
+`.item()`. **`matmul` at 23.7% is now the largest line in the table.**
 
 Two readings, and the choice between them is the next decision:
 
-1. **Keep going on P1.** The remaining 4 non-compute submissions are uploads and
-   the `.item()` download. Then command-buffer reuse.
+1. **Keep going on P1**, which is where the MNIST criterion is blocked. The
+   `.item()` half has a fix that was **tried and rejected**: adding the root to
+   `backward()`'s realise removes one submission and, on `sum(a @ b)`, adds the
+   whole forward — 4 dispatches to 6, caught by
+   `test_backward_emits_no_degenerate_reductions`. The reasoning is recorded in
+   `src/autograd/autograd.cpp` beside the code that would do it. What is left
+   is the uploads, and that needs a design decision: an explicit batched
+   constructor, or a deferred upload.
 2. **`M3_ROADMAP`'s GEMM work is no longer mis-sequenced.** The argument for
-   deferring it was that arithmetic was a quarter of the step; it is now
-   three quarters, and `matmul` alone is 23.7%.
+   deferring it was that arithmetic was a quarter of the step; on CIFAR it is
+   now three quarters, and `matmul` alone is 23.7%.
 
 `docs/adr/0006` stage B still has a purpose, but it is not the optimiser any
 more: it is `nn.BatchNorm2d`, which calls `assign_` on the FORWARD pass of every

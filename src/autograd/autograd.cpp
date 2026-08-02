@@ -599,6 +599,24 @@ void backward(const Tensor& root, const Tensor& seed) {
     std::vector<Tensor> totals;
     std::vector<NodePtr> roots;
     std::vector<Node*> leaves;
+
+    // THE ROOT IS DELIBERATELY NOT REALISED HERE, and the reason is measured.
+    //
+    // A training loop reads the loss immediately afterwards, and backward
+    // leaves it uncomputed -- a gradient rule needs its operands, not its own
+    // output -- so `loss.item()` costs two submissions where one would do.
+    // Adding `root.node()` to the realise below removes one of them.
+    //
+    // It also computes the root whether or not anyone reads it, and that is
+    // NOT bounded by "a reduction to a scalar", which is what it looked like.
+    // test_backward_emits_no_degenerate_reductions measured the real cost: on
+    // `sum(a @ b)` the gradients need `a` and `b` but never `a @ b`, so
+    // realising the root added the WHOLE FORWARD -- 4 dispatches became 6.
+    //
+    // One submission saved in the common case against unbounded hidden work in
+    // the general one is a bad trade, and there is no cheap way to tell the
+    // cases apart: deciding whether the root is already a dependency means
+    // walking the graph, which costs more than the submission does.
     for (const NodePtr& np : order) {
         if (!np->is_leaf() || !np->requires_grad) {
             continue;

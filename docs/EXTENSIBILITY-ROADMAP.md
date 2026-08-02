@@ -347,8 +347,30 @@ Candidates, reordered by what P0 measured rather than by what was expected:
    submission is. `Backend::copy_device_to_device` takes a span, `vkml::assign(dst, src)`
    is its public form, and the optimiser's budget became a **constant 3, independent of
    the parameter count**. 15 → 8 submissions per step.
-4. **Uploads and the `.item()` download** — 4 of the 8 that remain. Invisible before P0,
-   because a submission with no dispatch produces no profile.
+4. **Uploads and the `.item()` download** — 4 of CIFAR's 8 remaining submissions, and 4
+   of MNIST's 7. **This is now where P1's exit criterion is blocked** (see above): a
+   784→128→10 MLP at batch 64 has 0.61 ms of arithmetic against 0.89 ms of host time, so
+   no kernel work can stop the two GPUs tying. Invisible before P0, because a submission
+   with no dispatch produces no profile.
+
+   Two halves with different shapes, and the obvious fix for one of them is **already
+   tried and rejected**.
+
+   **The `.item()` pair.** `backward()` realises the gradients and leaves the loss node
+   uncomputed — a gradient rule needs its operands, not its own output — so `.item()`
+   pays one submission to compute the scalar and another to download it. Adding the root
+   to `backward()`'s realise removes one. It was implemented, and
+   `test_backward_emits_no_degenerate_reductions` refused it: on `sum(a @ b)` the
+   gradients need `a` and `b` but never `a @ b`, so realising the root added **the whole
+   forward** — 4 dispatches became 6. One submission saved against unbounded hidden work
+   is a bad trade, and telling the cases apart means walking the graph, which costs more
+   than the submission. Recorded in `src/autograd/autograd.cpp` beside the code that
+   would do it.
+
+   **The uploads cost one each and cannot be batched by any caller**, because
+   `V.tensor(x, device=d)` is one call per tensor. Batching them needs either an explicit
+   batched constructor or a deferred upload — a design decision rather than an
+   implementation, and the first real one this section has reached.
 5. **Command buffer reuse.** A training step re-records an identical sequence every
    iteration; the shapes do not change between steps.
 6. **`nn.BatchNorm2d`'s forward path**, which is what `docs/adr/0006` stage B is now
@@ -379,6 +401,33 @@ node, which is precisely the structural difference.
 
 **Exit criterion.** The discrete and integrated GPUs stop tying on MNIST. That cannot be
 produced by measurement noise, which a percentage improvement can.
+
+**Status after the three slices above: NOT met, and measured rather than assumed.** MNIST
+MLP, 3 epochs, `--no-compare`:
+
+```
+  discrete, 36 CU     2.18 s/epoch
+  integrated, 6 CU    2.05 s/epoch
+```
+
+Still tied, and the integrated one is still faster. What *did* change is that both
+halved — 4.41 s/epoch before this work — so the fixes helped, equally, on both.
+
+Attributing an MNIST step says why:
+
+```
+  GPU busy            0.61 ms    40.5%
+  host and driver     0.89 ms    58.5%     7 submissions, 3 of them with work
+  step wall           1.52 ms
+  GPU / wall          0.42                 below rule 1b's threshold
+```
+
+**Four of the seven submissions carry no compute at all** — two uploads and the two
+behind `.item()` — and they are now the largest single item in this workload. A 784→128→10
+MLP at batch 64 is 0.61 ms of arithmetic; nothing about kernel speed can make a step whose
+host half is 0.89 ms stop tying across a 6× capacity gap.
+
+That is candidate 4 below, and it is where this criterion is now blocked.
 
 ### P2 — Convolution
 
