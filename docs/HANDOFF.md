@@ -5,7 +5,7 @@ next session has absorbed it — it is a note, not a document.
 
 ## Exact state
 
-`main` is **35 commits ahead of `origin/main`** and has not been pushed.
+`main` is **36 commits ahead of `origin/main`** and has not been pushed.
 Working tree clean.
 
 Green: 123 C++ cases · 1576 Python tests · **the same suite re-run in lazy
@@ -182,6 +182,56 @@ Split-K is **on by default and worth 2.4× on that GEMM**. A reader trusting the
 comment would have believed the opposite and might have "fixed" the dispatch
 count. The adjacent `GemvMode` claim was checked and is still true.
 
+## Session 3 — cost attribution, no code changed
+
+`docs/OPTIMISER-COST-ATTRIBUTION.md` is the full item-by-item report. Three
+things in it change what to do next.
+
+**The gap being attributed did not exist.** ADR 0013 §5 put "189 µs real
+against 47 µs recorder" side by side. 189 was `drained − submit_only` — a
+blocking wall-clock wait over three submissions, unprofiled — and 47 was a GPU
+timestamp window over one submission, profiled. Rule 4 forbids the comparison,
+and 189 carries a ~43 µs wake-up that is not GPU work. ADR 0013 now carries the
+correction. Real figures: **120 µs host, 149 µs GPU, 295 µs drained.**
+
+**Every weight gradient is a transposed view**, and two of the optimiser's
+eight dispatches take the strided path because of it:
+
+```
+  param 0 (128, 784)  grad strides [4, 512] bytes   contiguous = False
+  param 2 (10, 128)   grad strides [4,  40] bytes   contiguous = False
+```
+
+In situ, the same shape costs **78.8 µs strided against 42.3 µs contiguous** —
+25% of the step's GPU time. Isolated at 1M elements the penalty is **11×**, and
+the split between causes is measured: the `offset_from` integer arithmetic is
+1.26×, the access pattern is the rest.
+
+**Copy-only submissions emit no `submit` window**, so the `assign`'s **36.9 µs**
+of GPU was missing from every total that summed windows. True GPU per step is
+~186 µs, not 149.
+
+### What is NOT worth touching, with numbers
+
+Command buffer recording (**1.0 µs for all eight dispatches**), pipeline lookup
+(2.9 µs), allocation and free (0.3 µs), command buffer resets (0.01 µs) — 4.2 µs
+together, 1.4% of the step. Descriptor allocation and memory mapping are
+**structurally zero**: there is no descriptor machinery anywhere in the tree
+(`setLayoutCount = 0` on every pipeline layout) and mapping is per-block.
+
+`vkQueueSubmit2` is **13.7 µs and independent of what is in the buffer** —
+thirteen times the recording cost, three times per step.
+
+### Three synthetic benchmarks got this wrong before the profile got it right
+
+Reproducing the optimiser's exact dispatch mix in C++ measured the strided
+penalty at 1%, at working sets of 1.2, 4.7 and 18.6 MiB. Fresh allocation and
+idle host gaps were tested and disproven too. **All three kept the data
+L2-resident**; the real optimiser runs after a forward and backward have flushed
+a 4 MiB L2. The same contiguous dispatch is 13.0 µs in a tight loop and 42.3 µs
+in situ. The per-dispatch profile of the real workload answered in one run what
+the benchmarks got wrong.
+
 ## The next concrete step
 
 Phases now, each drained so nothing is misattributed:
@@ -190,23 +240,22 @@ Phases now, each drained so nothing is misattributed:
   fwd+bwd    528 us      optimiser  294 us      item  111 us
 ```
 
-1. **The optimiser is still 42× off its 7.1 µs bandwidth floor**, and the reason
-   is no longer the kernels. Eight dispatches cost 189 µs on the real path
-   against 47 µs at the Recorder level. What sits in that gap is measured:
-   **3 submissions, 8 fresh allocations, and an `assign` that copies 398 KiB
-   back into the parameters at 122 µs against a 2.8 µs floor.**
+Ranked in `OPTIMISER-COST-ATTRIBUTION.md` §6. In short:
 
-   The optimiser is *functional* — it computes new values into fresh buffers and
-   copies them over the parameters. In-place would remove the copy, the
-   allocations and a submission. `scaled_add` reads `a[i]` and writes `dst[i]` at
-   the same index, so `dst` may safely alias `a`; what is missing is any way for
-   the executor to bind a computed node's output to an existing buffer. That is
-   the M5 memory planner's territory and is an ADR before it is code.
-
-   The three passes are also an artefact: they exist because `detach()` on an
-   uncomputed node forces a realise, so `finish()` cannot run before the velocity
-   pass has been submitted. Restructuring `Optimizer.step` would merge two of
+1. **R3 first — merge the two compute submissions.** ~5%, low complexity, low
+   risk, and it needs nobody's decision. The passes are separate only because
+   `detach()` on an uncomputed node forces a realise, so `finish()` cannot run
+   before the velocity pass is submitted; restructuring `Optimizer.step` merges
    them without touching the executor.
+2. **R1 — contiguous weight gradients.** ~27% of the step, and it compounds:
+   every elementwise op consuming a weight gradient takes the strided path, not
+   only the optimiser. The fix belongs in the matmul backward rule.
+   `.contiguous()` at the optimiser was measured and is **worse** (177 µs against
+   151) because the copy costs more than the strided access saves at this size.
+3. **R2 — in-place parameter update.** ~19%, but high risk: it needs the
+   executor to bind a computed node's output to an existing buffer, which is the
+   M5 planner's territory, and aliasing is exactly the class of bug the previous
+   session proved **cannot be verified on this driver**.
 
 2. **`fwd+bwd` at 528 µs is now the largest phase** and has not been attributed
    beyond its dispatch census. 12 of its dispatches are split-K partitions doing

@@ -129,17 +129,33 @@ behaviour. The shape is kept because it is the one whose equivalence can be argu
                               before     after
   optimiser dispatches            24         8
   optimiser, host             202 us    120 us
-  optimiser, GPU              256 us    189 us
-  optimiser, total            458 us    309 us     1.48x
+  optimiser, drained          458 us    309 us     1.48x
   MNIST step (no upload)      873 us    756 us
   realistic step             1037 us    971 us     1.07x
 ```
 
-The end-to-end figure is much smaller than the phase figure because the optimiser is only part
-of a step, and because the real path carries graph and allocation costs the Recorder-level
-prototype did not — 8 dispatches cost 189 µs here against 47 µs there.
+The row that used to sit here as "optimiser, GPU 256 → 189 us" was `drained − host`. That is a
+BLOCKING WAIT, not GPU time: it carries the host wake-up, and it is not comparable with a
+timestamp. Measured by timestamps instead, the GPU is **149 µs across the two compute
+submissions plus 37 µs of `assign` copies**.
 
-**That gap is the next thing to measure**, and it is not a kernel problem.
+The end-to-end figure is much smaller than the phase figure because the optimiser is only part
+of a step.
+
+> **Correction (same day).** This section originally continued: *"8 dispatches cost 189 µs here
+> against 47 µs there"*, and offered that difference as a gap to be explained. **The two numbers
+> are not the same quantity.** 189 µs was `drained − submit_only` — a blocking wall-clock wait
+> over three submissions, unprofiled — while 47 µs was a GPU timestamp window over one
+> submission, profiled. Rule 4 forbids comparing them, and the 189 additionally carries a ~43 µs
+> host wake-up that is not GPU work at all.
+>
+> Measured properly, the optimiser step is **120 µs of host, 149 µs of GPU across the two compute
+> submissions, and 295 µs drained** — plus a further 37 µs of GPU for the `assign` copies, which
+> emit no `submit` window and were therefore missing from every total.
+>
+> `docs/OPTIMISER-COST-ATTRIBUTION.md` is the full item-by-item attribution, and it found the
+> real cost: **two of the eight dispatches take a strided path because every weight gradient is a
+> transposed view**, and one of them costs 78.8 µs where its contiguous twin costs 42.3.
 
 ## 6. Two defects this work exposed
 
