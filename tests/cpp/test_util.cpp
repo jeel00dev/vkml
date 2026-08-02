@@ -205,9 +205,8 @@ TEST_CASE("observe: a throwing subscriber cannot break the observed operation") 
     // Observation must never become a failure mode of the thing observed. A
     // matmul that fails because something was watching it is worse than no
     // observability at all.
-    vkml::observe::subscribe([](const vkml::observe::Decision&) {
-        throw std::runtime_error("subscriber failure");
-    });
+    vkml::observe::subscribe(
+        [](const vkml::observe::Decision&) { throw std::runtime_error("subscriber failure"); });
     vkml::observe::publish({.site = "test.throwing", .chose = "x"});
     vkml::observe::subscribe(nullptr);
     CHECK_FALSE(vkml::observe::enabled());
@@ -232,9 +231,9 @@ TEST_CASE("decisions: the recorder is a consumer and keeps a bounded window") {
     CHECK(vkml::observe::published() == 5);
     const auto got = vkml::observe::recorded();
     REQUIRE(got.size() == 3);
-    CHECK(got.front().required == 2);   // oldest survivor
-    CHECK(got.back().required == 4);    // newest
-    CHECK(got.front().seq == 3);        // seq survives eviction
+    CHECK(got.front().required == 2);  // oldest survivor
+    CHECK(got.back().required == 4);   // newest
+    CHECK(got.front().seq == 3);       // seq survives eviction
     CHECK(got.back().seq == 5);
     vkml::observe::stop_recording();
     CHECK_FALSE(vkml::observe::recording());
@@ -262,16 +261,13 @@ TEST_CASE("decisions: recording does not silence the default renderer") {
     // subscriber REPLACE the default, so installing the recorder would have
     // stopped a min-spec user being told about the kernel fallback.
     std::vector<std::string> logged;
-    vkml::set_log_callback([&](vkml::LogLevel, std::string_view m) {
-        logged.emplace_back(m);
-    });
+    vkml::set_log_callback([&](vkml::LogLevel, std::string_view m) { logged.emplace_back(m); });
     vkml::observe::start_recording(4);
-    vkml::observe::publish({.site = "test.both",
-                            .chose = "a",
-                            .instead_of = "b",
-                            .because = "reason"});
+    vkml::observe::publish(
+        {.site = "test.both", .chose = "a", .instead_of = "b", .because = "reason"});
     vkml::observe::stop_recording();
     vkml::set_log_callback(nullptr);
-    CHECK(std::any_of(logged.begin(), logged.end(),
-                      [](const std::string& m) { return m.find("test.both") != std::string::npos; }));
+    CHECK(std::any_of(logged.begin(), logged.end(), [](const std::string& m) {
+        return m.find("test.both") != std::string::npos;
+    }));
 }

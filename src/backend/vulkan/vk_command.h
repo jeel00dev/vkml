@@ -178,11 +178,13 @@ private:
     VkQueryPool query_pool_ = VK_NULL_HANDLE;
     uint32_t query_index_ = 0;
     std::string label_;
+
     struct Pending {
         std::string label;
         uint32_t slot = 0;      ///< first query slot of the pair
         uint64_t dispatch = 0;  ///< 0 when the interval is not a dispatch
     };
+
     std::vector<Pending> pending_;
     std::vector<ProfileEntry> profile_;
     double total_gpu_ms_ = 0.0;

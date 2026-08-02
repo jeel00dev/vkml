@@ -53,10 +53,9 @@ void start_recording(size_t capacity) {
         if (w.ring.size() == w.capacity) {
             w.ring.pop_front();
         }
-        w.ring.push_back(RecordedDecision{std::string(d.site), std::string(d.op),
-                                          std::string(d.chose), std::string(d.instead_of),
-                                          std::string(d.because), d.required, d.available,
-                                          w.published, d.dispatch});
+        w.ring.push_back(RecordedDecision{
+            std::string(d.site), std::string(d.op), std::string(d.chose), std::string(d.instead_of),
+            std::string(d.because), d.required, d.available, w.published, d.dispatch});
     });
 }
 

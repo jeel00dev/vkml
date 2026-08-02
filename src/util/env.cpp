@@ -32,7 +32,6 @@ std::vector<ObservedSwitch> observed_environment() {
     return out;
 }
 
-
 namespace {
 /// Records what a read saw. Called from env_value only, which is the project's
 /// single getenv, so nothing can consult a switch without appearing here.

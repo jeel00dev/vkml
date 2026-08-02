@@ -834,8 +834,8 @@ NB_MODULE(_vkml_core, m) {
         "Every environment switch this process has consulted, and what it saw. "
         "Observed at the point of reading, so it cannot disagree with the code.");
     m.def(
-        "record_decisions",
-        [](size_t capacity) { vkml::observe::start_recording(capacity); }, "capacity"_a = 256,
+        "record_decisions", [](size_t capacity) { vkml::observe::start_recording(capacity); },
+        "capacity"_a = 256,
         "Begin recording decision facts into a bounded window, oldest dropped.");
     m.def(
         "stop_recording_decisions", [] { vkml::observe::stop_recording(); },
