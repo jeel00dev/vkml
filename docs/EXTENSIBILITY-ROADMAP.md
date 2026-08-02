@@ -256,25 +256,31 @@ host time do not scale together, a single round distorts the *split* and not jus
 total). RX 5600M / RADV.
 
 ```
-  kernel                count     gpu ms   % step
-  matmul                  540     47.728    23.7%
-  sum                     180     30.095    14.9%
-  im2col                   60     20.362    10.1%
-  max_pool2d_backward      60     15.155     7.5%
-  col2im                   40      9.574     4.8%
-  add                     240      9.334     4.6%
-  (16 more)              2020     20.354    10.1%
-  ------------------------------------------------
-  GPU busy                       152.602    75.8%
-  GPU idle in submits              0.377     0.2%
-  host and driver *               48.343    24.0%
-  ================================================
-  step wall                      201.323   100.0%
+  kernel                        count     gpu ms   % step
+  matmul                          540     47.158    25.6%
+  im2col                           60     19.722    10.7%
+  max_pool2d_backward              60     14.677     8.0%
+  col2im                           40      9.512     5.2%
+  add                             240      9.073     4.9%
+  sum:reduce_workgroup_tree       140      5.843     3.2%
+  sum:reduce_lane_per_output       40      2.700     1.5%
+  (17 more)                      2100     19.760    10.6%
+  --------------------------------------------------------
+  GPU busy                                128.445    69.7%
+  GPU idle in submits                       0.357     0.2%
+  host and driver *                        55.559    30.1%
+  ========================================================
+  step wall                               184.361   100.0%
 
   160 submissions, 80 of them with work to time
   * upper bound: a profiled wall clock includes the profiler's own readback
-  GPU / wall = 0.76
+  GPU / wall = 0.70
 ```
+
+The two `sum` rows are the **kernel choice joined to its cost** — the reduction publishes
+which structure it picked and the report groups by the join, which is what §4a P0 built
+`DispatchId` for. It is the first place that machinery has paid for itself on a real
+question.
 
 **The overhead is real and it is not three quarters.** This section's headline —
 *"roughly three quarters of a training step is overhead"* — came from batch scaling,
@@ -295,23 +301,26 @@ submission window is still the largest single item available, though it is now s
 The reordering argument that put P1 before `M3_ROADMAP`'s sixteen GEMM items holds, and
 the point at which it stops holding is now in sight.
 
-**Three slices of P1 have been taken, each found by re-running this measurement rather
-than by predicting the next one** — `docs/adr/0006` §10, §11 and §12:
+**Four changes have been taken, each found by re-running this measurement rather than by
+predicting the next one** — `docs/adr/0006` §10, §11 and §12, then `docs/adr/0010`:
 
 ```
-                     at P0    optimiser   backward   batched assign
-  submissions/step     39         25          15            8
-  ...of which backward 11         11           1            1
-  ...of which optimiser 24        10          10            3
-  step wall         13.57 ms   12.09 ms   11.71 ms      10.07 ms
-  host and driver    42.0%      35.7%      33.7%         24.0%
-  GPU / wall          0.58       0.64       0.66          0.76
+                     at P0    optimiser   backward   batched assign   reductions
+  submissions/step     39         25          15            8             8
+  ...of which backward 11         11           1            1             1
+  ...of which optimiser 24        10          10            3             3
+  step wall         13.57 ms   12.09 ms   11.71 ms      10.07 ms      8.87 ms
+  host and driver    42.0%      35.7%      33.7%         24.0%         30.1%
+  GPU / wall          0.58       0.64       0.66          0.76          0.70
 ```
 
-The numbers in the table above are the state after all three; the earlier states are in
-the ADR. **Host and driver has gone from 42% to 24% of a step and the wall time from
-13.57 to 10.07 ms, entirely through scheduling — no kernel changed and every result is
-bit-identical.**
+The first three are scheduling: **host and driver fell from 42% to 24% and the step from
+13.57 to 10.07 ms with no kernel changed and every result bit-identical.**
+
+The fourth is a kernel — the reduction restructure in `docs/adr/0010`, which took `sum`
+from 14.9% of the step to 4.7% and the step to 8.87 ms. It is also why the host share
+*rises* in the last column: the same host cost against a smaller step. **A percentage is a
+ratio and this one has two moving ends;** the milliseconds are the thing to read.
 
 **Two things the table says that batch scaling could not.**
 
@@ -458,7 +467,18 @@ and the criterion as written would have been chased indefinitely.
 CIFAR is a CNN and `M3_ROADMAP` does not mention convolution once. vkML exposes `im2col` and
 `col2im` as operators, which implies convolution is lowered to explicit im2col followed by
 GEMM — materialising a K×N expansion of the input in memory before any arithmetic happens.
-**Verify this before designing around it.**
+**Verified, 2026-08-02**: `src/api/ops.cpp`'s `conv2d` does exactly that, and the expansion
+is now measurable — `im2col` is **10.7%** of a CIFAR step and `col2im` **5.2%**, together
+larger than every kernel but `matmul`.
+
+A second finding from reading the same function, and it is not about im2col. The forward
+broadcasts the weight across the batch, so matmul's backward produces a **per-sample weight
+gradient and then reduces it**: for the third conv layer that is 64 × 128 × 576 × 4 B =
+18.9 MB written and read back for a 288 KB result. `docs/adr/0010` made the reduction 20×
+faster, which was the cheap half; **the expensive half is that the intermediate exists at
+all**, and folding the batch into the GEMM's K axis would remove ~38 MB of traffic per
+layer per step. That needs either a transposing copy or a GEMM that contracts two axes,
+and is unmeasured.
 
 If confirmed, the options in ascending order of effort are implicit GEMM (fuse the im2col
 addressing into the GEMM's operand load, so the expansion is never written), direct

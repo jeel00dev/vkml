@@ -2,19 +2,50 @@
 
 // Reductions: sum, mean, max, min, argmax, argmin.
 //
-// STRUCTURE: one workgroup per output element
-// -------------------------------------------
-// Each workgroup folds all the elements belonging to one output position. That
-// makes the whole reduction single-pass and, more importantly, DETERMINISTIC:
-// the assignment of elements to lanes and the shape of the combining tree are
-// fixed by the shape alone, so the same input always produces bit-identical
-// output. No global atomics are involved -- which is not merely a preference,
-// since this GPU has no global float atomicAdd at all (measured,
-// docs/ARCHITECTURE.md 1.1).
+// TWO STRUCTURES, chosen by the reduction's shape
+// ----------------------------------------------
+// WIDE (LANE_PER_OUTPUT == 0): one workgroup per output element, folding that
+// output's elements across the workgroup's lanes and combining them in a
+// shared-memory tree. Right when there are many elements per output.
+//
+// TALL (LANE_PER_OUTPUT == 1): one LANE per output element, each lane walking
+// its own reduction alone. No shared memory and no barriers. Right when there
+// are few elements per output and many outputs.
+//
+// WHY THE SECOND ONE EXISTS, measured rather than assumed. The wide kernel
+// launches a workgroup per output, so a weight gradient reducing 64 samples
+// into 73,728 values launched 73,728 workgroups of 256 lanes to perform 64
+// loads each -- then ran eight barrier steps to combine them. Holding the
+// element count fixed at 18 MiB and sliding the split:
+//
+//     elements per output      4     16     64    256   1024   4096
+//     GB/s (contiguous)      1.6    6.4   21.6   62.3   96.2  107.5
+//
+// Throughput tracks the WORKGROUP COUNT, not the bytes: the wide kernel is
+// launch-bound below roughly a thousand elements per output, by up to 67x.
+//
+// The tall kernel also fixes the access pattern, and in the case that was
+// worst. Reducing the OUTER axis leaves the contiguous axes as the output, so
+// adjacent lanes -- adjacent out_id -- read adjacent addresses. The wide
+// kernel had adjacent lanes reading n_out floats apart: 288 KB, one cache line
+// per lane, nothing coalesced.
+//
+// DETERMINISM is unaffected. Both structures fix the assignment of elements to
+// lanes and the shape of the combining tree from the shape alone, so the same
+// input always produces bit-identical output on the same device. No global
+// atomics are involved -- not merely a preference, since this GPU has no
+// global float atomicAdd at all (measured, docs/ARCHITECTURE.md 1.1).
+//
+// THE TWO DO NOT AGREE BIT FOR BIT with each other, and that is a deliberate,
+// bounded change rather than an oversight. Both fold pairwise, so both satisfy
+// the (B + log2(n/B))*eps backward bound that `tests/python/tolerance.py`
+// derives for Kind.BACKWARD -- but they associate differently, so switching a
+// shape from one to the other moves the last bits. See docs/adr/0010.
 //
 // A split-K second pass would extract more parallelism when there are few
-// output elements and many inputs. That is a PERFORMANCE change, not a
-// correctness one, and is deliberately not done yet.
+// output elements and many inputs -- the opposite corner from the tall
+// kernel's. That is a PERFORMANCE change, not a correctness one, and is
+// deliberately not done yet.
 //
 // NUMERICS: pairwise all the way down
 // -----------------------------------
@@ -36,6 +67,11 @@
 
 layout(constant_id = 1) const uint OP = 0;
 layout(constant_id = 2) const uint WG = 256;
+// Which structure to run. A specialisation constant rather than a push
+// constant so the compiler drops the unused half entirely -- the tall path
+// keeps no shared memory and takes no barriers, and a runtime branch would
+// leave both costs in the binary.
+layout(constant_id = 4) const uint LANE_PER_OUTPUT = 0;
 // Storage type of the INPUT. argmax and argmin produce an index and are
 // unaffected; the shared-memory accumulator is float either way, which is
 // what keeps fp32 accumulation (ARCHITECTURE.md 7.3) true for f16 input.
@@ -72,7 +108,71 @@ bool is_minmax(){ return OP == OP_MAX || OP == OP_MIN || is_arg(); }
 // reduction length reachable here.
 #define STACK_LEVELS 24
 
+// One lane, one output, walked alone. Shares the wide path's pairwise carry
+// stack, so the error bound is the same; the association is not.
+void reduce_one_output(uint out_id) {
+    const uint base = operand_offset(out_id, p.kept);
+
+    if (is_minmax()) {
+        float acc = (OP == OP_MAX || OP == OP_ARGMAX) ? -1.0 / 0.0 : 1.0 / 0.0;
+        uint acc_idx = 0xFFFFFFFFu;
+        for (uint k = 0u; k < p.n_red; ++k) {
+            const float v = load_f(p.src, base + operand_offset(k, p.reduced), DTYPE);
+            // NaN is absorbing, exactly as in the wide path: a comparison
+            // against NaN is false, so `v > acc` would drop it (issue #27).
+            if (isnan(v)) {
+                acc = v;
+                acc_idx = k;
+            } else if (isnan(acc)) {
+                // Already absorbed; nothing later displaces it.
+            } else if (OP == OP_MAX || OP == OP_ARGMAX) {
+                // Strict >, and ascending k, so the FIRST extremum wins --
+                // torch.argmax's rule and the CPU backend's.
+                if (v > acc || acc_idx == 0xFFFFFFFFu) { acc = v; acc_idx = k; }
+            } else {
+                if (v < acc || acc_idx == 0xFFFFFFFFu) { acc = v; acc_idx = k; }
+            }
+        }
+        if (is_arg()) {
+            I64Buf(p.dst).v[out_id] = int64_t(acc_idx);
+        } else {
+            store_f(p.dst, out_id, acc, DTYPE);
+        }
+        return;
+    }
+
+    float stack[STACK_LEVELS];
+    uint count = 0;
+    uint k = 0u;
+    while (k < p.n_red) {
+        float block = 0.0;
+        for (uint b = 0; b < 32u && k < p.n_red; ++b, ++k) {
+            block += load_f(p.src, base + operand_offset(k, p.reduced), DTYPE);
+        }
+        uint c = count++;
+        uint level = 0;
+        while ((c & 1u) == 1u) {
+            block += stack[level];
+            c >>= 1u;
+            ++level;
+        }
+        stack[level] = block;
+    }
+
+    float acc = 0.0;
+    for (uint level = 0; level < STACK_LEVELS; ++level) {
+        if (((count >> level) & 1u) == 1u) { acc += stack[level]; }
+    }
+    store_f(p.dst, out_id, OP == OP_MEAN ? acc / float(p.n_red) : acc, DTYPE);
+}
+
 void main() {
+    if (LANE_PER_OUTPUT == 1u) {
+        const uint out_id = global_group_index() * WG + gl_LocalInvocationID.x;
+        if (out_id < p.n_out) { reduce_one_output(out_id); }
+        return;
+    }
+
     const uint out_id = global_group_index();
     if (out_id >= p.n_out) { return; }
 

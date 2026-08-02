@@ -48,6 +48,36 @@
 namespace vkml {
 namespace {
 
+/// Elements per output below which the workgroup-per-output reduction is
+/// launch-bound whatever the memory layout.
+///
+/// Measured, not chosen. Holding the element count at 18 MiB and sliding the
+/// split between outputs and reduction length, the wide kernel's throughput
+/// tracks the WORKGROUP COUNT rather than the bytes:
+///
+///     elements per output      4     16     64    256   1024   4096
+///     GB/s, contiguous       1.6    6.4   21.6   62.3   96.2  107.5
+///
+/// Below ~32 it is spending everything on launch. The lane-per-output kernel
+/// wins there even when its own access pattern is the wrong one, because with
+/// so few elements per output the stride between adjacent lanes is short enough
+/// to stay inside a cache line.
+///
+/// A round number rather than a fitted one: the curve is smooth, so a tuned
+/// constant would claim a precision the measurement does not have.
+constexpr uint32_t kReduceLaunchFloor = 32;
+
+/// Compute units assumed when the driver does not report them.
+///
+/// `shader_core_count` comes from VK_AMD_shader_core_properties2 and is 0
+/// everywhere else, and `MEASUREMENT-AUDIT.md` 6 is explicit that every
+/// consumer must treat 0 as a reason to decline rather than to guess. This is a
+/// scheduling hint, not an occupancy claim -- the wrong value costs throughput
+/// on one kernel and cannot cost correctness -- so it declines to a
+/// conservative floor instead of declining to choose. Small on purpose: it
+/// biases towards the structure that does not depend on filling the device.
+constexpr uint32_t kAssumedComputeUnits = 8;
+
 /// Mirrors the Operand struct in shaders/common.glsl.
 ///
 /// scalar_block_layout is what lets this be a plain struct on both sides with
@@ -1640,9 +1670,56 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 // is cross-lane work; llama.cpp's RDNA1 table selects 64 for
                 // exactly these ops on this chip. Left to the driver where
                 // subgroup size control is unavailable.
+                // WHICH STRUCTURE. Decided by which one COALESCES, because that
+                // is what the measurement says dominates -- not by n_red, which
+                // was the first rule and was wrong in half the cases.
+                //
+                //   wide: a workgroup's lanes walk the REDUCTION, so they
+                //         coalesce when the reduced axis is the contiguous one.
+                //   tall: a workgroup's lanes walk the OUTPUTS, so they
+                //         coalesce when the kept axes are contiguous -- which is
+                //         exactly when the reduced axis is NOT innermost.
+                //
+                // The two are mirror images, and each is catastrophic in the
+                // other's case. Measured at 18 MiB, 64 elements per output:
+                // reducing the outer axis is 6.6 GB/s wide against 125.8 tall;
+                // reducing the inner axis is 21.6 wide against 8.8 tall.
+                //
+                // The second term is the launch floor. Below ~32 elements per
+                // output the wide kernel spends everything on workgroup launch
+                // whatever the layout -- 1.6 GB/s at n_red=4 -- while the tall
+                // kernel's stride between adjacent lanes is only n_red floats,
+                // short enough to stay inside a cache line. Measured there:
+                // 123 GB/s tall against 1.6 wide, on the inner axis where tall
+                // is otherwise the wrong choice.
+                // The third term is OCCUPANCY, and it is the one the first two
+                // rules missed. The tall kernel has exactly `n_out` threads, so
+                // a reduction with few outputs leaves the device empty however
+                // well it coalesces: 1,152 outputs of 4,096 elements ran at
+                // 4.3 GB/s tall against 33.2 wide -- a 7.7x REGRESSION, caught
+                // by re-running the same sweep after the rule changed.
+                //
+                // One full workgroup per compute unit is the floor, which is a
+                // statement about the hardware rather than a fitted constant.
+                // At half of it the two tie (29.7 against 26.7) and at twice it
+                // the tall path wins by 12x, so the boundary is not sharp and
+                // does not need to be.
+                const uint32_t cores = impl_->caps.shader_core_count;
+                const uint32_t occupancy_floor = (cores != 0 ? cores : kAssumedComputeUnits) * wg;
+
+                const int kept_ndim = split.kept.ndim();
+                const bool kept_contiguous =
+                    kept_ndim == 0 ||
+                    split.kept.stride(kept_ndim - 1) == static_cast<int64_t>(dtype_size(src.dtype));
+                const bool lane_per_output =
+                    (kept_contiguous || n_red < kReduceLaunchFloor) && n_out >= occupancy_floor;
                 vk::KernelConfig cfg;
                 cfg.workgroup_size = wg;
-                cfg.shared_memory_bytes = wg * (sizeof(float) + sizeof(uint32_t));
+                // The tall path keeps no shared state. Requesting none lets more
+                // workgroups sit resident per compute unit, which is most of
+                // what it is for.
+                cfg.shared_memory_bytes =
+                    lane_per_output ? 0 : wg * (sizeof(float) + sizeof(uint32_t));
                 // Subgroup width is left to the driver by default.
                 //
                 // wave64 was pinned here initially, inherited from llama.cpp's
@@ -1654,7 +1731,28 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 if (impl_->subgroup_override != 0) {
                     cfg.required_subgroup_size = impl_->subgroup_override;
                 }
-                cfg.spec_constants = {wg, op_id, wg, spec_dtype(src.dtype)};
+                cfg.spec_constants = {wg, op_id, wg, spec_dtype(src.dtype),
+                                      lane_per_output ? 1U : 0U};
+
+                // A Decision, because the choice changes which arithmetic order
+                // runs and is not derivable from the inputs
+                // (docs/OBSERVABILITY-ARCHITECTURE.md 3). The two structures
+                // fold pairwise but associate differently, so a consumer
+                // comparing two runs bit for bit needs to know which ran.
+                observe::publish({
+                    .site = "reduce.structure",
+                    .op = op_name(node->op),
+                    .chose = lane_per_output ? "reduce_lane_per_output" : "reduce_workgroup_tree",
+                    .instead_of =
+                        lane_per_output ? "reduce_workgroup_tree" : "reduce_lane_per_output",
+                    .because = lane_per_output
+                                   ? "few elements per output: one workgroup each would be "
+                                     "launch-bound"
+                                   : "enough elements per output to fill a workgroup",
+                    .required = n_red,
+                    .available = kReduceLaunchFloor,
+                    .dispatch = rec.next_dispatch_id(),
+                });
 
                 const size_t esz = dtype_size(src.dtype);
                 ReducePush push{};
@@ -1669,14 +1767,20 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                     // n_red is the width of the reduction; one workgroup per
                     // OUTPUT means n_red == 1 is a whole dispatch that reduces
                     // nothing. Logged because that case is invisible otherwise.
-                    VKML_LOG_INFO("  reduce n_out={} n_red={} axes_mask={:#x} src={}", n_out, n_red,
-                                  mask, src.shape.str());
-                    trace_dispatch(*node, "reduce", cfg, sizeof(ReducePush), n_out,
+                    VKML_LOG_INFO(
+                        "  reduce n_out={} n_red={} axes_mask={:#x} src={} lane_per_output={}",
+                        n_out, n_red, mask, src.shape.str(), lane_per_output);
+                    trace_dispatch(*node, lane_per_output ? "reduce_tall" : "reduce_wide", cfg,
+                                   sizeof(ReducePush),
+                                   lane_per_output ? (n_out + wg - 1) / wg : n_out,
                                    impl_->caps.subgroup_size);
                 }
+                // The grid follows the structure: one group per output for the
+                // wide kernel, one group per WG outputs for the tall one.
+                const uint64_t groups = lane_per_output ? (n_out + wg - 1) / wg : n_out;
                 rec.dispatch_groups(
                     pipes.get("reduce", spv::reduce, spv::reduce_size, sizeof(ReducePush), cfg),
-                    &push, sizeof(push), n_out);
+                    &push, sizeof(push), groups);
                 break;
             }
 

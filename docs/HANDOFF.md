@@ -8,7 +8,7 @@ next session has absorbed it — it is a note, not a document.
 `main` is **17 commits ahead of `origin/main`** and has not been pushed. Working
 tree clean.
 
-Green: `ctest` on release, debug and asan · 1518 Python tests · 1512 at
+Green: `ctest` on release, debug and asan · 1543 Python tests · 1537 at
 `VKML_MIN_SPEC=1` · the CPU-only suite · all 17 gates, 11 with an automated
 control · `mutation_check --patterns` 30/30 · the site at 61 pages, 113
 documented members, every link resolving.
@@ -106,16 +106,24 @@ separate at 64, where the step is 0.61 ms of arithmetic. It was a good criterion
 batch size, so a successor should name a **step at a fixed shape**: host and
 driver below 20% of a batch-64 MNIST step, say.
 
-So the open question is what comes next:
+So the open question is what comes next, and the profile now answers most of it:
 
-1. **`M3_ROADMAP`'s GEMM work is no longer mis-sequenced.** The argument for
+1. **Convolution — the largest measured item after `matmul`, and #101 is
+   verified.** `im2col` (10.7%) + `col2im` (5.2%) is **15.9% of a step spent
+   moving memory** so the GEMM can be dense. Worse, the weight-gradient path
+   materialises a per-sample gradient — **18.9 MB for one layer of one step** —
+   before reducing it. ADR 0010 made that reduction 20× faster, which was the
+   cheap half; the expensive half is that the intermediate exists at all.
+   Implicit GEMM (CUTLASS is cloned) removes the im2col write; folding the batch
+   into the GEMM's K axis removes the weight-gradient one.
+2. **`M3_ROADMAP`'s GEMM work is no longer mis-sequenced.** The argument for
    deferring it was that arithmetic was a quarter of a CIFAR step. It is now
-   three quarters.
-2. **Remaining P1 completeness.** Conv3d needs a genuinely 3-D `im2col` and does
+   ~70%, and `matmul` alone is **25.6%** — the largest single line.
+3. **Remaining P1 completeness.** Conv3d needs a genuinely 3-D `im2col` and does
    not compose. **Autograd checkpointing needs an autograd extension point that
    does not exist** — `apply_backward` is a closed switch over `OpKind`, so a
    user-defined backward has nowhere to go. That is an ADR before it is code.
-3. **The R-series** (#119–#123): release verification, mutation coverage, a
+4. **The R-series** (#119–#123): release verification, mutation coverage, a
    performance regression gate, and a public claim generated from measurement.
 
 ## The one open decision, unchanged

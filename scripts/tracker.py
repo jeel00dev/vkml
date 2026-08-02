@@ -172,8 +172,9 @@ T: dict[int, tuple] = {
     100: ("open", DEFECT,   PRODUCT, "PREMISE CORRECTED TWICE by #99: submission cost was 44.8%, "
                                      "not 74%, and is 24.0% after #127/#128/#129. What remains is "
                                      "uploads and .item(); matmul is now the larger line", FOUND),
-    101: ("open", DESIGN,   PRODUCT, "verifying convolution is NOT materialised im2col+GEMM; the "
-                                     "roadmap says verify before designing", SHARED),
+    101: ("open", DESIGN,   PRODUCT, "VERIFIED: it IS materialised im2col+GEMM -- im2col 10.7% + "
+                                     "col2im 5.2% of a step. Plus the weight grad materialises "
+                                     "18.9 MB per layer before reducing it", SHARED),
     102: ("open", DEFERRED, PRODUCT, "M3.2: P0+P1 showing arithmetic is not the remaining cost", SHARED),
     103: ("open", DEFERRED, PRODUCT, "M3.3: the #102 search finding no configuration the two-level "
                                      "hierarchy ceilings", LOCAL),
@@ -240,6 +241,9 @@ T: dict[int, tuple] = {
     134: ("done", DEFECT,   PRODUCT, "CLOSED: 'vectorise, never loop' made the crop 3.8x and the "
                                      "flip 3.3x SLOWER than the loops they replaced -- both did "
                                      "work for samples they discarded. Output byte-identical", None),
+    135: ("done", DEFECT,   PRODUCT, "CLOSED: reduce.comp was launch-bound -- one workgroup per "
+                                     "output. Second lane-per-output structure, up to 83x on the "
+                                     "kernel, -12.9% end to end; ADR 0010", None),
     117: ("open", PLANNED,  OBSERVE, "MEASURED 58.8ns / 131.7ns per publish; end-to-end could not "
                                      "resolve it (4 orders under noise). Regression gate remains", SHARED),
 }

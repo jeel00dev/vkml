@@ -1864,3 +1864,184 @@ def test_multi_root_realize_rejects_an_undefined_tensor():
     appear to succeed having evaluated nothing. It must raise instead."""
     with pytest.raises(V.Error):
         V.realize(V.tensor(np.ones((2,), dtype=np.float32)), V.Tensor())
+
+
+# ---------------------------------------------------------------------------
+# The two reduction structures
+# ---------------------------------------------------------------------------
+#
+# reduce.comp has two shapes (docs/adr/0010): one workgroup per output with a
+# shared-memory tree, and one LANE per output walking its reduction alone. The
+# backend picks between them on coalescing and occupancy.
+#
+# Both fold pairwise, so both meet the Kind.BACKWARD bound `tolerance.py`
+# derives — but they associate differently, so the choice is a Decision the
+# engine publishes rather than an implementation detail. These tests check that
+# each structure is REACHED, and that each is right when it is.
+
+from tolerance import backward_error_atol, lookup  # noqa: E402
+
+
+def _reduce_structures(build):
+    """Run a reduction and return the structures the engine chose for it."""
+    V.record_decisions(64)
+    try:
+        build()
+        return [d["chose"] for d in V.decisions() if d["site"] == "reduce.structure"]
+    finally:
+        V.stop_recording_decisions()
+
+
+# (name, source shape, axis). Spread so that a device of ANY size reaches both
+# structures: the rule's occupancy term is `compute units x workgroup`, which
+# differs between the development GPU (36 CUs) and lavapipe (which reports
+# none), so a case list that pinned one structure per shape would be a test of
+# the machine rather than of the code.
+REDUCE_STRUCTURE_CASES = [
+    # Reducing the OUTER axis leaves the contiguous axes as the output, so
+    # adjacent lanes read adjacent addresses. Large enough to fill any device.
+    ("outer axis, many outputs", (64, 65536), 0),
+    # Reducing the INNERMOST axis: a workgroup's lanes walk contiguous memory,
+    # so the tree structure is the coalesced one.
+    ("inner axis, long reduction", (16384, 64), 1),
+    # Too few outputs to fill any device, whatever the layout.
+    ("outer axis, few outputs", (4096, 64), 0),
+    # A short reduction, where the wide kernel is launch-bound whatever the
+    # layout.
+    ("inner axis, tiny reduction", (65536, 4), 1),
+]
+
+
+@requires_vulkan
+def test_both_reduction_structures_are_reached():
+    """NON-VACUITY. A test of two paths proves nothing if only one ever runs.
+
+    Asserts the SET of structures the engine chose across the case list, not
+    which shape produced which. The rule's occupancy term scales with the
+    device's compute units, so pinning a shape to a structure would pass on the
+    development GPU and fail on a smaller one for no defect — a test of the
+    machine rather than of the code.
+
+    The engine publishes what it picked, so this reads the published fact
+    rather than reimplementing the rule, which is the trap
+    `OBSERVABILITY-ARCHITECTURE.md` section 4 exists to name.
+    """
+    seen = set()
+    for name, shape, axis in REDUCE_STRUCTURE_CASES:
+        x = np.random.default_rng(0).standard_normal(shape).astype(np.float32)
+        chosen = _reduce_structures(
+            lambda: V.sum(V.tensor(x, device=gpu_device()), [axis], True).numpy())
+        assert chosen, f"{name}: the reduction published no structure decision"
+        seen.update(chosen)
+
+    assert seen == {"reduce_lane_per_output", "reduce_workgroup_tree"}, (
+        f"only {sorted(seen)} was reached across {len(REDUCE_STRUCTURE_CASES)} shapes; "
+        f"every case below is then testing one structure twice"
+    )
+
+
+@requires_vulkan
+@pytest.mark.parametrize("name,shape,axis", REDUCE_STRUCTURE_CASES)
+def test_both_reduction_structures_agree_with_the_cpu_oracle(name, shape, axis):
+    """Each structure, on the shape that reaches it, against the oracle.
+
+    The tolerance is `sum`'s own — Kind.BACKWARD, the pairwise bound — and NOT
+    exact. That is the point of ADR 0010: the two structures associate
+    differently, so demanding bit-equality between them would forbid the
+    optimisation rather than check it.
+    """
+    x = np.random.default_rng(1).standard_normal(shape).astype(np.float32)
+    got = V.sum(V.tensor(x, device=gpu_device()), [axis], True).numpy()
+    want = V.sum(V.tensor(x, device=V.cpu), [axis], True).numpy()
+
+    n_red = shape[axis]
+    atol = backward_error_atol(float(np.abs(x).sum(axis=axis).max()), n_red)
+    assert got.shape == want.shape
+    assert np.abs(got - want).max() <= atol, (
+        f"{name}: max |diff| {np.abs(got - want).max():.3e} exceeds the backward-error "
+        f"bound {atol:.3e} ({lookup('sum').note})"
+    )
+
+
+# min, max and the argmin/argmax pair go through the SAME structure choice --
+# the rule is about layout and occupancy, not about the operation -- so the
+# case list above reaches both structures for these too, and the non-vacuity
+# test above is what establishes that.
+#
+# THE FIRST VERSION OF THE THREE TESTS BELOW USED SHAPES THAT ONLY REACHED THE
+# WIDE PATH, and it showed: breaking NaN absorption and breaking the
+# first-extremum rule in the tall kernel both left them green. A vacuity hole
+# in a test written to close a vacuity hole, found by running the breaks rather
+# than by reading.
+
+
+@requires_vulkan
+@pytest.mark.parametrize("op,fn", [("max", V.amax), ("min", V.amin)])
+@pytest.mark.parametrize("name,shape,axis", REDUCE_STRUCTURE_CASES)
+def test_selection_reductions_are_bit_identical_across_structures(op, fn, name, shape, axis):
+    """max and min SELECT rather than accumulate, so the structure cannot move a bit.
+
+    `tolerance.py` records both as Kind.EXACT. ADR 0010 changes the fold order
+    for sums; it must not change these, and a test that only covered `sum`
+    would not notice if it had.
+    """
+    x = np.random.default_rng(2).standard_normal(shape).astype(np.float32)
+    got = fn(V.tensor(x, device=gpu_device()), [axis], True).numpy()
+    want = fn(V.tensor(x, device=V.cpu), [axis], True).numpy()
+    assert np.array_equal(got, want), (
+        f"{op} over axis {axis} of {shape} ({name}) differs from the CPU oracle; a "
+        f"selection reduction has no arithmetic to reorder and must be exact"
+    )
+
+
+@requires_vulkan
+@pytest.mark.parametrize("op,fn", [("max", V.amax), ("min", V.amin)])
+@pytest.mark.parametrize("name,shape,axis", REDUCE_STRUCTURE_CASES)
+def test_a_nan_propagates_through_both_reduction_structures(op, fn, name, shape, axis):
+    """A NaN anywhere in the fold makes the whole reduction NaN, as torch does.
+
+    Comparison alone cannot achieve this — every comparison against NaN is
+    false, so `v > acc` skips it and the NaN vanishes (issue #27). Each
+    structure needs its own absorbing branch, and the tall one is new.
+    """
+    rng = np.random.default_rng(3)
+    x = rng.standard_normal(shape).astype(np.float32)
+    # One NaN per output, at a varying position so neither the first nor the
+    # last element is a special case.
+    n_red = shape[axis]
+    pos = rng.integers(0, n_red, size=shape[1 - axis])
+    idx = np.arange(shape[1 - axis])
+    if axis == 0:
+        x[pos, idx] = np.nan
+    else:
+        x[idx, pos] = np.nan
+
+    got = fn(V.tensor(x, device=gpu_device()), [axis], True).numpy()
+    assert np.all(np.isnan(got)), (
+        f"{op} over {name} lost a NaN: {np.count_nonzero(~np.isnan(got))} of {got.size} "
+        f"outputs are finite, but every one had a NaN in its fold"
+    )
+
+
+@requires_vulkan
+@pytest.mark.parametrize("name,shape,axis", REDUCE_STRUCTURE_CASES)
+def test_argmax_keeps_the_first_extremum_in_both_structures(name, shape, axis):
+    """The tie-breaking rule is the part a restructure can silently lose.
+
+    Both structures must return the LOWEST index among equal maxima, which is
+    torch's rule. Built with EVERY value along the reduced axis equal, so the
+    answer is 0 and any other index is a rule violation: random floats almost
+    never tie, so a test on random data passes against an implementation that
+    returns the last.
+    """
+    x = np.zeros(shape, dtype=np.float32)
+    other = shape[1] if axis == 0 else shape[0]
+    ramp = np.arange(other, dtype=np.float32)
+    x += ramp[None, :] if axis == 0 else ramp[:, None]
+
+    got = V.argmax(V.tensor(x, device=gpu_device()), axis, True).numpy()
+    want = V.argmax(V.tensor(x, device=V.cpu), axis, True).numpy()
+    assert np.array_equal(got, want), (
+        f"argmax over {name} disagrees with the oracle on tied values; the first "
+        f"extremum must win, and this returned {np.unique(got)[:4]}"
+    )
