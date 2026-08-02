@@ -5,7 +5,7 @@ next session has absorbed it — it is a note, not a document.
 
 ## Exact state
 
-`main` is **17 commits ahead of `origin/main`** and has not been pushed. Working
+`main` is **24 commits ahead of `origin/main`** and has not been pushed. Working
 tree clean.
 
 Green: `ctest` on release · 1550 Python tests · 1544 at `VKML_MIN_SPEC=1` ·
