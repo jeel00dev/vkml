@@ -207,7 +207,12 @@ def main() -> int:
     for n, w, g in zip(NODE_COUNTS, wall, gpu):
         print(f"  {n:>6} {w:>10.2f} {g:>10.2f} {g / w:>9.2f}")
 
-    print(f"\n  per submission (fixed)   {wall_fixed:8.2f} us wall, {gpu_fixed:6.2f} us GPU")
+    # The GPU intercept is reported only when it is positive. A submission has
+    # no fixed GPU cost to speak of -- just the timestamp bracket -- so the fit
+    # regularly places it at or below zero, and printing "-7.74 us of GPU per
+    # submission" invites a reader to believe a quantity that does not exist.
+    gpu_fixed_note = f"{gpu_fixed:6.2f} us GPU" if gpu_fixed > 0 else "no fixed GPU cost"
+    print(f"\n  per submission (fixed)   {wall_fixed:8.2f} us wall, {gpu_fixed_note}")
     print(f"  per node (marginal)      {wall_marginal:8.2f} us wall, {gpu_marginal:6.2f} us GPU")
 
     # Stated as a BOUND, not as a subtraction. The profiled arm writes two extra
