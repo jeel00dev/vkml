@@ -680,6 +680,63 @@ NB_MODULE(_vkml_core, m) {
     m.def("log_softmax", &vkml::log_softmax, "input"_a, "dim"_a = -1);
     m.def("matmul", &vkml::matmul, "a"_a, "b"_a);
 
+    // -- observability ------------------------------------------------------
+    //
+    // OUTSIDE the Vulkan block on purpose. Decisions are published from any
+    // layer -- util/observe.h is layer 0 -- so a CPU-only build has them, and
+    // python/vkml/__init__.py exports all five unconditionally saying exactly
+    // that. When these were compiled out with the backend, `import vkml` on a
+    // CPU-only build died at `_C.configuration` before reaching anything else.
+    // The decision recorder. Deliberately NOT prefixed `vulkan_`: decisions are
+    // published from any layer and a CPU-only build has them too, so naming it
+    // after one backend would misdescribe what it observes.
+    m.def(
+        "configuration",
+        [] {
+            nb::list out;
+            for (const vkml::ObservedSwitch& s : vkml::observed_environment()) {
+                nb::dict e;
+                e["name"] = s.name;
+                e["value"] = s.value;
+                e["set"] = s.set;
+                out.append(e);
+            }
+            return out;
+        },
+        "Every environment switch this process has consulted, and what it saw. "
+        "Observed at the point of reading, so it cannot disagree with the code.");
+    m.def(
+        "record_decisions", [](size_t capacity) { vkml::observe::start_recording(capacity); },
+        "capacity"_a = 256,
+        "Begin recording decision facts into a bounded window, oldest dropped.");
+    m.def(
+        "stop_recording_decisions", [] { vkml::observe::stop_recording(); },
+        "Stop recording and release the window.");
+    m.def(
+        "decisions",
+        [] {
+            nb::list out;
+            for (const vkml::observe::RecordedDecision& d : vkml::observe::recorded()) {
+                nb::dict e;
+                e["site"] = d.site;
+                e["op"] = d.op;
+                e["chose"] = d.chose;
+                e["instead_of"] = d.instead_of;
+                e["because"] = d.because;
+                e["required"] = d.required;
+                e["available"] = d.available;
+                e["seq"] = d.seq;
+                e["dispatch"] = d.dispatch;
+                out.append(e);
+            }
+            return out;
+        },
+        "What the engine recently chose, and instead of what. Oldest first.");
+    m.def(
+        "decisions_published", [] { return vkml::observe::published(); },
+        "Decisions published since recording began, INCLUDING any the window "
+        "evicted. Compare with len(decisions()) to detect a truncated history.");
+
     // -- vulkan -------------------------------------------------------------
     //
     // Compiled out entirely when the backend is not built, so the Python layer
@@ -815,55 +872,6 @@ NB_MODULE(_vkml_core, m) {
                 .set_subgroup_override(size);
         },
         "size"_a, "index"_a = 0);
-    // The decision recorder. Deliberately NOT prefixed `vulkan_`: decisions are
-    // published from any layer and a CPU-only build has them too, so naming it
-    // after one backend would misdescribe what it observes.
-    m.def(
-        "configuration",
-        [] {
-            nb::list out;
-            for (const vkml::ObservedSwitch& s : vkml::observed_environment()) {
-                nb::dict e;
-                e["name"] = s.name;
-                e["value"] = s.value;
-                e["set"] = s.set;
-                out.append(e);
-            }
-            return out;
-        },
-        "Every environment switch this process has consulted, and what it saw. "
-        "Observed at the point of reading, so it cannot disagree with the code.");
-    m.def(
-        "record_decisions", [](size_t capacity) { vkml::observe::start_recording(capacity); },
-        "capacity"_a = 256,
-        "Begin recording decision facts into a bounded window, oldest dropped.");
-    m.def(
-        "stop_recording_decisions", [] { vkml::observe::stop_recording(); },
-        "Stop recording and release the window.");
-    m.def(
-        "decisions",
-        [] {
-            nb::list out;
-            for (const vkml::observe::RecordedDecision& d : vkml::observe::recorded()) {
-                nb::dict e;
-                e["site"] = d.site;
-                e["op"] = d.op;
-                e["chose"] = d.chose;
-                e["instead_of"] = d.instead_of;
-                e["because"] = d.because;
-                e["required"] = d.required;
-                e["available"] = d.available;
-                e["seq"] = d.seq;
-                e["dispatch"] = d.dispatch;
-                out.append(e);
-            }
-            return out;
-        },
-        "What the engine recently chose, and instead of what. Oldest first.");
-    m.def(
-        "decisions_published", [] { return vkml::observe::published(); },
-        "Decisions published since recording began, INCLUDING any the window "
-        "evicted. Compare with len(decisions()) to detect a truncated history.");
     m.def(
         "vulkan_pipeline_stats",
         [](int index) {

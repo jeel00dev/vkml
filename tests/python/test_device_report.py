@@ -84,6 +84,34 @@ def test_device_names_exist_on_any_build():
         assert names == []
 
 
+def test_the_observability_surface_exists_on_any_build():
+    """Configuration and Decision are layer-0 facts, so a CPU-only build has them.
+
+    They were bound inside `#ifdef VKML_HAS_VULKAN` while
+    `python/vkml/__init__.py` exported all five unconditionally with a comment
+    saying why -- so `import vkml` on a CPU-only build died at
+    `_C.configuration` before it could report anything at all. The comment was
+    right and the C++ did not match it, which is the failure this names.
+
+    A test rather than a bare gate because the reason is a rule --
+    observability is not a Vulkan feature -- and a rule is worth stating where
+    someone will read it.
+    """
+    for name in ("configuration", "record_decisions", "stop_recording_decisions",
+                 "decisions", "decisions_published"):
+        assert hasattr(V, name), (
+            f"vkml.{name} is missing. It observes facts published from layer 0 and must "
+            f"not be compiled out with the Vulkan backend")
+
+    V.record_decisions(4)
+    try:
+        assert isinstance(V.decisions(), list)
+        assert isinstance(V.decisions_published(), int)
+        assert isinstance(V.configuration(), list)
+    finally:
+        V.stop_recording_decisions()
+
+
 def test_report_carries_every_field():
     for report in V.vulkan_device_reports():
         assert set(report) == REQUIRED_KEYS
