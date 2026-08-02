@@ -628,3 +628,84 @@ test_an_optimizer_step_stays_within_its_submission_budget` pins `2 + N` for all
 seven configurations, in a subprocess because the suite's eager fixture would
 make the batching unobservable. Verified by restoring the per-parameter realise:
 all seven turn red, and green again when reverted.
+
+---
+
+## 11. Backward had the same defect, in C++ (2026-08-02)
+
+10 batched the optimiser. Attributing the step again immediately showed
+`backward()` doing the same thing one layer down: **11 submissions per CIFAR
+step**, five of them carrying a single dispatch.
+
+Two causes, both the same shape as 10's and neither previously recorded.
+
+### 11a. The leaf-deposit loop realised one gradient at a time
+
+`backward()` ends by depositing each leaf's accumulated gradient, and called
+`total.realize()` inside the loop. Every leaf is independent, so that is one
+submission per parameter for work that could share one.
+
+Built first, realised together, exactly as `Optimizer.step()` does. The realise
+is **not** an optimisation and is not optional: it cuts the graph so that step
+N's gradients do not keep step N's forward alive into step N+1. Doing it in one
+call preserves that property exactly.
+
+### 11b. Two backward rules ignored eager mode
+
+`ops.cpp`'s `finish()` realises **only when `eager()`**, and every backward rule
+built through it — except two. `MaxPool2d` and `Slice` construct their node by
+hand, because their adjoints need a kernel rather than a composition, and both
+called `realize()` **unconditionally**.
+
+In eager mode that is indistinguishable from correct: everything realises
+anyway. In lazy mode — which is what both examples train under — each one cut
+the graph at the point it appeared. A CNN with three pooled blocks paid it three
+times per backward pass.
+
+> **The whole validation suite runs eager.** `conftest.py`'s autouse fixture
+> forces it, so a failure names the operator that produced it. That is the right
+> default and it meant 1,456 tests could not tell the two versions apart.
+
+### Results
+
+CIFAR-100 CNN, one step, submissions counted per phase (exact, clock-independent):
+
+```
+                   before    after 11a   after 11b
+  backward           11          4           1
+  step total         39         25          25
+```
+
+Whole step, best of 5 rounds of 20 steps:
+
+```
+                     before 10    after 10    after 11
+  submissions/step      39           25          25
+  step wall          13.57 ms     12.09 ms    11.71 ms
+  host and driver     42.0%        35.7%       33.7%
+  GPU / wall           0.58         0.64        0.66
+```
+
+The step-total count does not move at 11b because the submissions it removes
+were inside `backward`, which had already been reduced to 4 by 11a — the two
+overlap, and 11b's value is the wall time and the correctness of the rule rather
+than a further count.
+
+### Regression-tested, and the gap that let this exist
+
+`tests/python/test_invariants.py::test_lazy_execution_gives_the_same_gradients_as_eager`
+compares gradients **bit for bit** between the two modes, over `max_pool2d`,
+`slice`, a conv chain and a reduction, **on both backends**. Bit-identity rather
+than a tolerance because determinism is the project's hard invariant and
+scheduling is not arithmetic.
+
+The CPU arm is not a formality: autograd sits above the backend and does not
+know which one it is driving, so a CPU-only build is a configuration where
+nothing else covers lazy autograd, and three CI jobs build exactly that.
+
+Verified by making the lazy path diverge on purpose: the `slice` case turns red
+and reverting turns it green.
+
+**What let the defect exist:** a rule that must hold for every backward rule was
+enforced by a helper the two exceptional rules did not use, and nothing checked
+the property directly. The test now checks the property.

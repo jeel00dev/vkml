@@ -92,41 +92,69 @@ whole step:</p>
 <table>
 <thead><tr><th>Kernel</th><th>Dispatches</th><th>GPU ms</th><th>% of step</th></tr></thead>
 <tbody>
-<tr><td>matmul</td><td>540</td><td>48.392</td><td>20.0%</td></tr>
-<tr><td>sum</td><td>180</td><td>29.831</td><td>12.3%</td></tr>
-<tr><td>im2col</td><td>60</td><td>21.507</td><td>8.9%</td></tr>
-<tr><td>max_pool2d_backward</td><td>60</td><td>15.441</td><td>6.4%</td></tr>
-<tr><td>col2im</td><td>40</td><td>9.970</td><td>4.1%</td></tr>
-<tr><td>add</td><td>240</td><td>9.485</td><td>3.9%</td></tr>
-<tr><td>16 more</td><td>2020</td><td>20.402</td><td>8.4%</td></tr>
-<tr><td><strong>GPU busy</strong></td><td></td><td><strong>155.027</strong></td>
-    <td><strong>64.1%</strong></td></tr>
-<tr><td>GPU idle inside submissions</td><td></td><td>0.618</td><td>0.3%</td></tr>
-<tr><td><strong>host and driver</strong></td><td></td><td><strong>86.237</strong></td>
-    <td><strong>35.7%</strong></td></tr>
-<tr><td>step wall</td><td></td><td>241.882</td><td>100.0%</td></tr>
+<tr><td>matmul</td><td>540</td><td>48.514</td><td>20.7%</td></tr>
+<tr><td>sum</td><td>180</td><td>30.710</td><td>13.1%</td></tr>
+<tr><td>im2col</td><td>60</td><td>21.289</td><td>9.1%</td></tr>
+<tr><td>max_pool2d_backward</td><td>60</td><td>15.079</td><td>6.4%</td></tr>
+<tr><td>add</td><td>240</td><td>9.721</td><td>4.2%</td></tr>
+<tr><td>col2im</td><td>40</td><td>9.617</td><td>4.1%</td></tr>
+<tr><td>16 more</td><td>2020</td><td>19.930</td><td>8.5%</td></tr>
+<tr><td><strong>GPU busy</strong></td><td></td><td><strong>154.963</strong></td>
+    <td><strong>66.2%</strong></td></tr>
+<tr><td>GPU idle inside submissions</td><td></td><td>0.373</td><td>0.2%</td></tr>
+<tr><td><strong>host and driver</strong></td><td></td><td><strong>78.843</strong></td>
+    <td><strong>33.7%</strong></td></tr>
+<tr><td>step wall</td><td></td><td>234.179</td><td>100.0%</td></tr>
 </tbody>
 </table>
 </div>
 
 <p>20 steps at batch 64 after 20 warm-up steps, best of 5 rounds, on the RX 5600M. One
-round of identical work varies between 12.1 and 16.9 ms on this machine — GPU time and host
+round of identical work varies between 11.7 and 14.0 ms on this machine — GPU time and host
 time do not scale together, so a single round distorts the <em>split</em> and not only the
-total. <strong>Over a third of a step is spent outside every submission window</strong> —
-more than any single kernel, and the reason dispatch overhead is sequenced ahead of GEMM
+total. <strong>A third of a step is spent outside every submission window</strong> — more
+than any single kernel, and the reason dispatch overhead is sequenced ahead of GEMM
 tuning.</p>
 
-<p>Two things only direct attribution could say. The 20 steps made <strong>500
-submissions</strong> — 25 each — and <strong>11 of every 25 carry no compute at all</strong>,
-being uploads, parameter assignments and the download behind <code>.item()</code>. And GPU
-idle time inside submissions is <strong>0.3%</strong>: the barriers between dispatches are
-not the cost.</p>
+<p>Two things only direct attribution could say. The 20 steps made <strong>300
+submissions</strong> — 15 each — and <strong>only 4 of every 15 carry any compute at
+all</strong>; the rest are uploads, parameter assignments and the download behind
+<code>.item()</code>. And GPU idle time inside submissions is <strong>0.2%</strong>: the
+barriers between dispatches are not the cost.</p>
 
-<p>This measurement paid for itself immediately. It showed the optimiser spending 24 of the
-step's 39 submissions on eight parameters, so the optimisers were rewritten to build every
-parameter's update first and realise them together: <strong>39 → 25 submissions per step,
-1.5–1.9× on the optimiser phase</strong> across all seven configurations, with parameters
-bit-identical to before. The table above is the result.</p>
+<h3>What it paid for, twice</h3>
+
+<p>The first table this produced showed the optimiser spending 24 of a step's 39 submissions
+on eight parameters. Every parameter's update is independent, so the optimisers were
+rewritten to build all of them first and realise them together: <strong>1.5–1.9× on the
+optimiser phase</strong> across all seven configurations, with parameters bit-identical to
+before.</p>
+
+<p>Re-attributing after that change — rather than assuming it had finished the job — showed
+<code>backward()</code> doing the same thing one layer down, and worse: <strong>11
+submissions per backward pass, five of them carrying a single dispatch</strong>. Two causes.
+The loop that deposits each parameter's gradient realised them one at a time. And two
+backward rules, for max-pooling and slicing, called <code>realize()</code> unconditionally
+where every other rule realises only in eager mode — so in the lazy mode both examples train
+under, they cut the graph three times per pass in a three-block CNN.</p>
+
+<p><strong>11 → 1 submission per backward pass</strong>, gradients bit-identical. The
+1,456-test suite could not tell the two versions apart, because the whole validation suite
+runs eager and in eager mode everything realises anyway. There is now a test that compares
+gradients between the two modes, byte for byte, on both backends.</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th></th><th>at P0</th><th>after the optimiser</th><th>after backward</th></tr></thead>
+<tbody>
+<tr><td>submissions/step</td><td>39</td><td>25</td><td>15</td></tr>
+<tr><td>…of which backward</td><td>11</td><td>11</td><td><strong>1</strong></td></tr>
+<tr><td>step wall</td><td>13.57 ms</td><td>12.09 ms</td><td><strong>11.71 ms</strong></td></tr>
+<tr><td>host and driver</td><td>42.0%</td><td>35.7%</td><td><strong>33.7%</strong></td></tr>
+<tr><td>GPU / wall</td><td>0.58</td><td>0.64</td><td><strong>0.66</strong></td></tr>
+</tbody>
+</table>
+</div>
 
 <div class="admon warn"><span class="label">⚠ Fewer submissions is not the same as faster</span><div class="body">
 <p>An intermediate version of that change removed <em>seven</em> submissions from the
@@ -171,7 +199,7 @@ arithmetic.</li>
 
 <p>CIFAR-100's CNN spends <strong>96.3%</strong> of its step in the forward/backward/optimiser
 region rather than in batch loading and transfer. That is a statement about the data path, not
-about the GPU: attributing <em>inside</em> that region puts 35.7% of the CNN's step outside
+about the GPU: attributing <em>inside</em> that region puts 33.7% of the CNN's step outside
 every submission window too. Submission overhead is not confined to small models.</p>
 
 <h2 id="devices">Two GPUs, identical results</h2>

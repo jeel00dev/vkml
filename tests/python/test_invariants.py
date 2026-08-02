@@ -1410,3 +1410,77 @@ def test_cpp_operators_are_reachable_from_python():
     assert not missing, (
         f"declared in ops.h but not reachable from Python: {missing}. "
         "Bind them, or add them to intentionally_unbound with the reason.")
+
+
+# ---------------------------------------------------------------------------
+# Eager and lazy must compute the same gradients
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. The whole validation suite runs EAGER -- conftest's autouse
+# fixture forces it, so that a failure names the operator that produced it
+# rather than surfacing at a distant realize(). Both examples train LAZY, and
+# until this file nothing tested that configuration's autograd at all.
+#
+# The gap is not theoretical. Two backward rules -- MaxPool2d and Slice -- built
+# their node by hand and called `realize()` unconditionally, where every other
+# rule builds through ops.cpp's `finish()`, which realises only in eager mode.
+# Making them match cut a CIFAR backward pass from 11 submissions to 4, and the
+# 1456-test suite could not tell the two versions apart, because in eager mode
+# both realise.
+#
+# Bit-for-bit, not a tolerance. Determinism is the project's hard invariant:
+# the same graph on the same device gives the same bytes, and scheduling is not
+# arithmetic. A tolerance here would admit exactly the class of difference this
+# is meant to forbid.
+
+
+def _grads_under(eager: bool, build):
+    """Run `build()`, backward, and return every input's gradient."""
+    with V.eager_mode(eager):
+        loss, inputs = build()
+        loss.backward()
+        return [t.grad.numpy().copy() for t in inputs]
+
+
+def _compare_modes(build, name):
+    eager = _grads_under(True, build)
+    lazy = _grads_under(False, build)
+    assert len(eager) == len(lazy)
+    for i, (e, l) in enumerate(zip(eager, lazy)):
+        assert e.shape == l.shape, f"{name}: gradient {i} shape {l.shape} != {e.shape}"
+        assert np.array_equal(e.view(np.uint8), l.view(np.uint8)), (
+            f"{name}: gradient {i} differs between eager and lazy execution. Scheduling "
+            f"is not arithmetic -- the same graph must give the same bytes. Max |diff| "
+            f"{np.abs(e.astype(np.float64) - l.astype(np.float64)).max():.6g}")
+
+
+@pytest.mark.parametrize("name", ["max_pool2d", "slice", "conv_chain", "reduction"])
+@pytest.mark.parametrize("on_gpu", [
+    False,
+    pytest.param(True, marks=requires_vulkan),
+])
+def test_lazy_execution_gives_the_same_gradients_as_eager(name, on_gpu):
+    # BOTH BACKENDS, and the CPU one is not a formality. The defect is in
+    # autograd, which is above the backend and does not know which one it is
+    # driving, so a CPU-only build is a configuration where nothing else covers
+    # lazy autograd at all -- and three CI jobs build exactly that.
+    dev = gpu_device() if on_gpu else V.cpu
+    rng = np.random.default_rng(7)
+    x_np = rng.standard_normal((2, 3, 8, 8), dtype=np.float32)
+    w_np = rng.standard_normal((4, 3, 3, 3), dtype=np.float32)
+
+    def build():
+        x = V.tensor(x_np.copy(), device=dev, requires_grad=True)
+        w = V.tensor(w_np.copy(), device=dev, requires_grad=True)
+        if name == "max_pool2d":
+            out = V.max_pool2d(V.relu(x), [2, 2])
+        elif name == "slice":
+            out = x[:, 1:3, 2:6, :]
+        elif name == "conv_chain":
+            out = V.max_pool2d(V.relu(V.conv2d(x, w, padding=[1, 1])), [2, 2])
+        else:
+            out = V.sum(x * x, [2, 3])
+        loss = V.sum(out)
+        return loss, ([x, w] if name == "conv_chain" else [x])
+
+    _compare_modes(build, name)

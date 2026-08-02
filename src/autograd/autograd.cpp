@@ -1,6 +1,7 @@
 #include "vkml/autograd/autograd.h"
 
 #include "vkml/api/ops.h"
+#include "vkml/dispatch/executor.h"
 #include "vkml/graph/node.h"
 #include "vkml/util/assert.h"
 #include "vkml/util/coverage.h"
@@ -174,7 +175,9 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             n->n_src = 1;
             n->params.set(node.params.get<SliceParams>());
             Tensor scattered{std::move(n)};
-            scattered.realize();
+            if (eager()) {
+                scattered.realize();
+            }
             accumulate(grads, a, scattered);
             return;
         }
@@ -289,7 +292,9 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             n->n_src = 2;
             n->params.set(node.params.get<UnfoldParams>());
             Tensor scattered{std::move(n)};
-            scattered.realize();
+            if (eager()) {
+                scattered.realize();
+            }
             accumulate(grads, a, scattered);
             return;
         }
@@ -580,6 +585,20 @@ void backward(const Tensor& root, const Tensor& seed) {
 
     // Deposit into leaves, accumulating rather than replacing (PyTorch's rule,
     // and what makes gradient accumulation across micro-batches work).
+    //
+    // BUILT FIRST, REALISED TOGETHER. Every leaf's gradient is independent, so
+    // realising them one at a time costs one submission each and gives the
+    // driver nothing to overlap. Measured on the CIFAR-100 CNN's 8 parameters:
+    // backward made 11 submissions, of which 8 were this loop, five of them
+    // carrying a single dispatch. The same batching as
+    // python/vkml/optim.py's, for the same reason and with the same machinery.
+    //
+    // The realise is not optional and is not an optimisation: it CUTS the
+    // graph, so step N's gradients do not keep step N's forward alive into
+    // step N+1. Doing it in one call preserves that exactly.
+    std::vector<Tensor> totals;
+    std::vector<NodePtr> roots;
+    std::vector<Node*> leaves;
     for (const NodePtr& np : order) {
         if (!np->is_leaf() || !np->requires_grad) {
             continue;
@@ -588,9 +607,15 @@ void backward(const Tensor& root, const Tensor& seed) {
         if (found == grads.end()) {
             continue;
         }
-        Tensor total = np->grad ? (Tensor{np->grad} + found->second) : found->second;
-        total.realize();
-        np->grad = total.node();
+        totals.push_back(np->grad ? (Tensor{np->grad} + found->second) : found->second);
+        roots.push_back(totals.back().node());
+        leaves.push_back(np.get());
+    }
+    if (!roots.empty()) {
+        realize(roots);
+    }
+    for (size_t i = 0; i < leaves.size(); ++i) {
+        leaves[i]->grad = totals[i].node();
     }
 }
 
