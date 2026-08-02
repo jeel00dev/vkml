@@ -184,6 +184,48 @@ So the open question is what comes next, and the profile now answers most of it:
 4. **The R-series** (#119–#123): release verification, mutation coverage, a
    performance regression gate, and a public claim generated from measurement.
 
+## PERFORMANCE CAMPAIGN — the central measurement
+
+`docs/SMALL-STEP-LATENCY.md` (new) answers the objective *"15–20× faster than
+PyTorch CPU"* with measurements. The short version:
+
+**MNIST at batch 64 cannot reach it, and the reason is a constant, not a
+kernel.** A submission costs **57–77 µs of host time** to carry 13 µs of GPU
+work, and a step makes **seven**. The 15–20× target is 32–43 µs/step — *below
+the cost of one submission*. The step's arithmetic floor is 5.7 µs and it
+currently takes 1406 µs.
+
+The cost is the **block**, not the call: an idle `synchronize()` is 1.95 µs, so
+what is expensive is the host sleeping in `vkWaitSemaphores` and being woken by
+an interrupt. `Recorder` has **one command buffer**, so `begin()` must wait for
+the previous submission — host and GPU never overlap.
+
+**CIFAR-100 already beats PyTorch CPU by 3.4×** and its remaining gap is
+`matmul` at 30.9%, a genuinely arithmetic problem. The two facts are consistent:
+any workload whose per-step GPU time is under ~100 µs is dominated by this
+constant.
+
+**Rejected, with the measurement:** `PipelineCache::get` builds a string key
+with a dozen `std::format` calls on every dispatch and looked like the
+per-dispatch cost. Replacing it with a POD key measured **0.3% — indistinguishable**
+(min 14.129 µs vs 14.167 µs, ranges overlapping) and was reverted. Where the
+12–14 µs/dispatch actually goes is **still unknown**; remaining suspects are
+`topological_order`, per-node allocation (10,236 suballocations over 640
+realises), and the per-node barrier.
+
+### Next concrete step — asynchronous submission, ADR first
+
+It changes a stated invariant, so it is an ADR before it is code:
+1. A **ring of command buffers**, so `begin()` need not wait.
+2. `realize()` submits without waiting; `copy_to_host`/`item()` wait first.
+3. A **cross-submission hazard argument**, made on the specification —
+   `docs/adr/0006` §8 records that vkML's synchronisation cannot be
+   machine-checked, because buffer device addresses make the validation layer
+   blind to resource access.
+
+Honest projection, stated before the work: seven blocking waits per step become
+one, worth ~340–460 µs of 1406. That is **1.9–2.4×**, not 15×.
+
 ## The one open decision, unchanged
 
 **#114.** Nothing defines "releasable". `PHASE2-MANIFESTO.md` is authoritative
