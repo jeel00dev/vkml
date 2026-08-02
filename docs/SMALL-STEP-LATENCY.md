@@ -227,15 +227,48 @@ nodes changed, so a figure that *had* moved would mean the measurement was wrong
 The host is no longer the per-node bottleneck — 2.40 µs of wall against 5.35 µs of GPU — so the
 order of the remaining work has changed:
 
-1. **The barrier between every node, ~2.4 µs of the 5.35.** §2's table measures it at 1.68–1.95×
-   of GPU time for independent dispatches. llama.cpp's `overlaps_unsynced` shows the shape of
-   the fix: track written and read ranges, barrier only on a real overlap. It needs aliasing
-   information the executor does not yet produce, so it is an ADR before it is code.
-2. **`vkQueueSubmit2` at ~16.5 µs, seven times per step.** With the block gone this is the
-   floor, and the only lever left is fewer submissions — batching upload, backward and the
-   optimiser into one. ADR 0006 already took this from 39 to 8.
-3. **The ~630 µs of a step that is none of the above**: upload (219 µs), autograd graph
-   construction, and the Python model code. Unattributed, and now the largest share.
+First, what the step is now made of. Measured without the profiler, so nothing can be
+misattributed: time `realize()` alone, then time it followed by an explicit drain, and take the
+difference. MNIST MLP at batch 64, minimum of 150, two independent runs:
+
+```
+  host (submit only)          408-428 us
+  GPU on the critical path    416-429 us
+  full step, with item()      885-894 us
+```
+
+**Host and GPU are now within a few percent of each other.** That is what the change bought:
+before it, the two were strictly additive.
+
+1. ~~**The barrier between every node.**~~ **Prototyped and rejected, measured.** llama.cpp's
+   `overlaps_unsynced` — track written and read ranges, barrier only on a real overlap — was
+   implemented behind a switch and is **bit-identical** on both workloads. It is worth
+   **4% on an MLP step (885 → 850 µs) and 3% on a CNN step**, because the graphs are mostly
+   dependency chains where nearly every barrier is load-bearing; only about a quarter are
+   elidable. §2's 1.68–1.95× is the ceiling for *independent* dispatches and real graphs are
+   not that.
+
+   Deleted rather than kept behind the switch. A 4% gain does not pay for hazard tracking in
+   the hottest loop whose failure mode is silent memory corruption — and, decisively, **it
+   cannot be verified here**: removing barriers *entirely* still passes all 1552 tests on this
+   driver (ADR 0012 §4b bis). An unverifiable safety mechanism guarding the project's defining
+   guarantee is a bad trade at 4%. Revisit if a workload appears with genuinely wide
+   independent work, or on a driver that can falsify it.
+2. **`vkQueueSubmit2` at ~16.5 µs, six times per step.** With the block gone this is the floor,
+   and the only lever left is fewer submissions — batching upload, backward and the optimiser
+   into one. ADR 0006 already took this from 39 to 8.
+3. **`loss.item()`, 371 µs of the 863.** Attributed by removal rather than by synchronising
+   between phases, which would destroy the overlap being measured:
+
+   ```
+     loss.item()        371 us      optimiser step   295 us
+     backward           149 us      zero_grad         36 us
+     forward (build)     12 us      upload (when present)  352 us
+   ```
+
+   This is not a regression — `item()` is where the whole step's GPU work now lands, because
+   nothing before it blocks. It is the honest shape of an asynchronous backend, and it says the
+   remaining win on *this* workload is not reading the loss every step.
 
 Command-buffer replay stays rejected on §4's number until submissions are batched enough that
 recording is a meaningful share of one — at 0.24 µs a dispatch, about seventy of them.

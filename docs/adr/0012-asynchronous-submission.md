@@ -225,8 +225,18 @@ the `synchronize()` there is load-bearing rather than cosmetic.
 - **Thread safety.** `Recorder` was not thread-safe and still is not. The ring makes the
   *device* concurrent, not the recorder. DataLoader prefetch (#22) still needs the threading
   contract recorded in `python/vkml/data.py`.
-- **Per-buffer hazard tracking.** The global barrier stays. llama.cpp's range-overlap approach
-  (`overlaps_unsynced` in `ggml-vulkan.cpp`) would let most barriers be elided and is worth
-  ~2.4 µs per node — a separate ADR, and it needs aliasing information the executor does not
-  yet produce.
+- **Per-buffer hazard tracking — prototyped, measured, and DELETED.** llama.cpp's range-overlap
+  approach (`overlaps_unsynced` in `ggml-vulkan.cpp`) was implemented behind a switch: track the
+  device-address ranges written and read since the last barrier, emit one only on a real
+  overlap. It is **bit-identical** on both workloads and worth **4% on an MLP step, 3% on a
+  CNN step** — far less than §2's 1.68–1.95× ceiling, because a training graph is mostly a
+  dependency chain and only about a quarter of its barriers are elidable.
+
+  Deleted rather than kept. The gain does not pay for hazard tracking in the hottest loop whose
+  failure mode is silent memory corruption, and §4b bis is the decisive part: on this driver,
+  removing barriers *entirely* passes all 1552 tests, so nothing here can tell a correct
+  implementation from a broken one. That is not a mechanism to ship at 4%.
+
+  Recorded so the next person does not re-derive it. Revisit on a workload with genuinely wide
+  independent work, or on hardware that can falsify the hazard.
 - **Command-buffer replay.** §2 rejects it with its number.
