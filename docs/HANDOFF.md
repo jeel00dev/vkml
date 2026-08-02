@@ -5,7 +5,8 @@ next session has absorbed it — it is a note, not a document.
 
 ## Exact state
 
-`main` is **pushed** — `origin/main` is at `d7740ac`. Working tree clean.
+`main` is **pushed** — `origin/main` is at `9dfedea`. Working tree clean.
+**All 12 CI jobs and the Pages build+deploy are green.**
 
 Green: 123 C++ cases · 1576 Python tests · **the same suite re-run in lazy
 mode** · CPU-only · `VKML_MIN_SPEC=1` · all 17 gates, 11 with an automated
@@ -237,12 +238,24 @@ the benchmarks got wrong.
 against `origin/main` at `b5954de` and then re-verified locally or in the CI
 container. Six jobs were red; three shared one cause.
 
+**Six were visible. Fixing them unmasked six more**, every one of which had been
+skipped for fifteen-plus commits because an earlier step in the same job failed
+first — the clang-format gate being red was hiding the entire tail of two jobs.
+
 | Job | Cause | Where fixed |
 |---|---|---|
 | ASan Python suite · PyTorch validation · Windows MSVC | `_C.configuration` missing on a CPU-only build | already fixed locally (session 1) |
 | layering + format | clang-format on `bindings/module.cpp` | already fixed locally (session 1) |
 | Vulkan suite on lavapipe | `sign()` returned `-0.0` | `730aef0` |
 | Wheel builds and installs | the check asserted one install scheme | `89adfc4` |
+| *(unmasked)* ASan build | a float→double promotion I added; GCC does not warn | `bb1d39b` |
+| *(unmasked)* layering + format | `check_min_spec` in a job that builds nothing | `31acf41` |
+| *(unmasked)* PyTorch validation | docs examples run against a CPU-only build | `8527271` |
+| *(unmasked)* PyTorch validation | `web/build.py` cannot build from a CPU-only module | `dfd8801` |
+| *(unmasked)* layering + format | `check_docs_references` indexes a gitignored tree | `dfd8801` |
+| *(unmasked)* real GPUs | my tests hardcoded device 0 | `2b84b9e` |
+| *(unmasked)* layering + format | a decayed col2im mutation anchor | `a638ecd` |
+| *(unmasked)* Pages | `verify_gates` without pinned clang-format | `9dfedea` |
 
 ### `sign()` on lavapipe, and two wrong fixes before the right one
 
@@ -256,6 +269,32 @@ not just NaN as the test name suggests. RADV returns `+0.0` for the same SPIR-V.
   NaN comes back as `-1.0`. Only the CPU oracle caught it.
 
 The branches stay and the sign bit is cleared when the magnitude is zero.
+
+### Two gates were reporting green over nothing
+
+`check_source_links` printed **"0 source links checked across 0 pages" and
+passed** — in the exact job where `web/build.py` had died a step earlier. It
+fails on an empty site now, controlled three ways: absent, empty, built.
+
+`check_docs_references` indexes `third_party/reference` deliberately, because the
+design documents cite CUTLASS and llama.cpp as their evidence. That tree is
+gitignored, so **no runner has it and the gate could not pass in either
+workflow**. It now reports those citations as unverifiable; on a full tree it is
+unchanged and exact.
+
+### Where the site gates live now
+
+`web/build.py` introspects the module to render signatures, so it cannot build
+from a CPU-only build — the fourteen names bound under `if has_vulkan:` are
+absent and it dies on the first. Making them tolerable was tried and was wrong:
+it moved the crash to `signature_of`. `pages.yml` already installs with
+`VKML_VULKAN=ON` and says why.
+
+`check_source_links`, `check_docs_links` and `docs_graph --check` were
+**duplicates** of what `pages.yml` already ran correctly; `check_css_bindings`,
+`check_docs_references` and `verify_gates` moved there because they need the same
+site. `check_gate_coverage` globs all workflows, so nothing fell out of its
+count.
 
 ### Two gaps worth more than the fixes
 
