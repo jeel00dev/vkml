@@ -333,10 +333,18 @@ jobs:
           # dist-packages. It failed there on a wheel that was fine. What the
           # check is for is that the import did not come from the source tree,
           # so it asks sysconfig where packages belong and compares against that.
+          #
+          # BOTH SCHEMES, and that is the same mistake one level up. This
+          # container runs as a non-root user, so pip cannot write the system
+          # location and installs into the USER scheme instead -- ~/.local. The
+          # default scheme alone rejected a wheel that was installed perfectly
+          # well. Asking for one scheme is asking where packages COULD go, not
+          # where this one did.
           installed = os.path.realpath(vkml.__file__)
-          expected = tuple(os.path.realpath(p) for p in
-                           {sysconfig.get_paths()['purelib'],
-                            sysconfig.get_paths()['platlib']})
+          schemes = [sysconfig.get_paths(),
+                     sysconfig.get_paths(sysconfig.get_preferred_scheme('user'))]
+          expected = tuple(sorted({os.path.realpath(p[key])
+                                   for p in schemes for key in ('purelib', 'platlib')}))
           assert installed.startswith(expected), f'{installed} is not under {expected}'
           assert os.environ['GITHUB_WORKSPACE'] not in installed, installed
           print('vkml', vkml.__version__, 'from', os.path.dirname(installed))
