@@ -9,6 +9,8 @@
 | 3 · recorder + Python query surface (`util/decisions.h`) | **done** — `record_decisions()`, `decisions()`, `decisions_published()`; `vkvalidate.py`'s category-3 threshold deleted |
 | 4 · cross-owner validation | **done** — `tests/python/test_decision_facts.py`; one signal implemented, one found not to exist yet |
 | 5 · observation-cost measured | **done** — `bench_observation_cost` in `bench/cpp`; gate is remaining work, tracker #117 |
+| 6 · identity: `DispatchId` | **done** — §4b; minted by `CommandRecorder`, carried by both Decision and Measurement |
+| 7 · aggregation: the consumer that joins them | **done** — §4c; `vkml.attribution`, and the interval fidelity it needed |
 | O1 · configuration snapshot | tracker #96 |
 | O2 · allocator decision site | tracker #97 |
 
@@ -252,6 +254,67 @@ the three simply begin carrying a common key. **Either side can be deleted
 independently:** remove profiling and Decisions still carry an id nobody joins;
 remove the decision recorder and timestamps still resolve. Neither imports the
 other; both import only the counter's owner.
+
+## 4c. Aggregation lives in a consumer, and what that cost the producers
+
+**Status: implemented.** `python/vkml/attribution.py`. A step's wall time is
+partitioned into GPU busy, GPU idle inside submissions, and host and driver,
+with per-kernel rows that sum to GPU busy.
+
+The join has an owner problem of its own. Grouping measurements by kernel needs
+both facts, so whichever producer did the grouping would become a reader of the
+other's fact — the precise failure §4 exists to prevent, arriving through the
+back door as "just a convenience method". It is therefore a **consumer**:
+importing the public query surface, writing nothing back, deletable without
+either producer noticing. That is the same test §4a states for the recorder.
+
+### Two things the fact model could not carry, and were fixed before building on it
+
+This is §6 step 5 of the constitution in practice — the abstraction was
+improved first, in the producer that owns it, rather than worked around in the
+consumer.
+
+**A Measurement was a duration, and attribution needs an interval.** Concurrent
+dispatches each report a window reaching the end of the group
+(`MEASUREMENT-AUDIT.md` §3), so summing durations multiply-counts: split-K's
+sixteen partitions sum to 2.3176 ms inside a 0.2030 ms submission. Nothing a
+consumer can compute repairs that, because two overlapping dispatches and two
+serial ones produce identical durations. `ProfileEntry` gained `start_ms`, and
+attribution takes the **union** — 0.1960 ms against the same window
+(`MEASUREMENT-AUDIT.md` §3b).
+
+**Measurement was retained for one submission, and a step is many.** Twenty-eight
+per CIFAR step, measured. `set_profile_history(n)` retains a bounded window of
+submissions, paired with `profile_submissions_resolved()` so a truncated report
+is distinguishable from a short one — deliberately the shape of
+`decisions_published()`, because it is the same hazard.
+
+Neither addition describes anything. `start_ms` and `submission` are the
+recorder's own measurement and its own identity; adding fidelity to a fact you
+already own is not the same as acquiring a second one.
+
+### The share model, named as a model
+
+Where *k* dispatches are in flight the hardware does not report how it divided
+itself, and no amount of consumer arithmetic can discover it.
+`occupancy_share()` assigns each of them 1/k of that instant. It is a
+**convention**, chosen for one property — the shares sum to the union exactly,
+so the table accounts for all the time and none of it twice — and it engages
+only where the measurement genuinely cannot distinguish. For serial dispatches
+*k* is 1 and the share is the measured duration.
+
+Stating it matters because everything else in the report is measured, and a
+reader has no way to tell which is which unless told.
+
+### What the report will not claim
+
+`host_ms` is `wall − Σ submit`, and the wall clock is a **profiled** one. Rule 4
+forbids subtracting an unprofiled run to remove the profiler's readback, so the
+number is published as an **upper bound** and labelled as one. The GPU rows are
+timestamps and are unaffected (§3), so the inflation lands entirely in that
+bucket. The report also prints `GPU / wall`, which is rule 1b's admissibility
+threshold, rather than leaving a reader to work out whether the wall clock was
+usable at all.
 
 ## 5. Every fact must be checkable against reality
 

@@ -160,9 +160,12 @@ T: dict[int, tuple] = {
     98: ("done", DEBT,     OBSERVE, "CLOSED: the category-3 marker in vkvalidate.py is deleted; the "
                                      "test now observes the backend instead of reimplementing it", None),
     # ---- Performance, re-sequenced by EXTENSIBILITY-ROADMAP 4a ----
-    99:  ("open", DEFECT,   OBSERVE, "cannot be deleted: the roadmap makes P0 a precondition for all "
-                                     "optimisation; it is the Measurement half of O3's fact model", MULT),
-    100: ("open", DEFECT,   PRODUCT, "a measurement showing submission cost is not 74% -- needs #99", FOUND),
+    99:  ("done", DEFECT,   OBSERVE, "CLOSED: DispatchId joined cost to choice, then intervals and "
+                                     "submission retention made the join ADD UP; a CIFAR step now "
+                                     "prints a per-kernel table with the remainder shown", None),
+    100: ("open", DEFECT,   PRODUCT, "PREMISE CORRECTED by #99: submission cost is 44.8%, not 74%. "
+                                     "Still the largest single item and larger than any kernel, so "
+                                     "the work stands with a lower ceiling", FOUND),
     101: ("open", DESIGN,   PRODUCT, "verifying convolution is NOT materialised im2col+GEMM; the "
                                      "roadmap says verify before designing", SHARED),
     102: ("open", DEFERRED, PRODUCT, "M3.2: P0+P1 showing arithmetic is not the remaining cost", SHARED),
@@ -198,6 +201,13 @@ T: dict[int, tuple] = {
     115: ("done", PLANNED,  OBSERVE, "recorder + Python query surface", None),
     116: ("done", PLANNED,  VERIFY,  "shipped 1 of 2 proposed checks; the dispatch-structure signal "
                                      "does not exist until #99", None),
+    # ---- Latent CI failures, both from f595d73, both found 2026-08-02 ----
+    125: ("done", DEFECT,   VERIFY,  "CLOSED: the format gate had been red for 15 commits. Now a "
+                                     "script, so check_gate_coverage sees it and verify_gates has "
+                                     "a control for it", None),
+    126: ("done", DEFECT,   PRODUCT, "CLOSED: the observability bindings were compiled out with the "
+                                     "Vulkan backend, so `import vkml` died on the three CPU-only "
+                                     "CI jobs", None),
     117: ("open", PLANNED,  OBSERVE, "MEASURED 58.8ns / 131.7ns per publish; end-to-end could not "
                                      "resolve it (4 orders under noise). Regression gate remains", SHARED),
 }

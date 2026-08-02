@@ -154,6 +154,59 @@ asserts the window equals the sum for one dispatch and is strictly below it for 
 
 ---
 
+## 3b. Attributing a submission when its dispatches overlap (2026-08-02)
+
+§3's rule — *use `submit`, never sum the parts* — is correct and, taken alone, leaves the
+question it was asked to answer unanswered. `submit` says what the group cost; it cannot say
+what a **kernel** cost, which is what `EXTENSIBILITY-ROADMAP.md` §4a P0 needs before anything
+can be prioritised.
+
+**A duration cannot carry that.** Two dispatches reporting 0.15 ms each are indistinguishable
+whether they ran one after the other or at the same time, so a consumer has no admissible way
+to combine them. `ProfileEntry` therefore carries `start_ms` — the interval's offset within its
+own submission — and every attribution works on **intervals**, taking their **union**.
+
+Measured, RX 5600M / RADV, a 64×4096×64 matmul split into 16 partitions:
+
+```
+                       sum of parts     union of parts     submit window
+  split-K, 16 parts      2.3176 ms         0.1960 ms         0.2030 ms
+  remainder             -2.1146 ms        +0.0070 ms
+```
+
+The union's remainder (+0.0070 ms) matches the +0.0072 ms measured on a strictly serial
+elementwise chain in the same session, which is what identifies it as the timestamp bracket's
+own cost rather than unattributed work.
+
+> **Rule 3, extended.** To attribute *within* a submission, take the **union of intervals**,
+> never the sum of durations. The union equals the sum when nothing overlaps, so it is the
+> unconditional form and does not require knowing in advance whether anything did.
+
+### Serial dispatches do not report disjoint intervals, and the reason is structural
+
+A barrier separates every pair of node-level dispatches, so their intervals ought to abut
+exactly. They overlap slightly, always, because the two timestamps are written at **different
+pipeline stages**: `begin_timestamp` at `TOP_OF_PIPE` and `end_timestamp` at `ALL_COMMANDS`. A
+command reaches top-of-pipe before its predecessor's writes have drained.
+
+Measured across eight dispatches at five sizes, sum-over-union:
+
+```
+    n=64    1.0715 - 1.0755      overlap 0.0048 - 0.0050 ms
+    n=128   1.0320 - 1.0624      overlap 0.0024 - 0.0049 ms
+    n=256   1.1531 - 1.2463      overlap 0.0220 - 0.0349 ms
+    n=512   1.0038 - 1.0832      overlap 0.0016 - 0.0202 ms
+    n=1024  1.0020 - 1.0074      overlap 0.0016 - 0.0060 ms
+```
+
+**The overlap is a bounded absolute cost per boundary — 0.2 to 4 µs — not a proportion.** It
+looks largest where the dispatches are smallest, which is the signature of a fixed cost and the
+reason a *ratio* threshold has to be chosen against the dispatch size. `test_attribution.py`
+asserts below 2.0 for barrier-separated work and above 5.0 for split-K, thresholds that sit far
+from both measured ranges rather than being fitted to either.
+
+---
+
 ## 4. Does the profiler perturb the operation it measures?
 
 Wall clock rises by roughly 0.4–1.5 ms when profiling is on (§3), from query-pool readback and
@@ -233,6 +286,8 @@ This nearly produced a false refutation of P1'' recorded as a cross-kernel failu
     GPU/wall > 0.5 first, whatever the effect size (6b).
 2. Report the **minimum** of a timing distribution, never the mean.
 3. Never sum per-dispatch timestamps across independent dispatches — use `submit`.
+3b. To attribute cost *within* a submission, take the **union of intervals**. It equals the
+    sum when nothing overlaps, so it needs no prior knowledge of whether anything did (3b).
 4. Never compare profiled against unprofiled timings.
 5. Never benchmark with validation layers enabled.
 6. Warm pipelines before timing; compilation is setup, not measurement.

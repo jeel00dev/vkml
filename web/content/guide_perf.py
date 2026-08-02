@@ -75,8 +75,72 @@ grows, the device was idle waiting for work:</p>
 <em>twice the work</em> of batch 64 in <em>less wall time</em>, which only happens when fixed
 per-step cost dominates arithmetic.</p>
 
-<p><strong>At the batch size the examples use, roughly three quarters of a training step is
-overhead.</strong></p>
+<p><strong>At the batch size the examples use, most of a training step is overhead.</strong>
+Batch scaling <em>infers</em> that; it cannot say how much, or which part. Measuring it
+directly is what the next section does.</p>
+
+<h2 id="attribution">Measured directly: where a CIFAR step's time goes</h2>
+
+<p>Batch scaling and device substitution both locate the problem without closing it. vkML
+publishes each dispatch as a measured <em>interval</em> and each kernel choice as a decision,
+both carrying the same dispatch identity, so a consumer can join the two and account for a
+whole step:</p>
+
+<pre><code>python examples/cifar100/train.py --attribute 20</code></pre>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Kernel</th><th>Dispatches</th><th>GPU ms</th><th>% of step</th></tr></thead>
+<tbody>
+<tr><td>matmul</td><td>540</td><td>64.321</td><td>17.1%</td></tr>
+<tr><td>sum</td><td>180</td><td>37.254</td><td>9.9%</td></tr>
+<tr><td>im2col</td><td>60</td><td>32.034</td><td>8.5%</td></tr>
+<tr><td>max_pool2d_backward</td><td>60</td><td>21.222</td><td>5.6%</td></tr>
+<tr><td>add</td><td>240</td><td>14.503</td><td>3.9%</td></tr>
+<tr><td>col2im</td><td>40</td><td>13.603</td><td>3.6%</td></tr>
+<tr><td>16 more</td><td>2020</td><td>23.980</td><td>6.6%</td></tr>
+<tr><td><strong>GPU busy</strong></td><td></td><td><strong>205.917</strong></td>
+    <td><strong>54.8%</strong></td></tr>
+<tr><td>GPU idle inside submissions</td><td></td><td>1.334</td><td>0.4%</td></tr>
+<tr><td><strong>host and driver</strong></td><td></td><td><strong>168.419</strong></td>
+    <td><strong>44.8%</strong></td></tr>
+<tr><td>step wall</td><td></td><td>375.670</td><td>100.0%</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>20 steps at batch 64 after 20 warm-up steps, on the RX 5600M. <strong>Nearly half a step is
+spent outside every submission window</strong> — more than any single kernel, and the reason
+dispatch overhead is sequenced ahead of GEMM tuning.</p>
+
+<p>Two things only direct attribution could say. The 20 steps made <strong>780
+submissions</strong> — 39 each — and <strong>11 of every 39 carry no compute at all</strong>,
+being uploads and the download behind <code>.item()</code>. And GPU idle time inside
+submissions is <strong>0.4%</strong>: the barriers between dispatches are not the cost.</p>
+
+<p>The same report over any code of your own:</p>
+
+<pre><code>import vkml
+from vkml.attribution import capture
+
+with capture() as cap:
+    for _ in range(20):
+        train_one_step()
+
+print(cap.report().table())</code></pre>
+
+<p><code>capture</code> turns on profiling, submission retention and decision recording for its
+duration and turns them off again on exit. It is a <em>consumer</em>: it joins what the
+profiler and the planner each publish, and neither of them knows it exists.</p>
+
+<div class="admonition note">
+<p class="admonition-title">What this number is worth</p>
+<p>The <em>host and driver</em> row is an <strong>upper bound</strong>. Its wall clock is a
+profiled one, and vkML's own measurement rules forbid subtracting an unprofiled run to remove
+the profiler's readback — so the readback lands in that bucket. The GPU rows are timestamps
+and are unaffected. The report prints <code>GPU / wall</code> alongside, because below about
+0.5 a wall-clock comparison is inadmissible whatever the effect size.</p>
+</div>
 
 <h2 id="corroboration">Three independent observations agree</h2>
 
@@ -88,9 +152,10 @@ arithmetic.</li>
 <li>The optimiser is <strong>62.7% of an MLP step</strong>, across 12 submissions.</li>
 </ul>
 
-<p>CIFAR-100's CNN behaves differently — its own breakdown reports <strong>96.3% compute</strong>
-— so the ceiling is specific to small models and short steps, which is exactly where an LLM
-decode step would live.</p>
+<p>CIFAR-100's CNN spends <strong>96.3%</strong> of its step in the forward/backward/optimiser
+region rather than in batch loading and transfer. That is a statement about the data path, not
+about the GPU: attributing <em>inside</em> that region puts 44.8% of the CNN's step outside
+every submission window too. Submission overhead is not confined to small models.</p>
 
 <h2 id="devices">Two GPUs, identical results</h2>
 

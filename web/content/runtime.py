@@ -401,9 +401,76 @@ RT["vulkan_profile_records"] = {
               "the recorder, describing nothing. That is what stops kernel selection acquiring a "
               "second owner.",
     "params": [("index", "int = 0", "Which device.")],
-    "returns": "A list of dicts with `label`, `gpu_ms` and `dispatch`.",
+    "returns": "A list of dicts with `label`, `gpu_ms`, `start_ms`, `submission` and `dispatch`.",
     "note": "`dispatch` is 0 when the interval is not a dispatch — the whole-submission entry is "
             "the case that exists today. Compare ids for equality only; they are opaque and will "
             "widen when multiple queues arrive.",
-    "see": ["vulkan_last_profile", "decisions", "record_decisions"],
+    "warning": "An entry is an INTERVAL, not a duration. `start_ms` places it inside its own "
+               "`submission`, and that is the only admissible way to combine several: a "
+               "dispatch's bracket closes at a global drain point, so concurrent dispatches each "
+               "report a window reaching the end of the group. Sum their durations and split-K's "
+               "sixteen partitions total 2.32 ms inside a 0.20 ms submission; take the union of "
+               "their intervals and they total 0.196 ms.",
+    "see": ["vulkan_last_profile", "vulkan_profile_history", "decisions", "record_decisions"],
+}
+
+
+RT["vulkan_set_profile_history"] = {
+    "summary": "Retain the last N submissions' intervals instead of only the most recent.",
+    "detail": "`vulkan_profile_records` covers one submission. A CIFAR training step makes "
+              "thirty-nine, so anything reasoning about a STEP had nothing to read.\n\n"
+              "Bounded and opt-in: the window drops its oldest submission rather than growing "
+              "without limit, and 0 disables it and frees what was held. Retention only — "
+              "nothing here interprets what it stores.",
+    "params": [("submissions", "int", "How many to keep. 0 disables."),
+               ("index", "int = 0", "Which device.")],
+    "returns": "None.",
+    "note": "Submissions with no dispatch — a download is a copy — have nothing to time and are "
+            "never retained, so the window holds fewer submissions than the backend made.",
+    "see": ["vulkan_profile_history", "vulkan_profile_submissions_resolved",
+            "vulkan_set_profiling"],
+}
+
+
+RT["vulkan_profile_history"] = {
+    "summary": "Every retained submission's intervals, oldest first.",
+    "detail": "Group by `submission` before doing anything else. `start_ms` is measured from that "
+              "submission's own window, so intervals from two submissions are not on a common "
+              "line; and whole-submit windows may be summed across submissions — they are serial "
+              "— where the intervals inside one may not.\n\n"
+              "`vkml.attribution` is the worked consumer: it joins these against `decisions()` "
+              "and partitions a step's wall time into GPU busy, GPU idle inside submissions, and "
+              "host and driver.",
+    "params": [("index", "int = 0", "Which device.")],
+    "returns": "A list of dicts, the same shape `vulkan_profile_records` returns.",
+    "warning": "Empty unless `vulkan_set_profile_history` asked for retention. Costing nothing "
+               "until it is asked for is the point.",
+    "see": ["vulkan_set_profile_history", "vulkan_profile_submissions_resolved",
+            "vulkan_profile_records"],
+}
+
+
+RT["vulkan_profile_submissions_resolved"] = {
+    "summary": "Submissions offered to the retention window, including any it dropped.",
+    "detail": "The way to tell a truncated report from a short one. Compare against the distinct "
+              "`submission` values in `vulkan_profile_history()`: if this is larger, the window "
+              "dropped its oldest entries, every per-kernel row understates, and the difference "
+              "silently lands in whatever bucket absorbs the remainder.\n\n"
+              "The parallel to `decisions_published`, and it exists for the same reason.",
+    "params": [("index", "int = 0", "Which device.")],
+    "returns": "An integer.",
+    "see": ["vulkan_profile_history", "vulkan_set_profile_history", "decisions_published"],
+}
+
+
+RT["vulkan_synchronize"] = {
+    "summary": "Block until every submission has completed.",
+    "detail": "Anything timing a region with a host clock must call this before stopping it. "
+              "Work that has been SUBMITTED has not been measured, and a wall clock stopped "
+              "early reports the submission cost and none of the execution.",
+    "params": [("index", "int = 0", "Which device.")],
+    "returns": "None.",
+    "note": "Reading a result back — `.numpy()`, `.item()` — already waits, so this is for the "
+            "case where nothing did.",
+    "see": ["vulkan_set_profiling", "vulkan_profile_history"],
 }

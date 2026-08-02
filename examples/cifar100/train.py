@@ -23,6 +23,7 @@ Usage:
     python examples/cifar100/train.py --device cpu     # reference backend
     python examples/cifar100/train.py --no-compare     # skip the torch run
     python examples/cifar100/train.py --epochs 1 --train-size 5000   # quick pass
+    python examples/cifar100/train.py --attribute 20   # where the step's time goes
 """
 
 from __future__ import annotations
@@ -136,6 +137,77 @@ def evaluate(model: V.nn.Module, x: np.ndarray, y: np.ndarray, device,
 
     model.train()
     return correct / seen, loss_sum / seen
+
+
+#: Steps run before the capture opens. GPU clock state is worth more than
+#: three quarters of a measurement here -- issue #76 was a 38.6% "regression"
+#: that turned out to be a cold card -- so the first steps are thrown away
+#: rather than averaged in (docs/MEASUREMENT-AUDIT.md).
+ATTRIBUTION_WARMUP_STEPS = 20
+
+
+def attribute_steps(args) -> None:
+    """Print where a training step's time actually goes, and what is unexplained.
+
+    This is `docs/EXTENSIBILITY-ROADMAP.md` 4a P0's exit criterion: a per-kernel
+    table for a CIFAR step summing to the measured wall time, with the
+    unaccounted remainder shown rather than hidden. The remainder is the point
+    -- P1's whole subject is the ~74% of a step that is not arithmetic, and
+    until now the only evidence for it was indirect.
+
+    Deliberately a separate path from `train()`. Wrapping the training loop
+    would have put a measurement concern inside the thing being measured, and
+    the loop is also the reference against PyTorch, which should not acquire a
+    profiling branch it does not need.
+    """
+    device = resolve_device(args.device)
+    if not str(device).startswith("vulkan"):
+        raise SystemExit("--attribute needs a Vulkan device; the CPU backend has no dispatches")
+
+    dataset = cifar_data.load()
+    train_x, train_y = dataset["train_x"], dataset["train_y"]
+
+    V.nn.manual_seed(args.seed)
+    model = build_cnn()
+    model.to(device)
+    optimiser = V.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
+
+    loader = DataLoader(ArrayDataset(train_x, train_y), batch_size=args.batch_size,
+                        shuffle=True, drop_last=True, seed=args.seed)
+    iterator = iter(loader)
+
+    def one_step() -> None:
+        xb_np, yb_np = next(iterator)
+        xb = V.tensor(xb_np, device=device)
+        yb = V.tensor(yb_np, device=device)
+        optimiser.zero_grad()
+        loss = V.nn.cross_entropy(model(xb), yb)
+        loss.backward()
+        optimiser.step()
+        loss.item()          # forces the lazy graph to realise, and waits
+
+    for _ in range(ATTRIBUTION_WARMUP_STEPS):
+        one_step()
+
+    # A CIFAR step submits ~28 times, so the default window truncates at 18
+    # steps and says so. 128 per step is headroom rather than a fit, and the
+    # report still warns if this turns out to be wrong on another shape.
+    index = int(str(device).partition(":")[2] or 0)
+    with V.attribution.capture(index=index, submissions=args.attribute * 128) as cap:
+        for _ in range(args.attribute):
+            one_step()
+    report = cap.report()
+
+    print()
+    print("=" * 62)
+    print(f"  {args.attribute} steps of cnn on cifar100, batch {args.batch_size}, on {device}")
+    print(f"  after {ATTRIBUTION_WARMUP_STEPS} warm-up steps")
+    print("=" * 62)
+    print(report.table())
+    print()
+    print(f"  per step: {report.wall_ms / args.attribute:.2f} ms wall, "
+          f"{report.host_ms / args.attribute:.2f} ms outside every submission")
+    print("=" * 62)
 
 
 def train(args) -> dict:
@@ -311,7 +383,14 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--no-compare", dest="compare", action="store_false",
                         help="skip the PyTorch reference run")
+    parser.add_argument("--attribute", type=int, default=0, metavar="STEPS",
+                        help="profile STEPS training steps and print where their time "
+                             "went, instead of training")
     args = parser.parse_args()
+
+    if args.attribute:
+        attribute_steps(args)
+        return
 
     summary = train(args)
     fractions = summary["step_fractions"]

@@ -184,6 +184,12 @@ arithmetic.
 
 **At the batch size the examples use, roughly three quarters of a training step is overhead.**
 
+> **Superseded by direct measurement, 2026-08-02.** This figure is an *inference* from batch
+> scaling and covers the whole step, data loading and transfer included. P0 now measures the
+> split directly: **44.8% host and driver, 54.8% GPU busy** for the compute region — see
+> "P0 is met" below. The conclusion that overhead dominates arithmetic survives; the size
+> does not. Quote the measured number.
+
 Three independent observations agree:
 
 - MNIST trains at 4.41 s/epoch on a 36-CU discrete card and 4.35 s/epoch on a 6-CU integrated
@@ -235,18 +241,89 @@ readable in RenderDoc and RGP as well.
 with the unaccounted remainder shown explicitly rather than hidden — the remainder *is* the
 overhead being hunted.
 
-### P1 — Dispatch and submission overhead *(the measured 74%)*
+### P0 is met — and it corrects the number this section was built on
 
-The single largest win available, already partly diagnosed in #32 and #33.
+```
+python examples/cifar100/train.py --attribute 20
+```
 
-Candidates, in the order the evidence supports:
+20 steps, batch 64, after 20 warm-up steps, RX 5600M / RADV. Reproduced three times;
+the percentages move by less than a point between runs while the wall time moves by 20%,
+which is the clock behaviour §"Warm-up" in `MEASUREMENT-AUDIT.md` describes.
 
-1. **One submission per step**, not twelve. The optimiser is the worst offender and is
-   embarrassingly batchable — every parameter's update is independent.
-2. **Command buffer reuse.** A training step re-records an identical sequence every iteration;
+```
+  kernel                count     gpu ms   % step
+  matmul                  540     64.321    17.1%
+  sum                     180     37.254     9.9%
+  im2col                   60     32.034     8.5%
+  max_pool2d_backward      60     21.222     5.6%
+  add                     240     14.503     3.9%
+  col2im                   40     13.603     3.6%
+  (16 more)              2020     23.980     6.6%
+  ------------------------------------------------
+  GPU busy                       205.917    54.8%
+  GPU idle in submits              1.334     0.4%
+  host and driver *              168.419    44.8%
+  ================================================
+  step wall                      375.670   100.0%
+
+  780 submissions, 560 of them with work to time
+  * upper bound: a profiled wall clock includes the profiler's own readback
+  GPU / wall = 0.55
+```
+
+**The overhead is real and it is not three quarters.** This section's headline —
+*"roughly three quarters of a training step is overhead"* — came from batch scaling,
+which measures how per-sample cost falls and infers a fixed component. Direct
+attribution puts host and driver at **44.8%, and that is an upper bound** (rule 4:
+the wall clock here is profiled, and the readback cannot be subtracted out by
+comparing against an unprofiled run).
+
+The two are not in contradiction so much as measuring different things. The batch-scaling
+figure covers a whole training step including data loading and host-to-device transfer,
+which `train()` reports separately; this covers forward, backward, optimiser and the
+realisation that waits for them. Anything quoting 74% should now quote this instead,
+because it is measured directly rather than inferred, and it names *which* bucket.
+
+**P1's premise survives; its size changes.** Nearly half a step outside every submission
+window is still the largest single item available, and larger than any kernel — `matmul`,
+the biggest, is 17.1%. The reordering argument that put P1 before `M3_ROADMAP`'s sixteen
+GEMM items holds. What changes is the expected ceiling: eliminating submission overhead
+entirely buys up to ~45%, not ~75%.
+
+**Two things the table says that batch scaling could not.**
+
+- **780 submissions for 20 steps — 39 per step — and only 28 of them have anything to
+  time.** The other 11 are copies: uploads and the download behind `.item()`. P1's first
+  candidate is "one submission per step, not twelve"; the real count is 39, and a third of
+  them carry no compute at all.
+- **GPU idle inside submissions is 0.4%.** The barriers between dispatches are not the
+  cost, so P1's third candidate — *fewer dispatches per operation* — is aimed at
+  dispatch-side host cost, not at gaps on the device. It cannot be justified by GPU idle
+  time, because there is almost none.
+
+### P1 — Dispatch and submission overhead *(measured at 44.8% of a CIFAR step)*
+
+The single largest win available, already partly diagnosed in #32 and #33, and larger than
+any individual kernel — `matmul`, the biggest, is 17.1%.
+
+Candidates, reordered by what P0 measured rather than by what was expected:
+
+1. **One submission per step, not thirty-nine.** Measured: 780 submissions for 20 CIFAR
+   steps. The earlier figure of twelve came from an MLP; a CNN is three times that. The
+   optimiser is still the worst offender and is embarrassingly batchable — every
+   parameter's update is independent.
+2. **Eleven of those 39 carry no compute at all** — uploads, and the download behind
+   `.item()`. They pay submission cost for a copy. This is the cheapest item on the list
+   and it was invisible before P0, because a submission with no dispatch produces no
+   profile.
+3. **Command buffer reuse.** A training step re-records an identical sequence every iteration;
    the shapes do not change between steps.
-3. **Fewer dispatches per operation** — the elementwise chain in an optimiser step is a
-   sequence of tiny kernels, each paying full dispatch cost.
+4. **Fewer dispatches per operation** — the elementwise chain in an optimiser step is a
+   sequence of tiny kernels, each paying full dispatch cost. **Note what this is not
+   justified by:** GPU idle time inside submissions is 0.4%, so the barriers between
+   dispatches are not the cost. The case for this is host-side dispatch overhead, and it
+   has to be made on that basis.
 
 **Reference.** vkML's own `BACKWARD-PERF-INVESTIGATION.md` and `PERFORMANCE-MODEL.md`; and for
 the pattern, llama.cpp's `ggml-vulkan` builds one command buffer per graph rather than per
@@ -339,8 +416,14 @@ weights, and it is a prerequisite for every LLM phase.
 **Evidence.** Measured on 2026-08-01: MNIST MLP trains at **4.41 s/epoch on a 36-CU discrete
 GPU and 4.35 s/epoch on a 6-CU integrated one**. A six-fold difference in compute capacity
 produced no difference in wall time — the workload is bound by submissions, not arithmetic.
-CIFAR-100's CNN, by contrast, reports 96.3% compute, so the ceiling is specific to small
-models and is exactly where LLM decode steps will live.
+
+**Correction, 2026-08-02.** An earlier draft added *"CIFAR-100's CNN, by contrast, reports
+96.3% compute, so the ceiling is specific to small models"*. That reads `train()`'s
+`compute` bucket as GPU time, and it is not: the bucket is the host wall time of the
+forward/backward/optimiser region, so 96.3% says only that batch loading and transfer are
+3.7%. Attributing *inside* that region (§4a, "P0 is met") puts **44.8% of the CNN's step
+outside every submission window**. The CNN does not behave differently in the way that
+sentence claimed, and the ceiling is not specific to small models.
 
 **Approach.** Already diagnosed in the issues: the optimiser is 62.7% of an MLP step across
 12 submissions, and a submission costs ~105 µs against ~9 µs for a dispatch. Batch the
