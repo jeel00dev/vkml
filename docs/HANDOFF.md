@@ -104,6 +104,10 @@ DataLoader transforms built; the list is now *generated* by
 - **A 12% regression that did not exist** was nearly accepted on a 25 µs
   dispatch whose *unchanged* control varied by 32%. The frozen-baseline A/B
   (rule 7) at sizes where the kernel dominates its bracket is what disproved it.
+- **A roadmap item can often be tested before it is built.** Item 2's whole
+  premise was answerable in one sweep because the alternatives were already
+  behind environment switches. It cost twenty minutes and removed a High-scored
+  item from the plan.
 - **Barrier-separated dispatches do not report disjoint intervals.** Brackets
   open at `TOP_OF_PIPE` and close at `ALL_COMMANDS`, so consecutive ones overlap
   by 0.2–4 µs — a fixed cost per boundary. Quantified in `MEASUREMENT-AUDIT` §3b.
@@ -145,17 +149,28 @@ So the open question is what comes next, and the profile now answers most of it:
 
 1. **`matmul`, at 30.9% and the largest line by a factor of five.** This is now
    `M3_ROADMAP`'s territory, and **that document's premise has been measured
-   for the first time** — a table is appended to it. Three findings reweight
-   its sixteen items:
+   for the first time** — two tables are appended to it.
+
+   Where the headroom is:
    - **Two of the CNN's four GEMMs are memory-bound** (intensity 7.3 and 19.1
      against the ~24 flop/byte crossover). Every tiling item aims at the
      compute roof and can do nothing for them.
    - **The compute-bound two run at 23–24% of peak where the same kernel
-     reaches 34–37% on square shapes.** So the headroom is ~1.5×, not the 3–4×
-     "23% of peak" suggests.
-   - **All four are batched with a broadcast operand and M ∈ {32, 64, 128}.**
-     The benchmark the items were scored against is M = 1024, unbatched. Item 2
-     (runtime shape dispatch) is exactly right for this and was scored blind.
+     reaches 34–37% on square shapes.** The headroom is ~1.5×, not the 3–4×
+     "23% of peak" suggests — 37% is this kernel's demonstrated ceiling here.
+
+   And **two things it is not**, both measured rather than assumed:
+   - **Not tile geometry. Item 2 (runtime shape dispatch) is DISPROVEN for this
+     workload** — scored High/Low/4-of-5, and testable today because the tile
+     alternatives are already behind env switches. 32×32 wins on four of five
+     shapes and ties the fifth; every alternative is 1.1–2.0× *worse*. Best
+     possible per-shape selection: **1.00×**. In hindsight, every M in the
+     workload is a multiple of 32.
+   - **Not occupancy.** `gemm_reg` uses 41 VGPRs of 1024 per SIMD with nothing
+     spilled — the 20-wave cap, already reached.
+
+   That leaves the K loop and the shapes themselves (K of 288/576 vs 1024, plus
+   a batch axis the benchmark lacks), which is items 6/10/13 and is unmeasured.
 2. **Convolution's structure, and #101 is verified.** The weight-gradient path
    materialises a per-sample gradient — **18.9 MB for one layer of one step** —
    before reducing it. ADR 0010 made that reduction 20× faster, which was the

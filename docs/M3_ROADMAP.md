@@ -79,11 +79,52 @@ binds below ~24 flop/byte.
    scored against a shape distribution this workload does not have; a tile geometry chosen
    for M = 1024 is being asked to serve M = 32.
 
-> **What that makes this roadmap.** Still correctly ordered — M3.1's shape dispatch is
-> exactly what a workload with M ∈ {32, 64, 128, 1024} needs — but its *benefit* column was
-> estimated against square shapes and should be re-read with the table above in hand. The
-> first thing any of these items should do is reproduce that table, because it is now cheap
-> to produce and was not when this was written.
+> **What that makes this roadmap.** Its *benefit* column was estimated against square
+> shapes and should be re-read with the table above in hand. The first thing any of these
+> items should do is reproduce that table, because it is now cheap to produce and was not
+> when this was written.
+
+### Item 2 (runtime shape dispatch) is DISPROVEN for this workload
+
+Scored **High benefit, Low complexity, 4/5 converged**, on the reasoning that different
+shapes want different tiles. That is testable today without writing any of it: the tile is
+fixed at 32×32 and `VKML_GEMM_TILE` / `VKML_GEMM_BLOCK` already expose the alternatives. One
+process per arm, minimum of 25 warm runs, submit window:
+
+```
+                              32x32     64x32     64x64   RM/RN 4x2  RM/RN 4x4
+  conv1 (32,27)@(N,27,1024)  0.1408 *  0.2670    0.2880    0.2284     0.2960
+  conv2 (64,288)@(N,288,256) 0.3739 *  0.3821    0.4400    0.3942     0.5361
+  conv3 (128,576)@(N,576,64) 0.3266 *  0.3597    0.4476    0.3959     0.4964
+  head  (64,2048)@(2048,100) 0.0563    0.0560 *  0.0706    0.0700     0.0926
+  square 1024                0.8998 *  1.0634    1.5236    0.9922     1.8129
+```
+
+**32×32 wins on four of five, and ties on the fifth to within 0.5%.** Every alternative is
+1.1× to 2.0× *worse*. Shape dispatch among the geometries that exist would buy **nothing** —
+the best possible per-shape selection is 1.00× against always-32×32.
+
+Why, in hindsight: every M in the workload — 32, 64, 128, 1024 — is a multiple of 32, so the
+current tile never wastes a row, while a 64-wide tile wastes half of `conv1`'s.
+
+**What is NOT disproven.** That a geometry which does not exist yet would win; the sweep can
+only compare what the switches expose. Item 2 should be re-scored as *"no benefit among the
+current geometries, unmeasured for new ones"* rather than High, and any future version of it
+has to bring a geometry and a measurement rather than a dispatch mechanism.
+
+### And it is not register pressure either
+
+`gemm_reg` compiled for the winning geometry, as the driver reports it:
+
+```
+  vgprs 41   sgprs 35   spilled 0   scratch 0   lds 8192 B
+```
+
+RDNA1 has 1024 VGPRs per SIMD, so 41 leaves occupancy at the **20-wave cap** with nothing
+spilled. The gap between 23–24% of compute peak on the conv shapes and 34–37% on square is
+therefore neither tile geometry nor occupancy. That leaves the K loop and the shapes
+themselves — `K` of 288/576 against 1024, and a batch axis the square benchmark does not
+have — which is items 6, 10 and 13's territory and is unmeasured.
 
 ---
 

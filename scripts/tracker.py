@@ -179,7 +179,8 @@ T: dict[int, tuple] = {
                                      "5x the next line. M3_ROADMAP's premise now measured; 2 of 4 "
                                      "GEMMs are memory-bound and headroom is ~1.5x not 3-4x", SHARED),
     103: ("open", DEFERRED, PRODUCT, "M3.3: the #102 search finding no configuration the two-level "
-                                     "hierarchy ceilings", LOCAL),
+                                     "hierarchy ceilings. NOTE: measured that it is NOT tile "
+                                     "geometry and NOT registers (41 vgpr, 20 waves, no spill)", LOCAL),
     104: ("open", DEFERRED, PRODUCT, "M3.5: attribution showing epilogue stores are not measurable", LOCAL),
     105: ("open", DEFECT,   PRODUCT, "a decision that the examples model small-batch deliberately", LOCAL),
     # ---- Feature phases (EXTENSIBILITY-ROADMAP 4b) ----
