@@ -270,10 +270,17 @@ print(count)
 # docs/adr/0008-backend-selection-and-cpu-fallback.md.
 # ---------------------------------------------------------------------------
 
-# A driver manifest that does not exist. The Vulkan loader reads
-# VK_ICD_FILENAMES to find drivers, so pointing it at nothing is how a machine
-# with no GPU is simulated without needing one.
-_NO_DRIVER = {"VK_ICD_FILENAMES": "/nonexistent/vkml-test-no-such-icd.json"}
+# A driver manifest that does not exist, which is how a machine with no GPU is
+# simulated without needing one.
+#
+# BOTH VARIABLES, because the loader honours VK_DRIVER_FILES in preference to
+# the deprecated VK_ICD_FILENAMES. Setting only the old one leaves the
+# simulation open to whatever the caller's environment already exports — and
+# this project's own coverage command exports `VK_DRIVER_FILES=/nonexistent`,
+# so a developer with it set for a real driver saw these tests fail while
+# nothing was wrong with the code they were testing.
+_MISSING_ICD = "/nonexistent/vkml-test-no-such-icd.json"
+_NO_DRIVER = {"VK_ICD_FILENAMES": _MISSING_ICD, "VK_DRIVER_FILES": _MISSING_ICD}
 
 
 def _run(snippet, env=None):
