@@ -59,6 +59,7 @@ GROUPS: list[tuple[str, list[str]]] = [
         [
             "abs",
             "neg",
+            "scaled_add",
             "exp",
             "log",
             "sqrt",
