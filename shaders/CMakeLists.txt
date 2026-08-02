@@ -77,6 +77,7 @@ endif()
 
 set(VKML_SHADERS
     fill.comp
+    scaled_add.comp
     unary.comp
     binary.comp
     where.comp

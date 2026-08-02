@@ -1,0 +1,66 @@
+#version 450
+
+// out = a*alpha + b*beta, as one dispatch.
+//
+// WHY THIS EXISTS. The composed form -- `a*alpha` then `+ b*beta` -- needs four
+// graph nodes, because each coefficient is materialised as a rank-0 tensor
+// before the multiply. That is four dispatches, four barriers and four
+// allocations for arithmetic that reads two arrays and writes one. Measured on
+// an SGD-with-momentum step over an MNIST MLP: 24 dispatches and 126 us of GPU
+// against 8 and 47 here (docs/adr/0013).
+//
+// BIT-IDENTICAL to the composed form, which is what makes it a cost change and
+// not a numerical one. See the note at the arithmetic for what that forbids.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+// Set when both inputs are contiguous, which removes the stride arithmetic.
+// The output always is: a computed node's storage is freshly allocated, which
+// the executor asserts in bind_storage.
+layout(constant_id = 1) const bool CONTIGUOUS = false;
+layout(constant_id = 2) const uint DTYPE = T_F32;
+
+// EXTENTS ONCE, STRIDES PER OPERAND. Both inputs arrive already broadcast to
+// the output's shape, so they provably share extents and storing them twice
+// would waste 16 of the 128 bytes Vulkan guarantees. This is the packing
+// docs/adr/0009 sec2 describes, and the reason offset_from() is split out of
+// operand_offset() in common.glsl.
+layout(push_constant, scalar) uniform Params {
+    uint64_t a;
+    uint64_t b;
+    uint64_t dst;
+    uint     n;
+    float    alpha;
+    float    beta;
+    uvec4    ne;    // extents, shared by both inputs and the output
+    uvec4    a_nb;  // strides, in elements
+    uvec4    b_nb;
+} p;
+
+void main() {
+    const uint i = global_index();
+    if (i >= p.n) { return; }
+
+    // Broadcasting needs no special case: a broadcast axis arrives with stride
+    // 0, so offset_from returns the same element for every index along it.
+    const uint ai = CONTIGUOUS ? i : offset_from(i, p.ne, p.a_nb);
+    const uint bi = CONTIGUOUS ? i : offset_from(i, p.ne, p.b_nb);
+
+    // Two multiplies and an add, written to match the composed form's rounding
+    // structure exactly: `mul` stores a*alpha to f32 before the add, so this
+    // rounds in the same places.
+    //
+    // WHETHER CONTRACTION WOULD ACTUALLY CHANGE THE ANSWER HERE IS UNVERIFIED.
+    // An fma() variant was built and compared over 100,006 elements chosen to
+    // expose the intermediate rounding, including alpha = 1+2^-23: the SPIR-V
+    // differed and not one element did. That is consistent with what
+    // check_precise_gemm.py records -- on RADV the NoContraction decoration is
+    // invisible in behaviour. So this shape is kept because it is the one whose
+    // equivalence can be argued on paper, not because a difference was measured;
+    // another driver is where it would matter (ADR 0005 makes the same argument
+    // for GEMM).
+    const float x = load_f(p.a, ai, DTYPE) * p.alpha;
+    const float y = load_f(p.b, bi, DTYPE) * p.beta;
+    store_f(p.dst, i, x + y, DTYPE);
+}

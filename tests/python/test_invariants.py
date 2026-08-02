@@ -1758,3 +1758,131 @@ def test_an_upload_does_not_drain_queued_work():
         f"an upload behind queued work took {behind * 1e6:.0f} us against "
         f"{idle * 1e6:.0f} us on an idle device -- it is draining the queue"
     )
+
+
+# ---------------------------------------------------------------------------
+# ADR 0013 -- scaled_add.
+#
+# The claim is that `a*alpha + b*beta` as one operator is BIT-IDENTICAL to the
+# composed form, on both backends. That is what makes it a cost change rather
+# than a numerical one, and it is checkable by comparing bytes -- the acceptance
+# criterion MEASUREMENT-AUDIT rule 8 prefers, because no instrument can distort
+# it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("alpha,beta", [(0.9, 1.0), (1.0, -0.01), (0.5, 0.5),
+                                        (-2.0, 3.25), (1.0, 1.0), (0.0, 1.0)])
+@pytest.mark.parametrize("on_gpu", [False, pytest.param(True, marks=requires_vulkan)])
+def test_scaled_add_is_bit_identical_to_the_composed_form(alpha, beta, on_gpu):
+    device = gpu_device() if on_gpu else V.cpu
+    rng = np.random.default_rng(3)
+    a = rng.standard_normal(4096).astype(np.float32)
+    b = rng.standard_normal(4096).astype(np.float32)
+
+    ta = V.tensor(a, device=device)
+    tb = V.tensor(b, device=device)
+
+    fused = V.scaled_add(ta, tb, alpha, beta).numpy()
+    composed = (ta * alpha + tb * beta).numpy()
+
+    assert np.array_equal(fused, composed), (
+        f"scaled_add({alpha}, {beta}) differs from the composed form: "
+        f"max |delta| = {np.abs(fused - composed).max()}"
+    )
+    # And against a reference computed the same way in f32, so a matching pair
+    # of wrong answers cannot pass.
+    assert np.array_equal(fused, a * np.float32(alpha) + b * np.float32(beta))
+
+
+@pytest.mark.parametrize("on_gpu", [False, pytest.param(True, marks=requires_vulkan)])
+def test_scaled_add_broadcasts_like_any_binary_op(on_gpu):
+    """It must not throw on shapes its own API accepts.
+
+    The first version took the contiguous same-shape case only, because dropping
+    the per-operand metadata is what makes room for the coefficients. That threw
+    on a bias gradient -- shape (1, n) against a parameter's (n,) -- which is an
+    ordinary broadcast and the exact case an optimiser hits. Extents are now
+    stored once and strides per operand, which fits in 84 of the guaranteed 128
+    bytes.
+    """
+    device = gpu_device() if on_gpu else V.cpu
+    rng = np.random.default_rng(11)
+    a = rng.standard_normal((1, 64)).astype(np.float32)
+    b = rng.standard_normal((64,)).astype(np.float32)
+
+    ta = V.tensor(a, device=device)
+    tb = V.tensor(b, device=device)
+
+    fused = V.scaled_add(ta, tb, 0.9, 1.0).numpy()
+    composed = (ta * 0.9 + tb * 1.0).numpy()
+    assert np.array_equal(fused, composed)
+
+
+@requires_vulkan
+def test_scaled_add_costs_one_dispatch_not_four():
+    """The whole point: one kernel, not a materialised scalar plus a multiply.
+
+    `a * 0.9 + b` builds four nodes -- `full(0.9)`, a multiply, and the add --
+    because a scalar operand becomes a rank-0 tensor. Counting dispatches is the
+    only way to see that from outside, and it is what a future change is most
+    likely to undo by routing scaled_add back through the composed path.
+    """
+    device = gpu_device()
+    a = V.tensor(np.ones((4096,), dtype=np.float32), device=device)
+    b = V.tensor(np.ones((4096,), dtype=np.float32), device=device)
+    V.realize(a, b)
+    V.vulkan_synchronize()
+
+    with V.eager_mode(False):
+        before = V.vulkan_stats(0)["dispatches"]
+        V.realize(V.scaled_add(a, b, 0.9, 1.0))
+        V.vulkan_synchronize()
+        fused = V.vulkan_stats(0)["dispatches"] - before
+
+        before = V.vulkan_stats(0)["dispatches"]
+        V.realize(a * 0.9 + b)
+        V.vulkan_synchronize()
+        composed = V.vulkan_stats(0)["dispatches"] - before
+
+    assert fused == 1, f"scaled_add took {fused} dispatches"
+    assert composed == 3, (
+        f"the composed form took {composed} dispatches, not the 3 this test was "
+        "written against -- if that improved, this comparison needs revisiting"
+    )
+
+
+@pytest.mark.parametrize("alpha,beta", [(0.9, 1.0), (1.0, -0.01), (-2.0, 3.25), (1.0, 1.0)])
+@pytest.mark.parametrize("on_gpu", [False, pytest.param(True, marks=requires_vulkan)])
+def test_scaled_add_gradients_match_the_composed_form(alpha, beta, on_gpu):
+    """d/da = alpha, d/db = beta -- and nothing was testing it.
+
+    The optimiser calls `scaled_add` on detached tensors, so no gradient ever
+    flows through it there and the backward rule was dead the moment it was
+    written. `coverage_matrix.py` reported it as a rule that never fired, which
+    is exactly why it tracks that separately from whether the suite is green.
+    """
+    device = gpu_device() if on_gpu else V.cpu
+    rng = np.random.default_rng(17)
+    a = rng.standard_normal((32, 8)).astype(np.float32)
+    b = rng.standard_normal((32, 8)).astype(np.float32)
+    # A fixed weight, so the incoming gradient is not all ones -- a rule that
+    # ignored its coefficient and passed the gradient straight through would
+    # survive a plain .sum().
+    weight = rng.standard_normal((32, 8)).astype(np.float32)
+
+    def grads(fused: bool):
+        ta = V.tensor(a, device=device, requires_grad=True)
+        tb = V.tensor(b, device=device, requires_grad=True)
+        out = V.scaled_add(ta, tb, alpha, beta) if fused else (ta * alpha + tb * beta)
+        (out * V.tensor(weight, device=device)).sum().backward()
+        return ta.grad.numpy(), tb.grad.numpy()
+
+    fa, fb = grads(True)
+    ca, cb = grads(False)
+
+    assert np.array_equal(fa, ca), f"d/da differs: max {np.abs(fa - ca).max()}"
+    assert np.array_equal(fb, cb), f"d/db differs: max {np.abs(fb - cb).max()}"
+    # And against the closed form, so a matching pair of wrong answers cannot pass.
+    assert np.array_equal(fa, weight * np.float32(alpha))
+    assert np.array_equal(fb, weight * np.float32(beta))

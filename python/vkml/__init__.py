@@ -118,6 +118,7 @@ zeros_like = _C.zeros_like
 ones_like = _C.ones_like
 full_like = _C.full_like
 
+scaled_add = _C.scaled_add
 backward = _C.backward
 detach = _C.detach
 

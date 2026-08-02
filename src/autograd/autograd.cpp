@@ -204,6 +204,27 @@ void apply_backward(const NodePtr& np, const Tensor& grad, GradMap& grads) {
             accumulate(grads, b, grad * ta());
             return;
 
+        case OpKind::ScaledAdd: {
+            // d/da (a*alpha + b*beta) = alpha, d/db = beta. Both coefficients
+            // are constants, so neither operand's value appears in its own
+            // gradient and nothing from the forward pass has to be kept.
+            //
+            // A coefficient of exactly 1 passes the gradient through unchanged,
+            // which is the common case -- a parameter update is
+            // `scaled_add(param, velocity, 1, -lr)` -- and is worth a branch
+            // because the alternative emits a whole dispatch to multiply by
+            // one. `scale_grad` uses the second operand as a dummy with a zero
+            // coefficient: one dispatch rather than the two a scalar multiply
+            // would cost, since a scalar operand is materialised as a tensor.
+            const ScaledAddParams p = node.params.get<ScaledAddParams>();
+            const auto scale_grad = [&](float k) {
+                return k == 1.0F ? grad : scaled_add(grad, grad, k, 0.0);
+            };
+            accumulate(grads, a, scale_grad(p.alpha));
+            accumulate(grads, b, scale_grad(p.beta));
+            return;
+        }
+
         case OpKind::Div:
             accumulate(grads, a, grad / tb());
             // d/db (a/b) = -a/b^2. Written as -(grad * out) / b to reuse the

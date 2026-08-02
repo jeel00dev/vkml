@@ -54,6 +54,19 @@ enum class OpKind : uint16_t {
     Add,
     Sub,
     Mul,
+    /// a*alpha + b*beta, with both coefficients in `ScaledAddParams`.
+    ///
+    /// Not sugar. The composed form needs FOUR nodes -- two to materialise the
+    /// coefficients as rank-0 tensors, one multiply, one add -- and therefore
+    /// four dispatches, four barriers and four allocations for arithmetic that
+    /// reads two arrays and writes one. Measured on an SGD-with-momentum step
+    /// over an MNIST MLP: 24 dispatches and 126 us of GPU against 47 us here
+    /// (docs/adr/0013).
+    ///
+    /// Every momentum optimiser is built from this shape -- SGD's velocity and
+    /// parameter updates, RMSProp's and Adam's moving averages -- which is what
+    /// makes it an operator rather than a special case.
+    ScaledAdd,
     Div,
     Pow,
     Maximum,
@@ -228,6 +241,14 @@ struct PermuteParams {
 
 struct AxisParams {
     int32_t axis = 0;
+};
+
+/// Coefficients for ScaledAdd. Float rather than double: they reach the shader
+/// as f32 push constants, so storing them wider would let the host and the
+/// device disagree about the value being applied.
+struct ScaledAddParams {
+    float alpha = 1.0F;
+    float beta = 1.0F;
 };
 
 struct CastParams {

@@ -141,6 +141,35 @@ Tensor sub(const Tensor& a, const Tensor& b) { return binary(OpKind::Sub, a, b, 
 
 Tensor mul(const Tensor& a, const Tensor& b) { return binary(OpKind::Mul, a, b, a.dtype()); }
 
+Tensor scaled_add(const Tensor& a, const Tensor& b, double alpha, double beta) {
+    check_same_device(a, b, OpKind::ScaledAdd);
+    check_same_dtype(a, b, OpKind::ScaledAdd);
+
+    const std::vector<int64_t> dims = broadcast_dims(a.shape(), b.shape());
+    const Tensor ba = a.shape() == dims ? a : a.broadcast_to(dims);
+    const Tensor bb = b.shape() == dims ? b : b.broadcast_to(dims);
+
+    auto n = make_node(OpKind::ScaledAdd, Shape::contiguous(dims, dtype_size(a.dtype())), a.dtype(),
+                       a.device());
+    n->src[0] = ba.node();
+    n->src[1] = bb.node();
+    n->n_src = 2;
+    n->requires_grad =
+        grad_enabled() && (a.requires_grad() || b.requires_grad()) && is_differentiable(a.dtype());
+
+    // BEFORE finish(), which realises the node in eager mode. Setting the
+    // coefficients afterwards -- the obvious way to write this, and the way it
+    // was first written -- computes the whole thing with the defaults of 1 and
+    // 1, and every eager result is silently wrong. The lazy path hid it,
+    // because there the params are set long before anything runs.
+    //
+    // Narrowed to f32 here rather than at the kernel, so the host and the
+    // device apply the SAME value: the shader takes f32 push constants, and a
+    // double kept on this side would round differently.
+    n->params.set(ScaledAddParams{static_cast<float>(alpha), static_cast<float>(beta)});
+    return finish(std::move(n));
+}
+
 Tensor div(const Tensor& a, const Tensor& b) { return binary(OpKind::Div, a, b, a.dtype()); }
 
 Tensor pow(const Tensor& a, const Tensor& b) { return binary(OpKind::Pow, a, b, a.dtype()); }

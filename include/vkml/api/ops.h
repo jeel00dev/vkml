@@ -55,6 +55,22 @@ namespace vkml {
 [[nodiscard]] Tensor tanh(const Tensor& a);
 [[nodiscard]] Tensor sigmoid(const Tensor& a);
 [[nodiscard]] Tensor relu(const Tensor& a);
+
+/// ``a * alpha + b * beta``, as one operation.
+///
+/// The composed form costs four nodes, because each coefficient is materialised
+/// as a rank-0 tensor before the multiply. This costs one, and the coefficients
+/// travel in the push constants.
+///
+/// Bit-identical to the composed form by construction: both multiplies round to
+/// f32 before the add, exactly where `mul` would have stored its result, and the
+/// shader is written so the compiler cannot contract them into an FMA (ADR 0005
+/// makes the same argument for GEMM).
+///
+/// Named for what it computes rather than for its caller. Every momentum
+/// optimiser is built from this shape -- SGD's velocity and parameter updates,
+/// RMSProp's and Adam's moving averages -- which is what earns it an operator.
+[[nodiscard]] Tensor scaled_add(const Tensor& a, const Tensor& b, double alpha, double beta);
 [[nodiscard]] Tensor gelu(const Tensor& a);
 [[nodiscard]] Tensor silu(const Tensor& a);
 [[nodiscard]] Tensor clamp(const Tensor& a, double lo, double hi);

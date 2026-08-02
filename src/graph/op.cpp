@@ -29,6 +29,7 @@ constexpr std::array<std::string_view, kNumOps> kOpNames = {
     "add",
     "sub",
     "mul",
+    "scaled_add",
     "div",
     "pow",
     "maximum",

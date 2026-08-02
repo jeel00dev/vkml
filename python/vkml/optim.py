@@ -172,11 +172,18 @@ class SGD(Optimizer):
         # mutation of the parameters, not part of the function being
         # differentiated. Detaching the state is what keeps step N's graph from
         # being retained by step N+1.
+        # Every line below is `a*alpha + b*beta`, written with V.scaled_add
+        # rather than as `a*alpha + b`. The composed form needs four nodes --
+        # two of them only to materialise the coefficient as a rank-0 tensor --
+        # and a step over the MNIST MLP's four parameters cost 24 dispatches
+        # that way against 8 like this, 126 us of GPU against 47
+        # (docs/adr/0013). The values are bit-identical, checked byte for byte
+        # on both backends, so this is a cost change and not a numerical one.
         if self.momentum == 0.0:
-            return [], lambda: param.detach() - grad * self.lr
+            return [], lambda: V.scaled_add(param.detach(), grad, 1.0, -self.lr)
 
         previous = self._velocity[index]
-        velocity = grad if previous is None else (previous * self.momentum + grad)
+        velocity = grad if previous is None else V.scaled_add(previous, grad, self.momentum, 1.0)
 
         def finish():
             self._velocity[index] = velocity.detach()
@@ -185,9 +192,9 @@ class SGD(Optimizer):
             # ahead" -- so it uses the current gradient again rather than
             # replacing it. `grad` here is the gradient after weight decay,
             # which is what torch feeds in too.
-            direction = (grad + self._velocity[index] * self.momentum) if self.nesterov \
-                else self._velocity[index]
-            return param.detach() - direction * self.lr
+            direction = V.scaled_add(grad, self._velocity[index], 1.0, self.momentum) \
+                if self.nesterov else self._velocity[index]
+            return V.scaled_add(param.detach(), direction, 1.0, -self.lr)
 
         return [velocity], finish
 

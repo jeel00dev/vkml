@@ -554,6 +554,13 @@ NB_MODULE(_vkml_core, m) {
     m.def("mul", nb::overload_cast<const Tensor&, double>(&vkml::mul));
     m.def("div", nb::overload_cast<const Tensor&, double>(&vkml::div));
     m.def("pow", nb::overload_cast<const Tensor&, double>(&vkml::pow));
+    m.def("scaled_add", &vkml::scaled_add, "a"_a, "b"_a, "alpha"_a, "beta"_a,
+          "a*alpha + b*beta as ONE operation.\n\n"
+          "The composed form costs four nodes -- two of them only to materialise\n"
+          "the coefficients as rank-0 tensors -- and therefore four dispatches.\n"
+          "Bit-identical to it: both multiplies round to f32 exactly where `mul`\n"
+          "would have stored, and neither the shader nor the CPU kernel is allowed\n"
+          "to contract them into an FMA.");
     m.def("maximum", &vkml::maximum);
     m.def("minimum", &vkml::minimum);
 

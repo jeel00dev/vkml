@@ -10,7 +10,6 @@
       "arange",
       "clamp",
       "cos",
-      "div",
       "erf",
       "erfc",
       "log",
@@ -18,13 +17,10 @@
       "minimum",
       "pow",
       "reciprocal",
-      "rsqrt",
       "sigmoid",
       "sign",
       "silu",
       "sin",
-      "softmax",
-      "sqrt",
       "tanh",
       "tril",
       "triu"
@@ -62,7 +58,7 @@
     "single_backend_only": []
   },
   "recorded": {
-    "commit": "e7c5fd6",
-    "recorded_at": "2026-08-01T21:04:46+05:30"
+    "commit": "0939a73",
+    "recorded_at": "2026-08-02T19:36:50+05:30"
   }
 }

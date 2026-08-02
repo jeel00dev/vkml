@@ -281,7 +281,17 @@ before it, the two were strictly additive.
 3. **`vkQueueSubmit2` at ~16.5 µs, six times per step.** With the block gone this is the floor,
    and the only lever left is fewer submissions — batching upload, backward and the optimiser
    into one. ADR 0006 already took this from 39 to 8.
-4. **`loss.item()`, 371 µs of the 863.** Attributed by removal rather than by synchronising
+4. ~~**The optimiser, 427 µs to update 101,770 parameters.**~~ **Partly fixed.** It issued 24
+   dispatches for two lines of arithmetic, a third of them only to materialise a scalar as a
+   rank-0 tensor. `scaled_add` — `a*alpha + b*beta` as one operator — takes it to 8 and
+   458 µs → 309 µs. A whole-step `sgd_step` kernel measured better still (5.2× against 2.7×
+   on GPU) and was rejected on maintainability; `docs/adr/0013` has both numbers and the trade.
+
+   It is still **43× off its 7.1 µs bandwidth floor**, and 8 dispatches cost 189 µs here
+   against 47 µs for the same 8 at the Recorder level. That gap is graph and allocation
+   overhead, not kernels, and it is the next measurement.
+
+5. **`loss.item()`, 371 µs of the 863.** Attributed by removal rather than by synchronising
    between phases, which would destroy the overlap being measured:
 
    ```

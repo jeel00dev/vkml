@@ -246,6 +246,18 @@ void k_sub(Node& o) {
     binary_float(o, [](float x, float y) { return x - y; });
 }
 
+/// a*alpha + b*beta.
+///
+/// Written as two multiplies and an add, each rounding to f32, so it matches
+/// the composed `a*alpha` then `+ b*beta` exactly -- and matches the shader,
+/// which is written the same way for the same reason. `float` intermediates
+/// rather than the `double` a naive reading might use: widening here would make
+/// the oracle disagree with every backend it is meant to check.
+void k_scaled_add(Node& o) {
+    const ScaledAddParams p = o.params.get<ScaledAddParams>();
+    binary_float(o, [p](float x, float y) { return x * p.alpha + y * p.beta; });
+}
+
 void k_mul(Node& o) {
     binary_float(o, [](float x, float y) { return x * y; });
 }
@@ -417,6 +429,7 @@ void register_elementwise_kernels(KernelTable& t) {
     t[static_cast<size_t>(OpKind::Add)] = k_add;
     t[static_cast<size_t>(OpKind::Sub)] = k_sub;
     t[static_cast<size_t>(OpKind::Mul)] = k_mul;
+    t[static_cast<size_t>(OpKind::ScaledAdd)] = k_scaled_add;
     t[static_cast<size_t>(OpKind::Div)] = k_div;
     t[static_cast<size_t>(OpKind::Pow)] = k_pow;
     t[static_cast<size_t>(OpKind::Maximum)] = k_maximum;

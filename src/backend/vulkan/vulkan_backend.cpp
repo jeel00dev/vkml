@@ -13,6 +13,7 @@
 #include "vkml/spv/max_pool2d.h"
 #include "vkml/spv/rand.h"
 #include "vkml/spv/index_select.h"
+#include "vkml/spv/scaled_add.h"
 #include "vkml/spv/scatter_add.h"
 #include "vkml/spv/slice_backward.h"
 #include "vkml/spv/fill.h"
@@ -212,6 +213,30 @@ struct BinaryPush {
 
 static_assert(sizeof(BinaryPush) <= kGuaranteedPushConstantBytes,
               "BinaryPush exceeds the push-constant size Vulkan guarantees");
+
+/// EXTENTS ONCE, STRIDES PER OPERAND, and no strides for the output at all.
+///
+/// A full GpuOperand for each of three operands is 96 bytes, which with the
+/// addresses and the two coefficients would not fit the 128 Vulkan guarantees --
+/// BinaryPush already sits at 124 with no coefficients to carry. Both inputs
+/// arrive broadcast to the output's shape so they SHARE extents, and the output
+/// of a computed node is always freshly allocated and contiguous, so it needs no
+/// strides. That is 84 bytes. See docs/adr/0009 sec2 for the same trick in
+/// `where` and `softmax`.
+struct ScaledAddPush {
+    uint64_t a;
+    uint64_t b;
+    uint64_t dst;
+    uint32_t n;
+    float alpha;
+    float beta;
+    std::array<uint32_t, 4> ne{1, 1, 1, 1};
+    std::array<uint32_t, 4> a_nb{0, 0, 0, 0};
+    std::array<uint32_t, 4> b_nb{0, 0, 0, 0};
+};
+
+static_assert(sizeof(ScaledAddPush) <= kGuaranteedPushConstantBytes,
+              "ScaledAddPush exceeds the push-constant size Vulkan guarantees");
 
 /// Mirrors where.comp. Extents ONCE, strides per operand.
 ///
@@ -1035,6 +1060,12 @@ bool VulkanBackend::supports(const Node& node) const {
         case OpKind::Minimum:
             return is_floating(node.dtype) && binary_srcs_are_float(node) &&
                    node.src[0]->dtype == node.dtype;
+        // Exactly the binary ops' condition. ScaledAdd handles broadcast and
+        // strided inputs like any other elementwise op -- an operator that threw
+        // on shapes its own API accepts would be a defect, not an optimisation.
+        case OpKind::ScaledAdd:
+            return is_floating(node.dtype) && binary_srcs_are_float(node) &&
+                   node.src[0]->dtype == node.dtype;
         // Comparisons: floating in, Bool out. The output dtype differs from the
         // inputs', so both ends are checked rather than inferring one -- getting
         // that backwards is precisely the defect the CPU kernel carried.
@@ -1290,6 +1321,45 @@ void VulkanBackend::compute(std::span<Node* const> nodes) {
                 rec.dispatch(
                     pipes.get("unary", spv::unary, spv::unary_size, sizeof(UnaryPush), cfg), &push,
                     sizeof(push), n_elems);
+                break;
+            }
+
+            case OpKind::ScaledAdd: {
+                const Node& a = *node->src[0];
+                const Node& b = *node->src[1];
+                const ScaledAddParams sp = node->params.get<ScaledAddParams>();
+                const size_t esz = dtype_size(node->dtype);
+
+                const bool contiguous = a.shape.is_contiguous() && b.shape.is_contiguous() &&
+                                        a.shape.numel() == node->shape.numel() &&
+                                        b.shape.numel() == node->shape.numel();
+
+                vk::KernelConfig cfg;
+                cfg.workgroup_size = wg;
+                cfg.spec_constants = {wg, contiguous ? 1U : 0U, spec_dtype(node->dtype)};
+
+                const GpuOperand a_op = to_gpu_operand(a.shape, esz);
+                const GpuOperand b_op = to_gpu_operand(b.shape, esz);
+                ScaledAddPush push{};
+                push.a = address_of(a);
+                push.b = address_of(b);
+                push.dst = address_of(*node);
+                push.n = n_elems;
+                push.alpha = sp.alpha;
+                push.beta = sp.beta;
+                // Extents come from the OUTPUT, which is what both inputs were
+                // broadcast to; taking them from either input would be right by
+                // accident and wrong the moment one of them is a broadcast view.
+                push.ne = to_gpu_operand(node->shape, esz).ne;
+                push.a_nb = a_op.nb;
+                push.b_nb = b_op.nb;
+                if (debug_dispatch_enabled()) {
+                    trace_dispatch(*node, "scaled_add", cfg, sizeof(ScaledAddPush),
+                                   (n_elems + wg - 1) / wg, impl_->caps.subgroup_size);
+                }
+                rec.dispatch(pipes.get("scaled_add", spv::scaled_add, spv::scaled_add_size,
+                                       sizeof(ScaledAddPush), cfg),
+                             &push, sizeof(push), n_elems);
                 break;
             }
 
